@@ -22,7 +22,9 @@ export default function Events() {
     const orgName = (slug) => orgs.find((o) => o.slug === slug)?.name;
 
     const filtered = useMemo(() => {
+        const now = new Date();
         return approved
+            .filter((e) => new Date(e.end || e.start) >= now)
             .filter((e) =>
                 query
                     ? `${e.title} ${e.venue} ${e.description}`.toLowerCase().includes(query.toLowerCase())
@@ -51,16 +53,34 @@ export default function Events() {
         return days;
     }, [cursor]);
 
+    // For month view: all approved events (no time filter) but with category/org/tag filters
+    const filteredAll = useMemo(() => {
+        return approved
+            .filter((e) =>
+                query
+                    ? `${e.title} ${e.venue} ${e.description}`.toLowerCase().includes(query.toLowerCase())
+                    : true,
+            )
+            .filter((e) => (cat === "All" ? true : e.category === cat))
+            .filter((e) => (orgFilter === "All" ? true : e.orgSlug === orgFilter))
+            .filter((e) => {
+                if (tag === "Free") return e.cost?.toLowerCase().includes("free");
+                if (tag === "Family") return e.age?.toLowerCase().includes("family") || e.age?.toLowerCase().includes("all");
+                if (tag === "Accessible") return e.accessibility?.toLowerCase().includes("step-free");
+                return true;
+            });
+    }, [approved, query, cat, orgFilter, tag]);
+
     const eventsByDay = useMemo(() => {
         const map = {};
-        filtered.forEach((e) => {
+        filteredAll.forEach((e) => {
             const d = new Date(e.start);
             const k = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
             map[k] ??= [];
             map[k].push(e);
         });
         return map;
-    }, [filtered]);
+    }, [filteredAll]);
 
     return (
         <div data-testid="events-page" className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12">

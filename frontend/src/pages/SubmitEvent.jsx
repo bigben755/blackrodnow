@@ -43,7 +43,7 @@ export default function SubmitEvent() {
         const end = new Date(`${form.date}T${form.end || form.start || "11:00"}`).toISOString();
         const orgSlug =
             orgs.find((o) => o.name.toLowerCase() === form.orgName.toLowerCase())?.slug ||
-            "blackrod-community-centre";
+            "blackrod-sports-community-centre";
 
         addEvent({
             title: form.title,

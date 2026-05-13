@@ -20,7 +20,10 @@ export default function Home() {
     const [email, setEmail] = useState("");
 
     const approved = events.filter((e) => e.status === "approved");
-    const sortedByDate = [...approved].sort((a, b) => new Date(a.start) - new Date(b.start));
+    const now = new Date();
+    const sortedByDate = [...approved]
+        .filter((e) => new Date(e.end || e.start) >= now)
+        .sort((a, b) => new Date(a.start) - new Date(b.start));
     const upcoming = sortedByDate.slice(0, 8);
 
     const weekFromNow = new Date();
@@ -29,8 +32,8 @@ export default function Home() {
 
     const featuredEvents = sortedByDate.filter((e) => e.featured).slice(0, 3);
     const featuredOrgs = orgs.slice(0, 4);
-    const spotlightOrg = orgs.find((o) => o.slug === "blackrod-food-pantry") || orgs[0];
-    const featuredBusiness = orgs.find((o) => o.slug === "the-corner-cafe") || orgs[0];
+    const spotlightOrg = orgs.find((o) => o.slug === "blackrod-bloomers") || orgs[0];
+    const featuredBusiness = orgs.find((o) => o.slug === "douglas-valley-golf-club") || orgs[0];
 
     const subscribe = (e) => {
         e.preventDefault();
