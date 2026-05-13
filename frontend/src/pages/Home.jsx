@@ -52,14 +52,14 @@ export default function Home() {
                             <Sparkles className="h-3.5 w-3.5" /> Made in Blackrod, Bolton
                         </div>
                         <h1 className="font-display font-black tracking-tight text-5xl sm:text-6xl lg:text-7xl leading-[0.95] text-foreground">
-                            Blackrod<span className="text-primary">Life</span>
+                            Blackrod<span className="text-primary"> Now</span>
                             <span className="block text-foreground/70 text-3xl sm:text-4xl lg:text-5xl font-bold mt-3">
-                                Everything happening, on one page.
+                                What's on, what's new, what's next.
                             </span>
                         </h1>
                         <p className="mt-6 max-w-xl text-base sm:text-lg text-muted-foreground leading-relaxed">
-                            Events, groups, clubs, causes and local life — discover what's on, find your tribe
-                            and back the local people making Blackrod brilliant.
+                            Blackrod Now brings together local events, groups, clubs, schools, businesses and
+                            community projects in one easy-to-use digital space.
                         </p>
                         <div className="mt-8 flex flex-wrap gap-3">
                             <Link
@@ -206,7 +206,7 @@ export default function Home() {
                             <span className="text-secondary">Publish everywhere.</span>
                         </h2>
                         <p className="mt-4 max-w-lg text-background/80">
-                            Paste a flyer, newsletter snippet or a quick update — BlackrodLife turns it into a
+                            Paste a flyer, newsletter snippet or a quick update — Blackrod Now turns it into a
                             page update, calendar entry, social caption and notification draft. In one click.
                         </p>
                         <div className="mt-6 flex flex-wrap gap-3">
@@ -251,7 +251,7 @@ export default function Home() {
                                     <div className="text-accent font-bold uppercase tracking-wider text-[10px]">
                                         Notification
                                     </div>
-                                    <div className="mt-1 text-background">New on BlackrodLife: Summer Fair</div>
+                                    <div className="mt-1 text-background">New on Blackrod Now: Summer Fair</div>
                                 </div>
                             </div>
                         </div>

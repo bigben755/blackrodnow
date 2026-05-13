@@ -87,7 +87,7 @@ export default function OrgDashboard() {
             age: "All ages",
             accessibility: "Please contact us for details",
             booking: "",
-            contactEmail: org?.email || "hello@blackrodlife.example",
+            contactEmail: org?.email || "hello@blackrodnow.example",
             contactPhone: org?.phone || "",
             image:
                 "https://images.unsplash.com/photo-1533174072545-7a4b6ad7a6c3?w=1200&q=80",

@@ -76,7 +76,7 @@ export default function SubmitEvent() {
                 </div>
                 <h1 className="font-display font-black text-3xl sm:text-4xl mt-6">Thanks — submitted!</h1>
                 <p className="mt-3 text-muted-foreground">
-                    Your event has been sent to our admins. You'll see it on BlackrodLife as soon as it's
+                    Your event has been sent to our admins. You'll see it on Blackrod Now as soon as it's
                     approved.
                 </p>
                 <div className="mt-6 flex gap-2 justify-center">
@@ -108,7 +108,7 @@ export default function SubmitEvent() {
                     Tell us what's on
                 </h1>
                 <p className="mt-2 text-muted-foreground text-sm">
-                    Submit an event — it'll be reviewed and added to the BlackrodLife calendar.
+                    Submit an event — it'll be reviewed and added to the Blackrod Now calendar.
                 </p>
             </div>
 
@@ -190,7 +190,7 @@ export default function SubmitEvent() {
                     />
                     <span className="text-muted-foreground">
                         I confirm I have the right to publish this event and consent to it being shared on
-                        BlackrodLife.
+                        Blackrod Now.
                     </span>
                 </label>
 

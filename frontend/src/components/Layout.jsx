@@ -41,7 +41,7 @@ export const Brand = ({ size = "default" }) => (
             B
         </span>
         <span className="font-display font-black tracking-tight text-foreground text-xl leading-none">
-            Blackrod<span className="text-primary">Life</span>
+            Blackrod<span className="text-primary"> Now</span>
         </span>
     </Link>
 );
@@ -216,8 +216,8 @@ function Footer() {
                 <div className="col-span-2">
                     <Brand size="lg" />
                     <p className="mt-4 text-sm text-muted-foreground max-w-sm leading-relaxed">
-                        Everything happening in Blackrod — events, groups, clubs, causes and local life. Made
-                        by neighbours, for neighbours.
+                        What's on, what's new, what's next. Blackrod's community hub for events, groups,
+                        clubs, schools, businesses and projects.
                     </p>
                     <div className="flex items-center gap-3 mt-4 text-muted-foreground">
                         <MapPin className="h-4 w-4" />
@@ -277,7 +277,7 @@ function Footer() {
                             </Link>
                         </li>
                         <li>
-                            <a href="mailto:hello@blackrodlife.example" className="hover:text-foreground">
+                            <a href="mailto:hello@blackrodnow.example" className="hover:text-foreground">
                                 Contact
                             </a>
                         </li>
@@ -286,7 +286,7 @@ function Footer() {
             </div>
             <div className="border-t border-border">
                 <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-5 flex flex-col sm:flex-row gap-3 items-center justify-between text-xs text-muted-foreground">
-                    <span>© {new Date().getFullYear()} BlackrodLife. A community project.</span>
+                    <span>© {new Date().getFullYear()} Blackrod Now. A community project.</span>
                     <div className="flex items-center gap-4">
                         <a href="#" className="hover:text-foreground">Privacy</a>
                         <a href="#" className="hover:text-foreground">Terms</a>
@@ -296,7 +296,7 @@ function Footer() {
                         <a href="#" className="hover:text-foreground" aria-label="Instagram">
                             <Instagram className="h-4 w-4" />
                         </a>
-                        <a href="mailto:hello@blackrodlife.example" className="hover:text-foreground" aria-label="Email">
+                        <a href="mailto:hello@blackrodnow.example" className="hover:text-foreground" aria-label="Email">
                             <Mail className="h-4 w-4" />
                         </a>
                     </div>

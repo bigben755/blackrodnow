@@ -25,7 +25,7 @@ db = client[os.environ['DB_NAME']]
 EMERGENT_LLM_KEY = os.environ.get('EMERGENT_LLM_KEY')
 
 # Create the main app without a prefix
-app = FastAPI(title="BlackrodLife API")
+app = FastAPI(title="Blackrod Now API")
 
 # Create a router with the /api prefix
 api_router = APIRouter(prefix="/api")
@@ -64,7 +64,7 @@ class ParsedSuggestion(BaseModel):
 # ---------- Routes ----------
 @api_router.get("/")
 async def root():
-    return {"message": "BlackrodLife API", "ok": True}
+    return {"message": "Blackrod Now API", "ok": True}
 
 
 @api_router.post("/status", response_model=StatusCheck)
@@ -101,8 +101,8 @@ def _fallback_parse(text: str) -> ParsedSuggestion:
         location=location_match.group(1) if location_match else None,
         category="Community",
         description=text.strip()[:500],
-        social_caption=f"📣 {title} — happening in Blackrod. Find out more on BlackrodLife.",
-        notification_text=f"New on BlackrodLife: {title}",
+        social_caption=f"📣 {title} — happening in Blackrod. Find out more on Blackrod Now.",
+        notification_text=f"New on Blackrod Now: {title}",
     )
 
 
@@ -116,7 +116,7 @@ async def parse_content(req: ParseRequest):
         return _fallback_parse(req.text)
 
     system_message = (
-        "You are a friendly community editor for BlackrodLife, a local platform for Blackrod, Bolton (UK). "
+        "You are a friendly community editor for Blackrod Now, a local platform for Blackrod, Bolton (UK). "
         "Given a raw paste (flyer/newsletter/update), decide whether it's an EVENT or a general UPDATE, "
         "then extract structured fields. Reply ONLY with a JSON object (no markdown, no prose) with EXACTLY these keys: "
         "suggested_type ('event' or 'update'), title, date (e.g. 'Saturday 14 June 2025' or null), "

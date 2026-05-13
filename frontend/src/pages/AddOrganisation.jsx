@@ -81,7 +81,7 @@ export default function AddOrganisation() {
                 </div>
                 <h1 className="font-display font-black text-3xl sm:text-4xl mt-6">You're in the directory!</h1>
                 <p className="mt-3 text-muted-foreground">
-                    Once an admin approves your profile, it'll appear on BlackrodLife. We'll email you when
+                    Once an admin approves your profile, it'll appear on Blackrod Now. We'll email you when
                     it's live.
                 </p>
                 <button
@@ -182,7 +182,7 @@ export default function AddOrganisation() {
                         className="mt-1 h-4 w-4 rounded border-border accent-primary"
                     />
                     <span className="text-muted-foreground">
-                        I'm authorised to add this organisation and consent to listing it on BlackrodLife.
+                        I'm authorised to add this organisation and consent to listing it on Blackrod Now.
                     </span>
                 </label>
 
