@@ -1,0 +1,132 @@
+{
+  "theme": "LIGHT",
+  "archetype": "6 (Vibrant Play) + 4 (Swiss & High-Contrast)",
+  "rationale": "Youth-friendly, modern, community-led, avoiding council-style. Needs electric blue, lime green, and charcoal headings.",
+  "design_system": {
+    "colors": {
+      "light": {
+        "background": "#F4F5F7",
+        "surface": "#FFFFFF",
+        "text_primary": "#0F172A",
+        "text_secondary": "#475569",
+        "primary": "#0052FF",
+        "primary_foreground": "#FFFFFF",
+        "secondary": "#D4FF00",
+        "secondary_foreground": "#0F172A",
+        "accent": "#FF3366",
+        "accent_foreground": "#FFFFFF",
+        "border": "#E2E8F0",
+        "ring": "#0052FF"
+      },
+      "dark": {
+        "background": "#0B1021",
+        "surface": "#131B2F",
+        "text_primary": "#F8F9FA",
+        "text_secondary": "#94A3B8",
+        "primary": "#3B82F6",
+        "primary_foreground": "#FFFFFF",
+        "secondary": "#D4FF00",
+        "secondary_foreground": "#0F172A",
+        "accent": "#FF3366",
+        "accent_foreground": "#FFFFFF",
+        "border": "#1E293B",
+        "ring": "#3B82F6"
+      }
+    },
+    "typography": {
+      "font_family": {
+        "heading": "'Outfit', sans-serif",
+        "body": "'Plus Jakarta Sans', sans-serif"
+      },
+      "sizes": {
+        "h1": "text-5xl sm:text-6xl tracking-tight font-bold",
+        "h2": "text-3xl sm:text-4xl tracking-tight font-bold",
+        "h3": "text-xl sm:text-2xl tracking-tight font-semibold",
+        "h4": "text-lg font-semibold",
+        "body": "text-base leading-relaxed",
+        "small": "text-sm font-medium",
+        "badge": "text-xs font-bold tracking-[0.1em] uppercase"
+      }
+    },
+    "spacing_and_layout": {
+      "container_padding": "px-4 sm:px-6 lg:px-8",
+      "section_spacing": "py-16 sm:py-24",
+      "grid_patterns": {
+        "bento_featured": "grid grid-cols-1 md:grid-cols-8 lg:grid-cols-12 gap-6",
+        "card_grid": "grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6 sm:gap-8"
+      },
+      "border_radius": {
+        "card": "rounded-3xl",
+        "button": "rounded-full",
+        "badge": "rounded-full",
+        "image": "rounded-2xl"
+      }
+    },
+    "components": {
+      "cards": {
+        "base_classes": "bg-surface rounded-3xl border border-border overflow-hidden transition-all duration-300",
+        "hover_effects": "hover:-translate-y-1.5 hover:shadow-[0_12px_40px_rgba(0,0,0,0.08)] dark:hover:shadow-[0_12px_40px_rgba(0,0,0,0.3)] hover:border-primary/30",
+        "padding": "p-6 sm:p-8"
+      },
+      "buttons": {
+        "primary_classes": "bg-primary text-primary-foreground rounded-full font-medium transition-all duration-200 hover:scale-105 active:scale-95 shadow-lg shadow-primary/25 hover:shadow-primary/40",
+        "secondary_classes": "bg-secondary text-secondary-foreground rounded-full font-semibold transition-all duration-200 hover:scale-105 active:scale-95 shadow-lg shadow-secondary/25 hover:shadow-secondary/40",
+        "outline_classes": "border-2 border-primary text-primary hover:bg-primary hover:text-primary-foreground rounded-full font-medium transition-all duration-200"
+      },
+      "badges": {
+        "default": "px-3 py-1 rounded-full text-xs font-bold tracking-wider uppercase",
+        "category_music": "bg-primary/10 text-primary dark:bg-primary/20",
+        "category_youth": "bg-accent/10 text-accent dark:bg-accent/20",
+        "category_community": "bg-secondary text-[#0F172A]"
+      },
+      "header": {
+        "classes": "fixed top-0 w-full z-50 backdrop-blur-xl bg-background/80 border-b border-border/50 transition-all duration-300"
+      },
+      "ai_upload_feature": {
+        "classes": "relative rounded-3xl p-8 bg-surface border border-primary/20 overflow-hidden",
+        "decoration": "absolute -inset-1 bg-gradient-to-r from-primary via-secondary to-accent opacity-20 blur-xl animate-pulse -z-10"
+      }
+    },
+    "interactions_and_motion": {
+      "page_load": "fade-in and slight slide-up (translate-y-4) for hero elements, staggered 100ms",
+      "hover": "cards lift up, images scale very slightly (scale-105) inside hidden overflow containers",
+      "focus": "focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 focus:ring-offset-background"
+    },
+    "accessibility": {
+      "testing_attributes": "All interactive and key informational elements MUST include data-testid attribute in kebab-case based on role.",
+      "contrast": "Ensure secondary (Lime Green) text contrast is handled carefully; use Dark Navy text over Lime Green.",
+      "reduced_motion": "Wrap major animations in matches(prefers-reduced-motion) checks or Tailwind's motion-safe variant."
+    },
+    "media": {
+      "image_urls": {
+        "hero_background": {
+          "url": "https://images.unsplash.com/photo-1771257808250-fa5fbffa8d54?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1OTN8MHwxfHNlYXJjaHwxfHxjb21tdW5pdHklMjBldmVudCUyMGNyb3dkJTIwaGFwcHl8ZW58MHx8fHwxNzc4NzAyNjkyfDA&ixlib=rb-4.1.0&q=85",
+          "description": "Large crowd cheering, youthful energy. Use with a heavy overlay or as part of a bento grid so it doesn't overwhelm text."
+        },
+        "event_youth_sports": {
+          "url": "https://images.unsplash.com/photo-1777489689168-497290f235d5?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA2MTJ8MHwxfHNlYXJjaHwxfHx5b3V0aCUyMHNvY2NlciUyMHBhcmt8ZW58MHx8fHwxNzc4NzAyNzA2fDA&ixlib=rb-4.1.0&q=85",
+          "description": "Children playing soccer in a sunny park"
+        },
+        "event_local_business": {
+          "url": "https://images.unsplash.com/photo-1642026465180-5e25255838e9?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1NTZ8MHwxfHNlYXJjaHwxfHxsb2NhbCUyMGNvZmZlZSUyMHNob3AlMjBjb21tdW5pdHl8ZW58MHx8fHwxNzc4NzAyNzAxfDA&ixlib=rb-4.1.0&q=85",
+          "description": "Coffee shop setting, local business highlight"
+        },
+        "community_spotlight": {
+          "url": "https://images.unsplash.com/photo-1777115213572-2097c1c9ebcc?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1OTN8MHwxfHNlYXJjaHwyfHxjb21tdW5pdHklMjBldmVudCUyMGNyb3dkJTIwaGFwcHl8ZW58MHx8fHwxNzc4NzAyNjkyfDA&ixlib=rb-4.1.0&q=85",
+          "description": "Two women hugging at an outdoor event, representing community connections."
+        },
+        "local_street_venues": {
+          "url": "https://images.unsplash.com/photo-1641907623702-a29361c36367?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NTY2Nzd8MHwxfHNlYXJjaHw0fHxlbmdsYW5kJTIwdmlsbGFnZSUyMHN0cmVldHxlbnwwfHx8fDE3Nzg3MDI3MDZ8MA&ixlib=rb-4.1.0&q=85",
+          "description": "England village street, use for venue directory or local feed."
+        }
+      }
+    }
+  },
+  "instructions_to_main_agent": {
+    "setup": "Install Outfit and Plus Jakarta Sans fonts. Apply the CSS variables in the global styles. Ensure the light/dark mode toggle alters these CSS variables.",
+    "icons": "Use lucide-react (or phosphor-react) for consistent rounded line icons.",
+    "layout_execution": "Strictly follow the bento grid patterns for the featured events on the homepage. Do not use generic horizontal stripes.",
+    "components": "Use Shadcn UI for forms, tabs, and complex logic, but heavily customize them using the provided border-radius (3xl) and colors to strip away the default Vercel-look.",
+    "testing": "All interactive elements MUST have data-testid attributes."
+  }
+}
