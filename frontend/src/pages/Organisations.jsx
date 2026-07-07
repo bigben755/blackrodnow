@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from "react";
 import { useApp } from "@/context/AppContext";
 import { OrgCard } from "@/components/Cards";
+import NewsletterSection from "@/components/NewsletterSection";
 import { ORG_TYPES } from "@/data/mockData";
 import { Search } from "lucide-react";
 
@@ -67,6 +68,9 @@ export default function Organisations() {
                     ))}
                 </div>
             )}
+
+            {/* NEWSLETTER */}
+            <NewsletterSection />
         </div>
     );
 }

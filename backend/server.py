@@ -11,6 +11,9 @@ from pathlib import Path
 from pydantic import BaseModel, Field, ConfigDict
 from typing import List, Optional
 from datetime import datetime, timezone
+import smtplib
+from email.message import EmailMessage
+import ssl
 
 
 ROOT_DIR = Path(__file__).parent
@@ -59,6 +62,13 @@ class ParsedSuggestion(BaseModel):
     description: str
     social_caption: str
     notification_text: str
+
+
+class ContactRequest(BaseModel):
+    name: str
+    email: str
+    subject: Optional[str] = None
+    message: str
 
 
 # ---------- Routes ----------
@@ -188,6 +198,46 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+
+@api_router.post("/contact")
+async def contact(req: ContactRequest):
+    """Accept contact form submissions and forward via SMTP to configured CONTACT_EMAIL."""
+    contact_email = os.environ.get("CONTACT_EMAIL")
+    smtp_host = os.environ.get("SMTP_HOST")
+    smtp_port = int(os.environ.get("SMTP_PORT", "587"))
+    smtp_user = os.environ.get("SMTP_USER")
+    smtp_pass = os.environ.get("SMTP_PASS")
+
+    if not contact_email:
+        logging.warning("CONTACT_EMAIL not configured; dropping contact message")
+        return {"ok": False, "message": "Contact endpoint not configured"}
+
+    # Build email
+    msg = EmailMessage()
+    msg["Subject"] = f"Website contact: {req.subject or 'Message from site'}"
+    msg["From"] = smtp_user or req.email
+    msg["To"] = contact_email
+    body = f"Name: {req.name}\nEmail: {req.email}\n\nMessage:\n{req.message}\n"
+    msg.set_content(body)
+
+    # Try sending via SMTP if configured
+    if smtp_host and smtp_user and smtp_pass:
+        try:
+            context = ssl.create_default_context()
+            with smtplib.SMTP(smtp_host, smtp_port, timeout=10) as server:
+                server.starttls(context=context)
+                server.login(smtp_user, smtp_pass)
+                server.send_message(msg)
+            logging.info("Contact email sent to %s", contact_email)
+            return {"ok": True}
+        except Exception as e:
+            logging.exception("Failed to send contact email: %s", e)
+            raise HTTPException(status_code=500, detail="Failed to send message")
+    else:
+        # If SMTP not configured, log the message and return ok for dev environments
+        logging.info("SMTP not configured; logging contact message:\n%s", body)
+        return {"ok": True, "warning": "SMTP not configured; message logged"}
 
 
 @app.on_event("shutdown")

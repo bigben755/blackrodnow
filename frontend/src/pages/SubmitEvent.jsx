@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import { useApp } from "@/context/AppContext";
 import { CATEGORIES } from "@/data/mockData";
+import NewsletterSection from "@/components/NewsletterSection";
 import { CheckCircle2, Calendar, Image as ImageIcon, ArrowRight } from "lucide-react";
 import { toast } from "sonner";
 import { useNavigate } from "react-router-dom";
@@ -202,6 +203,9 @@ export default function SubmitEvent() {
                     <Calendar className="h-4 w-4" /> Submit event
                 </button>
             </form>
+
+            {/* NEWSLETTER */}
+            <NewsletterSection />
         </div>
     );
 }

@@ -1,4 +1,5 @@
 import React from "react";
+import NewsletterSection from "@/components/NewsletterSection";
 import { Link, useParams } from "react-router-dom";
 import { useApp, eventsByOrg } from "@/context/AppContext";
 import { CategoryBadge, formatDate, formatTime, VolunteerCard, FeedCard } from "@/components/Cards";
@@ -263,9 +264,11 @@ export default function OrganisationDetail() {
                     </aside>
                 </div>
             </div>
+            {/* NEWSLETTER */}
+            <NewsletterSection />
         </div>
-    );
-}
+        );
+    }
 
 const Section = ({ title, children }) => (
     <section className="rounded-3xl border border-border bg-surface p-5 sm:p-6">

@@ -1,9 +1,20 @@
 import React, { useMemo, useState } from "react";
 import { useApp } from "@/context/AppContext";
-import { EventCard, CategoryBadge } from "@/components/Cards";
+import { EventCard, CategoryBadge, formatTime } from "@/components/Cards";
+import NewsletterSection from "@/components/NewsletterSection";
 import { CATEGORIES } from "@/data/mockData";
-import { Search, LayoutGrid, CalendarDays, ChevronLeft, ChevronRight } from "lucide-react";
+import { Search, LayoutGrid, CalendarDays, ChevronLeft, ChevronRight, Download, Rss, Apple, Copy } from "lucide-react";
 import { Link } from "react-router-dom";
+import { downloadICS } from "@/lib/ics";
+import {
+    DropdownMenu,
+    DropdownMenuContent,
+    DropdownMenuItem,
+    DropdownMenuLabel,
+    DropdownMenuSeparator,
+    DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { toast } from "sonner";
 
 const startOfMonth = (d) => new Date(d.getFullYear(), d.getMonth(), 1);
 const endOfMonth = (d) => new Date(d.getFullYear(), d.getMonth() + 1, 0);
@@ -18,6 +29,7 @@ export default function Events() {
     const [orgFilter, setOrgFilter] = useState("All");
     const [tag, setTag] = useState("All"); // Free | Family | Accessible | All
     const [cursor, setCursor] = useState(new Date());
+    const [selectedDay, setSelectedDay] = useState(new Date().toDateString());
 
     const orgName = (slug) => orgs.find((o) => o.slug === slug)?.name;
 
@@ -94,25 +106,94 @@ export default function Events() {
                         Filter by category, day or organisation — find your next thing.
                     </p>
                 </div>
-                <div className="inline-flex rounded-full border border-border bg-surface p-1">
-                    <button
-                        data-testid="view-list"
-                        onClick={() => setView("list")}
-                        className={`inline-flex items-center gap-1.5 px-4 py-2 rounded-full text-xs font-semibold uppercase tracking-wider transition ${
-                            view === "list" ? "bg-foreground text-background" : "text-foreground/70"
-                        }`}
-                    >
-                        <LayoutGrid className="h-3.5 w-3.5" /> List
-                    </button>
-                    <button
-                        data-testid="view-month"
-                        onClick={() => setView("month")}
-                        className={`inline-flex items-center gap-1.5 px-4 py-2 rounded-full text-xs font-semibold uppercase tracking-wider transition ${
-                            view === "month" ? "bg-foreground text-background" : "text-foreground/70"
-                        }`}
-                    >
-                        <CalendarDays className="h-3.5 w-3.5" /> Month
-                    </button>
+                <div className="flex flex-wrap items-center gap-2">
+                    <div className="inline-flex rounded-full border border-border bg-surface p-1">
+                        <button
+                            data-testid="view-list"
+                            onClick={() => setView("list")}
+                            className={`inline-flex items-center gap-1.5 px-4 py-2 rounded-full text-xs font-semibold uppercase tracking-wider transition ${
+                                view === "list" ? "bg-foreground text-background" : "text-foreground/70"
+                            }`}
+                        >
+                            <LayoutGrid className="h-3.5 w-3.5" /> List
+                        </button>
+                        <button
+                            data-testid="view-month"
+                            onClick={() => setView("month")}
+                            className={`inline-flex items-center gap-1.5 px-4 py-2 rounded-full text-xs font-semibold uppercase tracking-wider transition ${
+                                view === "month" ? "bg-foreground text-background" : "text-foreground/70"
+                            }`}
+                        >
+                            <CalendarDays className="h-3.5 w-3.5" /> Month
+                        </button>
+                    </div>
+                    <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                            <button
+                                data-testid="sync-calendar"
+                                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-full border border-border bg-surface text-xs font-semibold uppercase tracking-wider hover:bg-muted"
+                            >
+                                <CalendarDays className="h-3.5 w-3.5" /> Sync calendar
+                            </button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end" className="rounded-2xl w-72">
+                            <DropdownMenuLabel>Add Blackrod Now to your calendar</DropdownMenuLabel>
+                            <DropdownMenuSeparator />
+                            <DropdownMenuItem
+                                data-testid="sync-download-ics"
+                                onClick={() => {
+                                    downloadICS(filtered.length ? filtered : filteredAll, "blackrod-now.ics");
+                                    toast.success("Downloaded blackrod-now.ics", {
+                                        description: "Open the file to import into Google, Apple or Outlook Calendar.",
+                                    });
+                                }}
+                            >
+                                <Download className="h-4 w-4 mr-2" /> Download .ics file (all upcoming)
+                            </DropdownMenuItem>
+                            <DropdownMenuItem
+                                data-testid="sync-apple"
+                                onClick={() => {
+                                    downloadICS(filtered.length ? filtered : filteredAll, "blackrod-now.ics");
+                                    toast.success("Opening in Apple Calendar", {
+                                        description: "On iPhone or Mac, tap the downloaded file to add.",
+                                    });
+                                }}
+                            >
+                                <Apple className="h-4 w-4 mr-2" /> Add to Apple Calendar
+                            </DropdownMenuItem>
+                            <DropdownMenuItem
+                                data-testid="sync-google"
+                                onClick={() => {
+                                    downloadICS(filtered.length ? filtered : filteredAll, "blackrod-now.ics");
+                                    toast.info("Import into Google Calendar", {
+                                        description:
+                                            "Downloaded file → open calendar.google.com → Settings → Import.",
+                                    });
+                                }}
+                            >
+                                <CalendarDays className="h-4 w-4 mr-2" /> Add to Google Calendar
+                            </DropdownMenuItem>
+                            <DropdownMenuSeparator />
+                            <DropdownMenuItem
+                                data-testid="sync-subscribe"
+                                onClick={async () => {
+                                    try {
+                                        await navigator.clipboard.writeText(
+                                            `${window.location.origin}/api/calendar.ics`,
+                                        );
+                                        toast.info("Subscribe link copied", {
+                                            description:
+                                                "Live-updating subscription is coming soon. For now, use the .ics download above.",
+                                        });
+                                    } catch {
+                                        toast.info("Live subscription coming soon");
+                                    }
+                                }}
+                            >
+                                <Rss className="h-4 w-4 mr-2" /> Copy subscribe link (coming soon)
+                            </DropdownMenuItem>
+                        </DropdownMenuContent>
+                    </DropdownMenu>
                 </div>
             </div>
 
@@ -198,35 +279,62 @@ export default function Events() {
                             <ChevronRight className="h-4 w-4" />
                         </button>
                     </div>
-                    <div className="grid grid-cols-7 gap-2 text-[10px] font-bold uppercase tracking-wider text-muted-foreground mb-2">
+                    <div className="grid grid-cols-7 gap-1 sm:gap-2 text-[10px] font-bold uppercase tracking-wider text-muted-foreground mb-2">
                         {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((d) => (
                             <div key={d} className="text-center">
-                                {d}
+                                {d[0]}<span className="hidden sm:inline">{d.slice(1)}</span>
                             </div>
                         ))}
                     </div>
-                    <div className="grid grid-cols-7 gap-2">
+                    <div className="grid grid-cols-7 gap-1 sm:gap-2">
                         {monthDays.map((d, idx) => {
-                            if (!d) return <div key={idx} className="h-24 sm:h-28 rounded-2xl bg-transparent" />;
+                            if (!d)
+                                return (
+                                    <div
+                                        key={idx}
+                                        className="aspect-square sm:aspect-auto sm:h-28 rounded-xl sm:rounded-2xl bg-transparent"
+                                    />
+                                );
                             const k = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
                             const ev = eventsByDay[k] || [];
-                            const isToday =
-                                d.toDateString() === new Date().toDateString();
+                            const isToday = d.toDateString() === new Date().toDateString();
+                            const isSelected = d.toDateString() === selectedDay;
                             return (
-                                <div
+                                <button
                                     key={idx}
-                                    className={`h-24 sm:h-28 rounded-2xl border p-2 flex flex-col gap-1 overflow-hidden ${
-                                        isToday
+                                    data-testid={`month-day-${d.getDate()}`}
+                                    onClick={() => setSelectedDay(d.toDateString())}
+                                    className={`aspect-square sm:aspect-auto sm:h-28 rounded-xl sm:rounded-2xl border p-1.5 sm:p-2 flex flex-col overflow-hidden text-left transition ${
+                                        isSelected
+                                            ? "border-primary bg-primary/10 ring-2 ring-primary/40"
+                                            : isToday
                                             ? "border-primary bg-primary/5"
-                                            : "border-border bg-background"
+                                            : "border-border bg-background hover:border-primary/40"
                                     }`}
                                 >
-                                    <div className="text-xs font-bold">{d.getDate()}</div>
-                                    <div className="flex flex-col gap-1 overflow-hidden">
+                                    <div className="text-xs sm:text-xs font-bold flex items-center justify-between">
+                                        <span>{d.getDate()}</span>
+                                        {ev.length > 0 && (
+                                            <span className="sm:hidden text-[9px] font-bold text-primary">
+                                                {ev.length}
+                                            </span>
+                                        )}
+                                    </div>
+                                    {/* Mobile: dots. Desktop: chips */}
+                                    <div className="sm:hidden mt-auto flex flex-wrap gap-0.5 justify-center pb-0.5">
+                                        {ev.slice(0, 3).map((e) => (
+                                            <span
+                                                key={e.id}
+                                                className="h-1.5 w-1.5 rounded-full bg-primary"
+                                            />
+                                        ))}
+                                    </div>
+                                    <div className="hidden sm:flex flex-col gap-1 overflow-hidden mt-1">
                                         {ev.slice(0, 2).map((e) => (
                                             <Link
                                                 key={e.id}
                                                 to={`/events/${e.id}`}
+                                                onClick={(evt) => evt.stopPropagation()}
                                                 className="truncate text-[10px] font-semibold px-1.5 py-0.5 rounded-md bg-primary/10 text-primary hover:bg-primary hover:text-primary-foreground"
                                                 title={e.title}
                                             >
@@ -239,12 +347,67 @@ export default function Events() {
                                             </span>
                                         )}
                                     </div>
-                                </div>
+                                </button>
                             );
                         })}
                     </div>
+
+                    {/* Selected-day agenda (great on mobile, useful on desktop too) */}
+                    <div
+                        data-testid="month-day-agenda"
+                        className="mt-5 sm:mt-6 rounded-2xl border border-border bg-background p-4 sm:p-5"
+                    >
+                        <h3 className="font-display font-bold text-base sm:text-lg">
+                            {new Date(selectedDay).toLocaleDateString("en-GB", {
+                                weekday: "long",
+                                day: "numeric",
+                                month: "long",
+                            })}
+                        </h3>
+                        {(() => {
+                            const d = new Date(selectedDay);
+                            const k = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+                            const dayEvents = eventsByDay[k] || [];
+                            if (dayEvents.length === 0) {
+                                return (
+                                    <p className="mt-2 text-sm text-muted-foreground">
+                                        Nothing scheduled on this day.
+                                    </p>
+                                );
+                            }
+                            return (
+                                <ul className="mt-3 space-y-2">
+                                    {dayEvents.map((e) => (
+                                        <li key={e.id}>
+                                            <Link
+                                                to={`/events/${e.id}`}
+                                                data-testid={`agenda-${e.id}`}
+                                                className="flex items-center gap-3 p-3 rounded-2xl border border-border bg-surface hover:border-primary/40 transition"
+                                            >
+                                                <div className="text-xs font-bold text-primary min-w-14">
+                                                    {formatTime(e.start)}
+                                                </div>
+                                                <div className="flex-1 min-w-0">
+                                                    <div className="font-semibold text-sm truncate">
+                                                        {e.title}
+                                                    </div>
+                                                    <div className="text-xs text-muted-foreground truncate">
+                                                        {e.venue}
+                                                    </div>
+                                                </div>
+                                                <CategoryBadge category={e.category} />
+                                            </Link>
+                                        </li>
+                                    ))}
+                                </ul>
+                            );
+                        })()}
+                    </div>
                 </div>
             )}
+            
+            {/* NEWSLETTER */}
+            <NewsletterSection />
         </div>
     );
 }

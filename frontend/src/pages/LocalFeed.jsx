@@ -1,6 +1,9 @@
 import React, { useMemo, useState } from "react";
 import { useApp } from "@/context/AppContext";
+import NewsletterSection from "@/components/NewsletterSection";
 import { FeedCard } from "@/components/Cards";
+import { Info } from "lucide-react";
+import { Link } from "react-router-dom";
 
 const TYPES = [
     "All",
@@ -35,6 +38,24 @@ export default function LocalFeed() {
                 <p className="mt-2 text-muted-foreground text-sm">
                     A live feed of community updates, school news, business offers and charity appeals.
                 </p>
+            </div>
+
+            <div
+                data-testid="feed-source-info"
+                className="mb-6 rounded-2xl border border-primary/20 bg-primary/5 p-4 flex items-start gap-3"
+            >
+                <div className="h-8 w-8 rounded-xl bg-primary/15 text-primary grid place-items-center shrink-0">
+                    <Info className="h-4 w-4" />
+                </div>
+                <div className="text-sm text-foreground/80 leading-relaxed">
+                    <span className="font-semibold text-foreground">Where do posts come from?</span> Local
+                    organisations publish updates via their{" "}
+                    <Link to="/organisation-dashboard" className="text-primary font-semibold underline">
+                        dashboard
+                    </Link>{" "}
+                    — paste a flyer, newsletter or quick note and it appears here as a card. Live pulls
+                    from Facebook &amp; Instagram are coming soon.
+                </div>
             </div>
 
             <div className="flex flex-wrap gap-2 mb-6 -mx-1 px-1 overflow-x-auto scrollbar-thin">
@@ -74,6 +95,9 @@ export default function LocalFeed() {
                     })}
                 </div>
             )}
+
+                    {/* NEWSLETTER */}
+                    <NewsletterSection />
         </div>
     );
 }

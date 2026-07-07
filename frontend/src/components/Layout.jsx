@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import { Link, NavLink, useLocation } from "react-router-dom";
 import { useApp } from "@/context/AppContext";
+import DemoTour from "@/components/DemoTour";
 import {
     Moon,
     Sun,
@@ -8,9 +9,8 @@ import {
     X,
     MapPin,
     Mail,
-    Instagram,
-    Facebook,
     Sparkles,
+    HelpCircle,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -29,6 +29,7 @@ const NAV = [
     { to: "/local-feed", label: "Local Feed" },
     { to: "/volunteering", label: "Volunteering" },
     { to: "/venues", label: "Venues" },
+    { to: "/contact", label: "Contact" },
 ];
 
 export const Brand = ({ size = "default" }) => (
@@ -59,13 +60,16 @@ function Navbar() {
             <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
                 <div className="flex items-center gap-8">
                     <Brand />
+
                     <nav className="hidden lg:flex items-center gap-1">
                         {NAV.map((n) => (
                             <NavLink
                                 key={n.to}
                                 to={n.to}
                                 end={n.to === "/"}
-                                data-testid={`nav-${n.label.toLowerCase().replace(/\s+/g, "-")}`}
+                                data-testid={`nav-${n.label
+                                    .toLowerCase()
+                                    .replace(/\s+/g, "-")}`}
                                 className={({ isActive }) =>
                                     `px-3 py-2 rounded-full text-sm font-medium transition-colors ${
                                         isActive
@@ -88,12 +92,22 @@ function Navbar() {
                     >
                         <Sparkles className="h-4 w-4" /> Add Event
                     </Link>
+
                     <Link
                         to="/add-organisation"
                         data-testid="nav-add-org"
                         className="hidden md:inline-flex items-center px-4 py-2 rounded-full text-sm font-semibold border-2 border-foreground text-foreground hover:bg-foreground hover:text-background transition"
                     >
                         Add Organisation
+                    </Link>
+
+                    <Link
+                        to="/faq"
+                        data-testid="nav-help-centre-button"
+                        className="hidden xl:inline-flex items-center gap-1 px-4 py-2 rounded-full text-sm font-semibold border border-border bg-surface text-foreground hover:bg-muted transition"
+                    >
+                        <HelpCircle className="h-4 w-4" />
+                        Help
                     </Link>
 
                     <DropdownMenu>
@@ -104,36 +118,74 @@ function Navbar() {
                                 size="sm"
                                 className="rounded-full text-xs font-bold uppercase tracking-wider"
                             >
-                                {role === "guest" ? "Login" : role}
+                                {role === "guest"
+                                    ? "Guest"
+                                    : role === "org"
+                                    ? "Organisation"
+                                    : "Site Admin"}
                             </Button>
                         </DropdownMenuTrigger>
+
                         <DropdownMenuContent align="end" className="rounded-2xl">
                             <DropdownMenuLabel>Demo role switcher</DropdownMenuLabel>
                             <DropdownMenuSeparator />
-                            <DropdownMenuItem data-testid="role-guest" onClick={() => setRole("guest")}>
-                                Guest
-                            </DropdownMenuItem>
-                            <DropdownMenuItem data-testid="role-admin" onClick={() => setRole("admin")}>
-                                Site Admin
-                            </DropdownMenuItem>
-                            <DropdownMenuItem data-testid="role-org" onClick={() => setRole("org")}>
-                                Organisation
-                            </DropdownMenuItem>
+
                             <DropdownMenuItem
-                                data-testid="role-contributor"
-                                onClick={() => setRole("contributor")}
+                                data-testid="role-guest"
+                                onClick={() => setRole("guest")}
                             >
-                                Contributor
+                                <div className="flex flex-col gap-0.5">
+                                    <span>Guest</span>
+                                    <span className="text-[11px] text-muted-foreground">
+                                        No login needed; can browse public pages.
+                                    </span>
+                                </div>
                             </DropdownMenuItem>
+
+                            <DropdownMenuItem
+                                data-testid="role-org"
+                                onClick={() => setRole("org")}
+                            >
+                                <div className="flex flex-col gap-0.5">
+                                    <span>Organisation</span>
+                                    <span className="text-[11px] text-muted-foreground">
+                                        Same as Guest plus access to the organisation dashboard.
+                                    </span>
+                                </div>
+                            </DropdownMenuItem>
+
+                            <DropdownMenuItem
+                                data-testid="role-admin"
+                                onClick={() => setRole("admin")}
+                            >
+                                <div className="flex flex-col gap-0.5">
+                                    <span>Site Admin</span>
+                                    <span className="text-[11px] text-muted-foreground">
+                                        Manage subscribers, organisations, notifications and metrics.
+                                    </span>
+                                </div>
+                            </DropdownMenuItem>
+
                             <DropdownMenuSeparator />
+
                             <DropdownMenuItem asChild>
                                 <Link to="/admin" data-testid="goto-admin">
                                     Admin dashboard
                                 </Link>
                             </DropdownMenuItem>
+
                             <DropdownMenuItem asChild>
-                                <Link to="/organisation-dashboard" data-testid="goto-org-dashboard">
+                                <Link
+                                    to="/organisation-dashboard"
+                                    data-testid="goto-org-dashboard"
+                                >
                                     Organisation dashboard
+                                </Link>
+                            </DropdownMenuItem>
+
+                            <DropdownMenuItem asChild>
+                                <Link to="/faq" data-testid="goto-help-centre">
+                                    Help Centre
                                 </Link>
                             </DropdownMenuItem>
                         </DropdownMenuContent>
@@ -158,7 +210,11 @@ function Navbar() {
                         onClick={() => setOpen((o) => !o)}
                         aria-label="Open menu"
                     >
-                        {open ? <X className="h-4 w-4" /> : <Menu className="h-4 w-4" />}
+                        {open ? (
+                            <X className="h-4 w-4" />
+                        ) : (
+                            <Menu className="h-4 w-4" />
+                        )}
                     </button>
                 </div>
             </div>
@@ -174,16 +230,21 @@ function Navbar() {
                             to={n.to}
                             end={n.to === "/"}
                             onClick={() => setOpen(false)}
-                            data-testid={`mobile-nav-${n.label.toLowerCase().replace(/\s+/g, "-")}`}
+                            data-testid={`mobile-nav-${n.label
+                                .toLowerCase()
+                                .replace(/\s+/g, "-")}`}
                             className={({ isActive }) =>
                                 `block px-3 py-2 rounded-xl text-sm font-medium ${
-                                    isActive ? "bg-foreground text-background" : "text-foreground/80"
+                                    isActive
+                                        ? "bg-foreground text-background"
+                                        : "text-foreground/80"
                                 }`
                             }
                         >
                             {n.label}
                         </NavLink>
                     ))}
+
                     <div className="flex gap-2 pt-2">
                         <Link
                             to="/submit-event"
@@ -192,6 +253,7 @@ function Navbar() {
                         >
                             Add Event
                         </Link>
+
                         <Link
                             to="/add-organisation"
                             onClick={() => setOpen(false)}
@@ -207,6 +269,7 @@ function Navbar() {
 }
 
 function Footer() {
+    const { startDemo, role } = useApp();
     return (
         <footer
             data-testid="site-footer"
@@ -215,19 +278,23 @@ function Footer() {
             <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12 grid gap-10 grid-cols-2 md:grid-cols-4">
                 <div className="col-span-2">
                     <Brand size="lg" />
+
                     <p className="mt-4 text-sm text-muted-foreground max-w-sm leading-relaxed">
-                        What's on, what's new, what's next. Blackrod's community hub for events, groups,
-                        clubs, schools, businesses and projects.
+                        What's on, what's new, what's next. Blackrod's community hub
+                        for events, groups, clubs, schools, businesses and projects.
                     </p>
+
                     <div className="flex items-center gap-3 mt-4 text-muted-foreground">
                         <MapPin className="h-4 w-4" />
                         <span className="text-sm">Blackrod, Bolton</span>
                     </div>
                 </div>
+
                 <div>
                     <div className="font-display font-bold text-sm uppercase tracking-wider mb-3">
                         Explore
                     </div>
+
                     <ul className="space-y-2 text-sm text-muted-foreground">
                         <li>
                             <Link to="/events" className="hover:text-foreground">
@@ -254,12 +321,19 @@ function Footer() {
                                 Venues
                             </Link>
                         </li>
+                        <li>
+                            <Link to="/faq" className="hover:text-foreground">
+                                Help Centre
+                            </Link>
+                        </li>
                     </ul>
                 </div>
+
                 <div>
                     <div className="font-display font-bold text-sm uppercase tracking-wider mb-3">
                         Contribute
                     </div>
+
                     <ul className="space-y-2 text-sm text-muted-foreground">
                         <li>
                             <Link to="/submit-event" className="hover:text-foreground">
@@ -267,7 +341,10 @@ function Footer() {
                             </Link>
                         </li>
                         <li>
-                            <Link to="/add-organisation" className="hover:text-foreground">
+                            <Link
+                                to="/add-organisation"
+                                className="hover:text-foreground"
+                            >
                                 Add Organisation
                             </Link>
                         </li>
@@ -277,28 +354,48 @@ function Footer() {
                             </Link>
                         </li>
                         <li>
-                            <a href="mailto:hello@blackrodnow.example" className="hover:text-foreground">
+                            <Link to="/faq" className="hover:text-foreground">
+                                Help & FAQs
+                            </Link>
+                        </li>
+                        <li>
+                            <Link to="/contact" className="hover:text-foreground">
                                 Contact
-                            </a>
+                            </Link>
                         </li>
                     </ul>
                 </div>
             </div>
+
             <div className="border-t border-border">
                 <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-5 flex flex-col sm:flex-row gap-3 items-center justify-between text-xs text-muted-foreground">
-                    <span>© {new Date().getFullYear()} Blackrod Now. A community project.</span>
+                    <span>
+                        © {new Date().getFullYear()} Blackrod Now. A community
+                        project.
+                    </span>
+
                     <div className="flex items-center gap-4">
-                        <a href="#" className="hover:text-foreground">Privacy</a>
-                        <a href="#" className="hover:text-foreground">Terms</a>
-                        <a href="#" className="hover:text-foreground" aria-label="Facebook">
-                            <Facebook className="h-4 w-4" />
+                        <a href="#" className="hover:text-foreground">
+                            Privacy
                         </a>
-                        <a href="#" className="hover:text-foreground" aria-label="Instagram">
-                            <Instagram className="h-4 w-4" />
+
+                        <a href="#" className="hover:text-foreground">
+                            Terms
                         </a>
-                        <a href="mailto:hello@blackrodnow.example" className="hover:text-foreground" aria-label="Email">
-                            <Mail className="h-4 w-4" />
-                        </a>
+
+                        <Link to="/faq" className="hover:text-foreground">
+                            Help
+                        </Link>
+
+                        <Button
+                            data-testid="start-demo-footer"
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => startDemo(role)}
+                        >
+                            Demo
+                        </Button>
+
                     </div>
                 </div>
             </div>
@@ -312,6 +409,7 @@ export default function Layout({ children }) {
             <Navbar />
             <main className="flex-1">{children}</main>
             <Footer />
+            <DemoTour />
         </div>
     );
 }

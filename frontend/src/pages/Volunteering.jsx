@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import { useApp } from "@/context/AppContext";
 import { VolunteerCard } from "@/components/Cards";
+import NewsletterSection from "@/components/NewsletterSection";
 import { Heart, Sparkles } from "lucide-react";
 
 export default function Volunteering() {
@@ -56,6 +57,9 @@ export default function Volunteering() {
                     <VolunteerCard key={v.id} opp={v} orgName={orgName(v.orgSlug)} />
                 ))}
             </div>
+
+            {/* NEWSLETTER */}
+            <NewsletterSection />
         </div>
     );
 }

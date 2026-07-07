@@ -3,19 +3,19 @@
 // Where a field is not on the public record, it's intentionally left blank.
 
 export const CATEGORIES = [
-    "Family",
-    "Youth",
-    "Sport",
-    "School",
-    "Charity",
-    "Business",
-    "Community",
-    "Music",
-    "Food & Drink",
-    "Volunteering",
-    "Faith",
-    "Heritage",
-    "Health & Wellbeing",
+  "Family",
+  "Youth",
+  "Sport",
+  "School",
+  "Charity",
+  "Business",
+  "Community",
+  "Music",
+  "Food & Drink",
+  "Volunteering",
+  "Faith",
+  "Heritage",
+  "Health & Wellbeing",
 ];
 
 export const ORG_TYPES = [
