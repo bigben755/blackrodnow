@@ -467,17 +467,23 @@ class SubscribeReq(BaseModel):
 @api.post("/subscribe")
 async def subscribe(req: SubscribeReq):
     existing = await db.subscribers.find_one({"email": req.email.lower()}, {"_id": 0})
-    if existing and not existing.get("unsubscribed"):
-        # merge follows
+    if existing:
+        # merge follows + always reactivate (never insert a duplicate)
         followed_orgs = list(set((existing.get("followed_orgs") or []) + (req.followed_orgs or [])))
         followed_categories = list(set((existing.get("followed_categories") or []) + (req.followed_categories or [])))
         await db.subscribers.update_one(
             {"email": req.email.lower()},
-            {"$set": {"followed_orgs": followed_orgs, "followed_categories": followed_categories, "unsubscribed": False}},
+            {"$set": {
+                "followed_orgs": followed_orgs,
+                "followed_categories": followed_categories,
+                "unsubscribed": False,
+                "digest": True,
+            }},
         )
         return {
             "ok": True,
             "already_subscribed": True,
+            "reactivated": bool(existing.get("unsubscribed")),
             "unsub_token": existing["unsub_token"],
             "pref_token": existing["pref_token"],
         }
@@ -901,7 +907,10 @@ async def broadcast(req: BroadcastReq):
         unsub = f"{PUBLIC_URL}/unsubscribe/{sub['unsub_token']}"
         html = req.html + f"<hr style='margin:20px 0;border:none;border-top:1px solid #E2E8F0'/><p style='color:#94A3B8;font-size:12px;text-align:center'>Blackrod Now · <a href='{unsub}' style='color:#94A3B8'>Unsubscribe</a></p>"
         result = await asyncio.to_thread(resend_send, sub["email"], req.subject, html)
-        (sent := sent + 1) if result.get("ok") else (failed := failed + 1)
+        if result.get("ok"):
+            sent += 1
+        else:
+            failed += 1
     return {"ok": True, "sent": sent, "failed": failed, "mocked": not RESEND_API_KEY}
 
 

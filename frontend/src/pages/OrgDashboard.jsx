@@ -20,7 +20,7 @@ Also, Youth Football Open Day - Sunday 15 June, 10am-12:30pm at Aspull Common. A
 Community Clean-Up: Village Green, Saturday 21 June, 10am-12pm. Bags & brew provided.`;
 
 export default function OrgDashboard() {
-    const { orgs, events, addEvent, addFeedPost, activeOrgSlug, setActiveOrgSlug } = useApp();
+    const { orgs, events, addEvent, addFeedPost, activeOrgSlug, setActiveOrgSlug, refresh } = useApp();
 
     const [selectedOrgSlug, setSelectedOrgSlug] = useState(activeOrgSlug || orgs[0]?.slug || "");
     const [text, setText] = useState("");
@@ -298,7 +298,7 @@ export default function OrgDashboard() {
                 fromEmail={org?.email}
                 fromName={org?.name}
             />
-            <FacebookDialog open={fbOpen} onClose={() => setFbOpen(false)} org={org} slug={selectedOrgSlug} />
+            <FacebookDialog open={fbOpen} onClose={() => setFbOpen(false)} org={org} slug={selectedOrgSlug} refresh={refresh} />
         </div>
     );
 }
@@ -500,6 +500,7 @@ function FacebookDialog({ open, onClose, org, slug }) {
         try {
             await api.fbConnect(slug, { page_id: pageName.toLowerCase().replace(/\s+/g, "-"), page_name: pageName });
             toast.success(`${pageName} connected (mocked). Once your Meta app is approved, real posting will switch on automatically.`);
+            await refresh?.();
             onClose();
         } catch { toast.error("Failed"); }
         finally { setBusy(false); }
@@ -507,6 +508,7 @@ function FacebookDialog({ open, onClose, org, slug }) {
     const disconnect = async () => {
         await api.fbDisconnect(slug);
         toast.info("Disconnected");
+        await refresh?.();
         onClose();
     };
     return (
