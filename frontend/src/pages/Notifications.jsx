@@ -5,7 +5,7 @@ import { Bell, Mail, Calendar, Smartphone, Heart } from "lucide-react";
 import { toast } from "sonner";
 
 export default function Notifications() {
-    const { notifPrefs, setNotifPrefs, orgs, follows, toggleFollow } = useApp();
+    const { notifPrefs, setNotifPrefs, orgs, follows, toggleFollowOrg, toggleFollowCategory } = useApp();
 
     const setPref = (k) => setNotifPrefs((p) => ({ ...p, [k]: !p[k] }));
 
@@ -70,22 +70,22 @@ export default function Notifications() {
 
             <section className="rounded-3xl border border-border bg-surface p-6 sm:p-8 mb-6">
                 <h2 className="font-display font-bold text-xl mb-3">Organisations you follow</h2>
-                {follows.length === 0 ? (
+                {follows.orgs.length === 0 ? (
                     <p className="text-sm text-muted-foreground">
                         You're not following anyone yet. Visit an organisation's page and tap{" "}
                         <Heart className="inline h-3.5 w-3.5" /> Follow.
                     </p>
                 ) : (
                     <div className="flex flex-wrap gap-2">
-                        {follows.map((slug) => {
+                        {follows.orgs.map((slug) => {
                             const o = orgs.find((x) => x.slug === slug);
                             if (!o) return null;
                             return (
                                 <button
                                     key={slug}
                                     data-testid={`unfollow-${slug}`}
-                                    onClick={() => {
-                                        toggleFollow(slug);
+                                    onClick={async () => {
+                                        await toggleFollowOrg(slug);
                                         toast.info(`Unfollowed ${o.name}`);
                                     }}
                                     className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-secondary text-secondary-foreground font-semibold text-xs"
@@ -101,16 +101,26 @@ export default function Notifications() {
             <section className="rounded-3xl border border-border bg-surface p-6 sm:p-8">
                 <h2 className="font-display font-bold text-xl mb-3">Follow categories</h2>
                 <div className="flex flex-wrap gap-2">
-                    {CATEGORIES.map((c) => (
-                        <button
-                            key={c}
-                            data-testid={`follow-cat-${c}`}
-                            onClick={() => toast.success(`Following ${c}`)}
-                            className="px-3 py-1.5 rounded-full text-xs font-bold tracking-wider uppercase border border-border hover:bg-muted"
-                        >
-                            {c}
-                        </button>
-                    ))}
+                    {CATEGORIES.map((c) => {
+                        const active = follows.categories.includes(c);
+                        return (
+                            <button
+                                key={c}
+                                data-testid={`follow-cat-${c}`}
+                                onClick={async () => {
+                                    await toggleFollowCategory(c);
+                                    toast.success(active ? `Unfollowed ${c}` : `Following ${c}`);
+                                }}
+                                className={`px-3 py-1.5 rounded-full text-xs font-bold tracking-wider uppercase transition ${
+                                    active
+                                        ? "bg-secondary text-secondary-foreground"
+                                        : "border border-border hover:bg-muted"
+                                }`}
+                            >
+                                {c}
+                            </button>
+                        );
+                    })}
                 </div>
             </section>
         </div>

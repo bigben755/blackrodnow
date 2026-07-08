@@ -22,7 +22,7 @@ import { toast } from "sonner";
 
 export default function OrganisationDetail() {
     const { slug } = useParams();
-    const { orgs, events, feed, volunteerOpps, follows, toggleFollow } = useApp();
+    const { orgs, events, feed, volunteerOpps, follows, toggleFollowOrg } = useApp();
 
     const org = orgs.find((o) => o.slug === slug);
     if (!org) {
@@ -36,14 +36,14 @@ export default function OrganisationDetail() {
         );
     }
 
-    const isFollowing = follows.includes(org.slug);
+    const isFollowing = follows.orgs.includes(org.slug);
     const orgEvents = eventsByOrg(events, org.slug);
     const orgFeed = feed.filter((p) => p.orgSlug === org.slug);
     const orgVols = volunteerOpps.filter((v) => v.orgSlug === org.slug);
 
-    const handleFollow = () => {
-        toggleFollow(org.slug);
-        toast.success(!isFollowing ? `Now following ${org.name}` : `Unfollowed ${org.name}`);
+    const handleFollow = async () => {
+        const nowFollowing = await toggleFollowOrg(org.slug);
+        toast.success(nowFollowing ? `Now following ${org.name}` : `Unfollowed ${org.name}`);
     };
 
     const brand = org.brandColor || "#0052FF";

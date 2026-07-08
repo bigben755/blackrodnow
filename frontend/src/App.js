@@ -21,6 +21,9 @@ import Volunteering from "@/pages/Volunteering";
 import Notifications from "@/pages/Notifications";
 import FAQ from "@/pages/FAQ";
 import Contact from "@/pages/Contact";
+import Preferences from "@/pages/Preferences";
+import Unsubscribe from "@/pages/Unsubscribe";
+import OrgProfileEdit from "@/pages/OrgProfileEdit";
 
 export default function App() {
     return (
@@ -54,6 +57,9 @@ export default function App() {
                         <Route path="/faq" element={<FAQ />} />
                         <Route path="/help" element={<FAQ />} />
                         <Route path="/contact" element={<Contact />} />
+                        <Route path="/preferences/:token" element={<Preferences />} />
+                        <Route path="/unsubscribe/:token" element={<Unsubscribe />} />
+                        <Route path="/edit-organisation/:slug" element={<OrgProfileEdit />} />
                     </Routes>
                 </Layout>
 

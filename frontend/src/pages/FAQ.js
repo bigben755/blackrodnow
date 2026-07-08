@@ -1,749 +1,217 @@
 import React, { useMemo, useState } from "react";
-import {
-    Search,
-    HelpCircle,
-    Users,
-    CalendarDays,
-    Building2,
-    Share2,
-    HeartHandshake,
-    BriefcaseBusiness,
-    ChevronDown,
-    UserPlus,
-    Mail,
-} from "lucide-react";
-import NewsletterSection from "@/components/NewsletterSection";
+import { Link } from "react-router-dom";
+import { Search, ChevronDown, HelpCircle, Mail, CalendarDays, Heart, Bell, Facebook } from "lucide-react";
 
-const userGroups = [
+const FAQS = [
     {
-        id: "all",
-        label: "All users",
-        icon: HelpCircle,
+        cat: "Using Blackrod Now",
+        q: "Do I need an account to use Blackrod Now?",
+        a: "No — never. You can browse events, follow organisations, subscribe to the newsletter, and personalise everything without creating an account. Your preferences are stored on your device (and against your email if you subscribe).",
     },
     {
-        id: "residents",
-        label: "Residents",
-        icon: Users,
+        cat: "Using Blackrod Now",
+        q: "How do I find what's on this week?",
+        a: "The homepage shows 'This week in Blackrod' at the top. Or hit Events for the full calendar — list view for scanning, month view for planning.",
     },
     {
-        id: "organisers",
-        label: "Event organisers",
-        icon: CalendarDays,
+        cat: "Using Blackrod Now",
+        q: "How do I add events to my own calendar?",
+        a: "Every event page has 'Add to Google / Apple / Outlook Calendar' buttons. For the whole calendar, tap 'Sync calendar' on the Events page and download the .ics file — imports into any calendar app.",
     },
     {
-        id: "organisations",
-        label: "Community organisations",
-        icon: Building2,
+        cat: "Following organisations",
+        q: "How do I follow an organisation or a topic?",
+        a: "On any organisation's page, tap the ♥ Follow button. To follow topics like 'Youth' or 'Music', head to Notifications. No login required — your follows are saved on this device.",
     },
     {
-        id: "facebook",
-        label: "Facebook Page admins",
-        icon: Share2,
+        cat: "Following organisations",
+        q: "Will my follows sync across my phone and laptop?",
+        a: "Not automatically without an account, but when you subscribe to the newsletter with your email, your follows travel with your email — so the same personalised digest reaches you wherever.",
     },
     {
-        id: "volunteers",
-        label: "Volunteers",
-        icon: HeartHandshake,
+        cat: "Newsletter",
+        q: "What's in the weekly newsletter?",
+        a: "A short round-up delivered Friday morning. If you follow specific organisations or topics, we prioritise events and updates from those. Otherwise you get a general Blackrod-wide digest.",
     },
     {
-        id: "businesses",
-        label: "Local business support",
-        icon: BriefcaseBusiness,
+        cat: "Newsletter",
+        q: "How do I unsubscribe?",
+        a: "Every email has a one-click unsubscribe link at the bottom. You can also visit your Preferences link (in any email) and turn the digest off there — or delete your subscription completely.",
+    },
+    {
+        cat: "Newsletter",
+        q: "How do I change which orgs I get updates about?",
+        a: "Open the 'Personalise' link in any Blackrod Now email — you'll land on your preferences page where you can add/remove followed organisations and categories any time.",
+    },
+    {
+        cat: "Submitting events",
+        q: "Can anyone submit an event?",
+        a: "Yes. Hit 'Submit an Event' in the top nav or footer, fill in the form and send it. Admins review and publish it — usually within 24 hours. No login required.",
+    },
+    {
+        cat: "Submitting events",
+        q: "Why are submitted events reviewed?",
+        a: "A quick moderation step keeps the site accurate, safe and free of spam. Trusted, established organisations may be given direct-publish access on request.",
+    },
+    {
+        cat: "Organisations",
+        q: "How does my group get listed?",
+        a: "Tap 'Add Your Organisation' and fill in the short form. An admin reviews it (usually same day) and it appears in the directory.",
+    },
+    {
+        cat: "Organisations",
+        q: "I run an organisation. How do I edit my listing?",
+        a: "Go to the Organisation dashboard from the top-right menu, pick your group, and tap 'Profile & branding'. Update your logo, cover, colour, contacts and socials — changes go live immediately.",
+    },
+    {
+        cat: "Organisations",
+        q: "I'm not great with tech — can someone help me?",
+        a: "Yes. Blackrod Now super admins can update any organisation's listing on your behalf. Contact us via the 'Contact admin' button in your dashboard, or the Contact page.",
+    },
+    {
+        cat: "Organisations",
+        q: "How does the Facebook sync work?",
+        a: "Connect your Facebook page once from your dashboard. Every event you publish on Blackrod Now also posts to your Facebook page automatically — and your Facebook posts flow back here as feed updates. Setup is currently in preparation with Meta; full switch-on happens automatically once approved.",
+    },
+    {
+        cat: "Organisations",
+        q: "What is 'Upload Once, Publish Everywhere'?",
+        a: "Our AI tool. Paste any flyer, newsletter or update into your dashboard and it extracts an event listing, social caption, notification text and update post — in one go. If your paste has multiple events, we split them out one by one.",
+    },
+    {
+        cat: "Organisations",
+        q: "What are the Documents on my profile for?",
+        a: "A public shelf for PDFs, Word docs and images your community actually asks for — membership forms, kit lists, safeguarding policies, annual reports, meeting minutes. Residents click to download.",
+    },
+    {
+        cat: "Volunteering",
+        q: "How do I sign up to volunteer?",
+        a: "Head to Volunteering. Each opportunity has a contact button — tap it and message the organisation directly. Great for DofE Skills or Volunteering sections.",
+    },
+    {
+        cat: "Volunteering",
+        q: "Is there anything for young people?",
+        a: "Yes. Look for Youth, DofE, and Under-18 opportunities on the Volunteering page. Air Cadets, Scouts, Girlguiding, junior sport clubs and the food pantry all welcome young volunteers.",
+    },
+    {
+        cat: "Privacy",
+        q: "What data do you collect?",
+        a: "Your email if you subscribe to the newsletter; anonymous device follows on your browser; whatever you type into forms. No trackers, no adverts. See our Privacy page.",
     },
 ];
 
-const faqItems = [
-    {
-        id: "what-is-blackrod-now",
-        group: "residents",
-        category: "Getting started",
-        question: "What is Blackrod Now?",
-        answer:
-            "Blackrod Now is a local community events and information hub designed to help residents find what is happening in Blackrod, South Horwich and the surrounding area. It brings together events, groups, activities, community notices and local organisation updates in one place.",
-    },
-    {
-        id: "who-can-use",
-        group: "all",
-        category: "Getting started",
-        question: "Who can use Blackrod Now?",
-        answer:
-            "Residents, families, community groups, charities, churches, sports clubs, schools, volunteers, local businesses and event organisers can all use Blackrod Now. Residents can browse events, while approved organisers can submit and manage event listings.",
-    },
-    {
-        id: "create-account",
-        group: "all",
-        category: "Account setup",
-        question: "How do I create an account?",
-        answer:
-            "Choose Register or Create Account, enter your name and email address, create a secure password, then confirm your email if verification is required. Once your account is active, you can save events, submit updates or request access to manage an organisation.",
-        steps: [
-            "Select Register or Create Account.",
-            "Enter your name, email address and password.",
-            "Confirm your email address if prompted.",
-            "Choose whether you are a resident, organiser, volunteer or organisation admin.",
-            "Complete your profile so the team can verify your access where needed.",
-        ],
-    },
-    {
-        id: "forgot-password",
-        group: "all",
-        category: "Account setup",
-        question: "What if I forget my password?",
-        answer:
-            "Use the forgotten password link on the sign-in page. You will receive a reset link by email. For security, reset links may expire after a short period.",
-    },
-    {
-        id: "resident-account",
-        group: "residents",
-        category: "Residents",
-        question: "Do residents need an account to view events?",
-        answer:
-            "No. Public event listings should be visible without an account. Creating an account can allow residents to save events, receive reminders, follow organisations and subscribe to event updates.",
-    },
-    {
-        id: "find-events",
-        group: "residents",
-        category: "Residents",
-        question: "How do I find events near me?",
-        answer:
-            "Use the main events page and filter by date, category, location, cost or suitability. You can look for family events, free events, markets, festivals, sports activities, church events, youth activities and regular community groups.",
-    },
-    {
-        id: "save-event",
-        group: "residents",
-        category: "Residents",
-        question: "Can I save an event or add it to my calendar?",
-        answer:
-            "Yes. Event pages can include buttons to add the event to Google Calendar, Outlook or download an .ics calendar file for Apple Calendar and other calendar apps.",
-    },
-    {
-        id: "submit-event",
-        group: "organisers",
-        category: "Posting events",
-        question: "How do I post an event?",
-        answer:
-            "Sign in, choose Submit Event, complete the event form and send it for review. You should include the event name, organiser, date, time, venue, description, category, cost, booking link, contact details and an image or poster if available.",
-        steps: [
-            "Sign in to your account.",
-            "Select Submit Event.",
-            "Add the event title, date, time and venue.",
-            "Add a clear description and choose a category.",
-            "Add booking details, cost and contact information.",
-            "Upload a poster or event image if you have one.",
-            "Submit the event for review or publish if your organisation has approval rights.",
-        ],
-    },
-    {
-        id: "event-info-needed",
-        group: "organisers",
-        category: "Posting events",
-        question: "What information should I include in an event listing?",
-        answer:
-            "A good event listing should include what the event is, who it is for, when it starts and ends, where it takes place, whether it is free or paid, how people book, accessibility information and who to contact with questions.",
-    },
-    {
-        id: "event-review",
-        group: "organisers",
-        category: "Posting events",
-        question: "Will my event be reviewed before it goes live?",
-        answer:
-            "Some accounts may be able to publish directly, but new organisers and unverified organisations may have events reviewed first. This helps keep the site accurate, safe and relevant to the local community.",
-    },
-    {
-        id: "edit-event",
-        group: "organisers",
-        category: "Managing events",
-        question: "Can I edit an event after posting it?",
-        answer:
-            "Yes, if you created the event or manage the organisation linked to it. You can update dates, times, descriptions, images, booking links, contact details and cancellation notices.",
-    },
-    {
-        id: "cancel-event",
-        group: "organisers",
-        category: "Managing events",
-        question: "What should I do if an event is cancelled?",
-        answer:
-            "Update the event as soon as possible and mark it as cancelled. The event page should clearly show the cancellation so residents do not attend unnecessarily. You can also use the share tools to post an update on Facebook or WhatsApp.",
-    },
-    {
-        id: "recurring-events",
-        group: "organisers",
-        category: "Managing events",
-        question: "Can I add recurring events?",
-        answer:
-            "Yes. Recurring events are useful for weekly groups, monthly clubs, term-time activities, church groups, youth sessions and regular community meetups. You should include the recurrence pattern, such as every Monday, monthly, term-time only or last Saturday of each month.",
-    },
-    {
-        id: "claim-organisation",
-        group: "organisations",
-        category: "Organisation setup",
-        question: "How does an organisation claim its page?",
-        answer:
-            "If your organisation already appears on Blackrod Now, choose Claim this organisation and complete the verification form. You may need to confirm your role, provide an official email address, link to your website or Facebook Page, or provide another reasonable proof that you represent the organisation.",
-        steps: [
-            "Open your organisation page.",
-            "Select Claim this organisation.",
-            "Confirm your name, role and contact details.",
-            "Provide a website, official email address or Facebook Page link.",
-            "Wait for approval.",
-            "Once approved, you can manage organisation details and events.",
-        ],
-    },
-    {
-        id: "organisation-profile",
-        group: "organisations",
-        category: "Organisation setup",
-        question: "What should an organisation profile include?",
-        answer:
-            "An organisation profile should include the organisation name, description, logo, contact email, phone number if public, venue or base, website, Facebook Page, regular activities, accessibility information and upcoming events.",
-    },
-    {
-        id: "multiple-admins",
-        group: "organisations",
-        category: "Organisation setup",
-        question: "Can more than one person manage an organisation?",
-        answer:
-            "Yes. Organisations should ideally have more than one trusted admin so events can still be updated if one person is unavailable. Admin access should only be given to people authorised to act for the organisation.",
-    },
-    {
-        id: "facebook-connect",
-        group: "facebook",
-        category: "Facebook integration",
-        question: "Can I connect my organisation’s Facebook Page?",
-        answer:
-            "The site can include a guided Connect with your Facebook Page process. Direct Facebook posting and automatic imports require the organisation’s Page admin to authorise the connection and grant the required Meta permissions. Until full integration is enabled, the site can still generate Facebook-ready posts and share links.",
-    },
-    {
-        id: "facebook-admin",
-        group: "facebook",
-        category: "Facebook integration",
-        question: "Do I need to be a Facebook Page admin?",
-        answer:
-            "Yes. Only someone with the correct Facebook Page admin access should connect a Page. This protects organisations and prevents unauthorised posting or importing.",
-    },
-    {
-        id: "facebook-post-event",
-        group: "facebook",
-        category: "Facebook integration",
-        question: "Can Blackrod Now post directly to our Facebook Page?",
-        answer:
-            "This can be added later through Meta’s Page permissions and app approval process. The recommended first version is a safer share toolkit: create the event on Blackrod Now, copy the Facebook-ready post, then paste or share it to your Facebook Page.",
-    },
-    {
-        id: "facebook-import",
-        group: "facebook",
-        category: "Facebook integration",
-        question: "Can a Facebook post automatically create an event on Blackrod Now?",
-        answer:
-            "This is possible for connected Facebook Pages, but the safest approach is to create draft events first. The system can detect likely event posts, extract details and ask the organisation to review and approve the listing before it appears publicly.",
-    },
-    {
-        id: "facebook-copy-post",
-        group: "facebook",
-        category: "Facebook integration",
-        question: "What is the Facebook-ready post button?",
-        answer:
-            "The Facebook-ready post button creates a formatted post using the event title, date, time, venue, organiser, description and event link. It can be copied and pasted into a Facebook Page, local group, WhatsApp community or newsletter.",
-    },
-    {
-        id: "facebook-permissions",
-        group: "facebook",
-        category: "Facebook integration",
-        question: "What permissions would Facebook connection need?",
-        answer:
-            "Depending on the features enabled, Facebook connection may require permissions to show the Pages a user manages, read Page engagement, read Page posts or publish Page posts. Organisations should only approve permissions they understand and need.",
-    },
-    {
-        id: "volunteer-register",
-        group: "volunteers",
-        category: "Volunteers",
-        question: "How do I register as a volunteer?",
-        answer:
-            "Create an account and choose Volunteer as your user type. You may then be able to follow organisations, respond to volunteer opportunities or receive updates when local groups need help.",
-    },
-    {
-        id: "volunteer-events",
-        group: "volunteers",
-        category: "Volunteers",
-        question: "Can organisations post volunteer opportunities?",
-        answer:
-            "Yes. Volunteer opportunities can be listed as events or community notices. They should include the role, date or ongoing commitment, location, age suitability, safeguarding requirements and who to contact.",
-    },
-    {
-        id: "business-support",
-        group: "businesses",
-        category: "Local business support",
-        question: "How can local businesses support events?",
-        answer:
-            "Local businesses can support events through raffle prizes, venue support, equipment, promotion or volunteering. Business support should be clearly labelled so residents understand whether a listing is community-focused rather than a commercial advertisement.",
-    },
-    {
-        id: "business-post-events",
-        group: "businesses",
-        category: "Local business support",
-        question: "Can businesses post events?",
-        answer:
-            "Yes, where the event is relevant to the local community. Examples might include charity fundraisers, open days, workshops, family activities, community markets or business-supported local events. Pure commercial advertising may be handled differently from community listings.",
-    },
-    {
-        id: "moderation",
-        group: "all",
-        category: "Safety & moderation",
-        question: "Why are some events moderated?",
-        answer:
-            "Moderation helps keep the site accurate, safe and useful. It reduces spam, duplicate listings, incorrect information, unauthorised claims and content that is not relevant to Blackrod or the surrounding community.",
-    },
-    {
-        id: "report-problem",
-        group: "all",
-        category: "Safety & moderation",
-        question: "How do I report incorrect information?",
-        answer:
-            "Use the Suggest an update button on the event or organisation page. Include what needs changing and, where possible, provide a source such as an organiser message, poster, official website or Facebook Page link.",
-    },
-    {
-        id: "data-privacy",
-        group: "all",
-        category: "Safety & moderation",
-        question: "What personal information is shown publicly?",
-        answer:
-            "Public pages should show only the information needed to promote the event or organisation. Personal contact details should only be shown where the organiser has chosen to publish them. Organisation emails are usually better than personal emails.",
-    },
-    {
-        id: "support",
-        group: "all",
-        category: "Support",
-        question: "How do I get help?",
-        answer:
-            "Use the contact or support option on the site. When asking for help, include your name, organisation if relevant, the event or page affected, and a clear description of the issue.",
-    },
-];
-
-const categoryOrder = [
-    "Getting started",
-    "Account setup",
-    "Residents",
-    "Posting events",
-    "Managing events",
-    "Organisation setup",
-    "Facebook integration",
-    "Volunteers",
-    "Local business support",
-    "Safety & moderation",
-    "Support",
-];
+const CATEGORIES = Array.from(new Set(FAQS.map((f) => f.cat)));
 
 export default function FAQ() {
-    const [selectedGroup, setSelectedGroup] = useState("all");
-    const [searchTerm, setSearchTerm] = useState("");
-    const [openItems, setOpenItems] = useState(["what-is-blackrod-now"]);
+    const [q, setQ] = useState("");
+    const [cat, setCat] = useState("All");
 
-    const filteredFaqs = useMemo(() => {
-        const query = searchTerm.trim().toLowerCase();
-
-        return faqItems.filter((item) => {
-            const matchesGroup =
-                selectedGroup === "all" ||
-                item.group === selectedGroup ||
-                item.group === "all";
-
-            const matchesSearch =
-                !query ||
-                item.question.toLowerCase().includes(query) ||
-                item.answer.toLowerCase().includes(query) ||
-                item.category.toLowerCase().includes(query);
-
-            return matchesGroup && matchesSearch;
-        });
-    }, [selectedGroup, searchTerm]);
-
-    const groupedFaqs = useMemo(() => {
-        return filteredFaqs.reduce((acc, item) => {
-            if (!acc[item.category]) {
-                acc[item.category] = [];
-            }
-
-            acc[item.category].push(item);
-            return acc;
-        }, {});
-    }, [filteredFaqs]);
-
-    const selectedGroupLabel =
-        userGroups.find((group) => group.id === selectedGroup)?.label || "All users";
-
-    const toggleItem = (id) => {
-        setOpenItems((current) =>
-            current.includes(id)
-                ? current.filter((itemId) => itemId !== id)
-                : [...current, id]
-        );
-    };
-
-    const clearFilters = () => {
-        setSelectedGroup("all");
-        setSearchTerm("");
-    };
+    const filtered = useMemo(
+        () =>
+            FAQS.filter(
+                (f) =>
+                    (cat === "All" || f.cat === cat) &&
+                    (!q || `${f.q} ${f.a}`.toLowerCase().includes(q.toLowerCase())),
+            ),
+        [q, cat],
+    );
 
     return (
-        <main className="min-h-screen bg-background">
-            <section className="relative overflow-hidden border-b border-border bg-surface">
-                <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_left,_rgba(0,0,0,0.08),_transparent_35%)] pointer-events-none" />
+        <div data-testid="faq-page" className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
+            <div className="mb-8">
+                <span className="text-xs font-bold uppercase tracking-[0.2em] text-primary">Help</span>
+                <h1 className="font-display font-black text-4xl sm:text-5xl tracking-tight mt-2">Frequently asked</h1>
+                <p className="mt-2 text-muted-foreground text-sm">
+                    Everything you need to know about using Blackrod Now — no account needed.
+                </p>
+            </div>
 
-                <div className="relative max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-14 sm:py-20">
-                    <div className="max-w-4xl">
-                        <p className="inline-flex items-center gap-2 rounded-full bg-primary/10 px-4 py-2 text-xs font-bold uppercase tracking-wider text-primary">
-                            <HelpCircle className="h-4 w-4" />
-                            Help Centre
-                        </p>
+            {/* Quick jump cards */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-8">
+                <QuickCard icon={CalendarDays} label="Events" href="/events" />
+                <QuickCard icon={Heart} label="Following" href="/notifications" />
+                <QuickCard icon={Bell} label="Newsletter" href="/#newsletter" />
+                <QuickCard icon={Facebook} label="Facebook" href="#" />
+            </div>
 
-                        <h1 className="mt-6 font-display text-4xl sm:text-6xl font-black tracking-tight leading-tight">
-                            Blackrod Now FAQs
-                        </h1>
-
-                        <p className="mt-5 max-w-3xl text-base sm:text-lg text-muted-foreground leading-relaxed">
-                            Find help with setting up your account, registering your
-                            organisation, posting events, managing listings, sharing to
-                            Facebook, connecting a Facebook Page and using Blackrod Now as
-                            a community events hub.
-                        </p>
-
-                        <div className="mt-8 grid gap-3 sm:grid-cols-3">
-                            <HeroStat
-                                icon={UserPlus}
-                                label="Account setup"
-                                text="Register as a resident, organiser or organisation admin."
-                            />
-                            <HeroStat
-                                icon={CalendarDays}
-                                label="Event posting"
-                                text="Submit, edit, share and manage local events."
-                            />
-                            <HeroStat
-                                icon={Share2}
-                                label="Facebook support"
-                                text="Prepare for Page connection, sharing and event imports."
-                            />
-                        </div>
-                    </div>
+            <div className="grid md:grid-cols-12 gap-3 mb-6">
+                <div className="md:col-span-8 relative">
+                    <Search className="absolute left-4 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                    <input
+                        data-testid="faq-search"
+                        placeholder="Search the FAQ…"
+                        value={q}
+                        onChange={(e) => setQ(e.target.value)}
+                        className="w-full pl-10 pr-4 py-3 rounded-full border border-border bg-surface text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+                    />
                 </div>
-            </section>
+                <select
+                    data-testid="faq-category"
+                    value={cat}
+                    onChange={(e) => setCat(e.target.value)}
+                    className="md:col-span-4 px-4 py-3 rounded-full border border-border bg-surface text-sm"
+                >
+                    <option value="All">All topics</option>
+                    {CATEGORIES.map((c) => <option key={c}>{c}</option>)}
+                </select>
+            </div>
 
-            <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-                <div className="grid gap-6 lg:grid-cols-[320px_1fr]">
-                    <aside className="lg:sticky lg:top-6 h-fit space-y-5">
-                        <div className="rounded-3xl border border-border bg-surface p-5">
-                            <h2 className="font-display font-bold text-xl">
-                                Filter by user group
-                            </h2>
-
-                            <p className="mt-2 text-sm text-muted-foreground leading-relaxed">
-                                Choose the type of user you are to see the most relevant
-                                help.
-                            </p>
-
-                            <div className="mt-5 space-y-2">
-                                {userGroups.map((group) => {
-                                    const Icon = group.icon;
-                                    const active = selectedGroup === group.id;
-
-                                    return (
-                                        <button
-                                            key={group.id}
-                                            type="button"
-                                            onClick={() => setSelectedGroup(group.id)}
-                                            className={`w-full flex items-center gap-3 rounded-2xl px-4 py-3 text-left text-sm font-semibold transition ${
-                                                active
-                                                    ? "bg-primary text-primary-foreground"
-                                                    : "bg-background hover:bg-muted text-foreground"
-                                            }`}
-                                        >
-                                            <Icon className="h-4 w-4 shrink-0" />
-                                            <span>{group.label}</span>
-                                        </button>
-                                    );
-                                })}
-                            </div>
-                        </div>
-
-                        <div className="rounded-3xl border border-border bg-surface p-5">
-                            <h2 className="font-display font-bold text-xl">
-                                Popular actions
-                            </h2>
-
-                            <div className="mt-4 space-y-3">
-                                <QuickAction
-                                    icon={UserPlus}
-                                    title="Create an account"
-                                    text="Register and choose your user type."
-                                />
-                                <QuickAction
-                                    icon={CalendarDays}
-                                    title="Post an event"
-                                    text="Submit an event for the community calendar."
-                                />
-                                <QuickAction
-                                    icon={Building2}
-                                    title="Claim an organisation"
-                                    text="Request admin access for your group or venue."
-                                />
-                                <QuickAction
-                                    icon={Share2}
-                                    title="Connect Facebook"
-                                    text="Prepare your Page for guided connection."
-                                />
-                            </div>
-                        </div>
-
-                        <div className="rounded-3xl border border-primary/20 bg-primary/5 p-5">
-                            <div className="flex items-start gap-3">
-                                <div className="grid h-10 w-10 shrink-0 place-items-center rounded-2xl bg-primary text-primary-foreground">
-                                    <Mail className="h-4 w-4" />
-                                </div>
-
-                                <div>
-                                    <h2 className="font-display font-bold text-lg">
-                                        Still need help?
-                                    </h2>
-                                    <p className="mt-2 text-sm text-muted-foreground leading-relaxed">
-                                        Contact the Blackrod Now team with your name,
-                                        organisation, event link and a short description of
-                                        what you need.
-                                    </p>
-                                </div>
-                            </div>
-                        </div>
-                    </aside>
-
-                    <div>
-                        <div className="rounded-3xl border border-border bg-surface p-5 sm:p-6">
-                            <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-                                <div>
-                                    <p className="text-xs font-bold uppercase tracking-wider text-primary">
-                                        Showing help for
-                                    </p>
-                                    <h2 className="mt-1 font-display font-black text-2xl">
-                                        {selectedGroupLabel}
-                                    </h2>
-                                </div>
-
-                                <button
-                                    type="button"
-                                    onClick={clearFilters}
-                                    className="inline-flex items-center justify-center rounded-full border border-border px-4 py-2 text-sm font-semibold hover:bg-muted"
-                                >
-                                    Clear filters
-                                </button>
-                            </div>
-
-                            <div className="relative mt-5">
-                                <Search className="absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-
-                                <input
-                                    type="search"
-                                    value={searchTerm}
-                                    onChange={(e) => setSearchTerm(e.target.value)}
-                                    placeholder="Search account setup, events, Facebook, organisations..."
-                                    className="w-full rounded-2xl border border-border bg-background py-3 pl-11 pr-4 text-sm outline-none focus:border-primary"
-                                />
-                            </div>
-                        </div>
-
-                        <div className="mt-6 space-y-6">
-                            {filteredFaqs.length === 0 && (
-                                <div className="rounded-3xl border border-border bg-surface p-8 text-center">
-                                    <h3 className="font-display font-bold text-2xl">
-                                        No FAQs found
-                                    </h3>
-                                    <p className="mt-2 text-muted-foreground">
-                                        Try a different search term or clear the filters.
-                                    </p>
-                                </div>
-                            )}
-
-                            {categoryOrder
-                                .filter((category) => groupedFaqs[category]?.length)
-                                .map((category) => (
-                                    <section
-                                        key={category}
-                                        className="rounded-3xl border border-border bg-surface p-5 sm:p-6"
-                                    >
-                                        <div className="flex items-center gap-3">
-                                            <div className="grid h-10 w-10 place-items-center rounded-2xl bg-primary/10 text-primary">
-                                                <HelpCircle className="h-4 w-4" />
-                                            </div>
-
-                                            <div>
-                                                <p className="text-xs font-bold uppercase tracking-wider text-muted-foreground">
-                                                    FAQ category
-                                                </p>
-                                                <h2 className="font-display font-black text-2xl">
-                                                    {category}
-                                                </h2>
-                                            </div>
-                                        </div>
-
-                                        <div className="mt-5 divide-y divide-border">
-                                            {groupedFaqs[category].map((item) => {
-                                                const open = openItems.includes(item.id);
-
-                                                return (
-                                                    <article
-                                                        key={item.id}
-                                                        className="py-4 first:pt-0 last:pb-0"
-                                                    >
-                                                        <button
-                                                            type="button"
-                                                            onClick={() =>
-                                                                toggleItem(item.id)
-                                                            }
-                                                            className="w-full flex items-start justify-between gap-4 text-left"
-                                                        >
-                                                            <div>
-                                                                <span className="inline-flex rounded-full bg-muted px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
-                                                                    {item.category}
-                                                                </span>
-
-                                                                <h3 className="mt-2 font-display text-lg sm:text-xl font-bold">
-                                                                    {item.question}
-                                                                </h3>
-                                                            </div>
-
-                                                            <ChevronDown
-                                                                className={`mt-2 h-5 w-5 shrink-0 text-muted-foreground transition-transform ${
-                                                                    open
-                                                                        ? "rotate-180"
-                                                                        : ""
-                                                                }`}
-                                                            />
-                                                        </button>
-
-                                                        {open && (
-                                                            <div className="mt-4 text-sm sm:text-base text-muted-foreground leading-relaxed">
-                                                                <p>{item.answer}</p>
-
-                                                                {item.steps && (
-                                                                    <ol className="mt-4 space-y-2">
-                                                                        {item.steps.map(
-                                                                            (
-                                                                                step,
-                                                                                index
-                                                                            ) => (
-                                                                                <li
-                                                                                    key={`${item.id}-${index}`}
-                                                                                    className="flex gap-3"
-                                                                                >
-                                                                                    <span className="mt-0.5 grid h-6 w-6 shrink-0 place-items-center rounded-full bg-primary text-xs font-bold text-primary-foreground">
-                                                                                        {index +
-                                                                                            1}
-                                                                                    </span>
-                                                                                    <span>
-                                                                                        {
-                                                                                            step
-                                                                                        }
-                                                                                    </span>
-                                                                                </li>
-                                                                            )
-                                                                        )}
-                                                                    </ol>
-                                                                )}
-                                                            </div>
-                                                        )}
-                                                    </article>
-                                                );
-                                            })}
-                                        </div>
-                                    </section>
-                                ))}
-                        </div>
-                    </div>
+            {filtered.length === 0 ? (
+                <div className="rounded-3xl border border-dashed border-border p-8 text-center text-sm text-muted-foreground">
+                    No matches. <Link to="/contact" className="text-primary font-semibold">Ask us directly</Link>.
                 </div>
-            </section>
+            ) : (
+                <ul className="space-y-2">
+                    {filtered.map((f, i) => (
+                        <FAQItem key={i} q={f.q} a={f.a} cat={f.cat} />
+                    ))}
+                </ul>
+            )}
 
-            <section className="border-t border-border bg-surface">
-                <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10">
-                    <div className="rounded-3xl bg-background border border-border p-6 sm:p-8">
-                        <div className="grid gap-6 lg:grid-cols-[1fr_auto] lg:items-center">
-                            <div>
-                                <p className="text-xs font-bold uppercase tracking-wider text-primary">
-                                    For organisations
-                                </p>
-
-                                <h2 className="mt-2 font-display font-black text-2xl sm:text-3xl">
-                                    Ready to start posting community events?
-                                </h2>
-
-                                <p className="mt-3 max-w-3xl text-sm sm:text-base text-muted-foreground leading-relaxed">
-                                    Create an account, claim your organisation and start
-                                    submitting events. You can also use the event sharing
-                                    tools to create Facebook-ready posts, WhatsApp messages
-                                    and calendar links.
-                                </p>
-                            </div>
-
-                            <div className="flex flex-wrap gap-2">
-                                <a
-                                    href="/register"
-                                    className="inline-flex items-center justify-center gap-2 rounded-full bg-primary px-5 py-3 text-sm font-semibold text-primary-foreground hover:scale-105 transition-transform"
-                                >
-                                    <UserPlus className="h-4 w-4" />
-                                    Register
-                                </a>
-
-                                <a
-                                    href="/submit-event"
-                                    className="inline-flex items-center justify-center gap-2 rounded-full border border-border px-5 py-3 text-sm font-semibold hover:bg-muted"
-                                >
-                                    <CalendarDays className="h-4 w-4" />
-                                    Submit event
-                                </a>
-
-                                <a
-                                    href="/facebook-connect"
-                                    className="inline-flex items-center justify-center gap-2 rounded-full border border-border px-5 py-3 text-sm font-semibold hover:bg-muted"
-                                >
-                                    <Share2 className="h-4 w-4" />
-                                    Facebook setup
-                                </a>
-                            </div>
-                        </div>
-                    </div>
+            <div className="mt-10 rounded-3xl bg-primary/10 border border-primary/20 p-6 text-center">
+                <div className="inline-flex items-center gap-2 text-primary font-semibold">
+                    <Mail className="h-4 w-4" /> Can't find your answer?
                 </div>
-            </section>
-
-            {/* NEWSLETTER */}
-            <NewsletterSection />
-        </main>
+                <p className="mt-2 text-sm text-muted-foreground">Drop us a note — we usually reply the same day.</p>
+                <Link to="/contact" data-testid="faq-contact-link" className="mt-3 inline-flex items-center gap-1 px-5 py-2.5 rounded-full bg-primary text-primary-foreground font-semibold text-sm">
+                    Contact us
+                </Link>
+            </div>
+        </div>
     );
 }
 
-const HeroStat = ({ icon: Icon, label, text }) => (
-    <div className="rounded-3xl border border-border bg-background/80 p-5">
-        <div className="flex items-start gap-3">
-            <div className="grid h-10 w-10 shrink-0 place-items-center rounded-2xl bg-primary/10 text-primary">
+function FAQItem({ q, a, cat }) {
+    const [open, setOpen] = useState(false);
+    return (
+        <li className="rounded-2xl border border-border bg-surface overflow-hidden">
+            <button
+                onClick={() => setOpen((o) => !o)}
+                className="w-full flex items-start gap-4 p-4 text-left hover:bg-muted transition"
+                data-testid={`faq-toggle-${q.slice(0, 20)}`}
+            >
+                <HelpCircle className="h-5 w-5 text-primary shrink-0 mt-0.5" />
+                <div className="flex-1 min-w-0">
+                    <div className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">{cat}</div>
+                    <div className="font-semibold text-sm mt-0.5">{q}</div>
+                </div>
+                <ChevronDown className={`h-4 w-4 text-muted-foreground mt-1 transition ${open ? "rotate-180" : ""}`} />
+            </button>
+            {open && <div className="px-4 pb-4 pl-14 text-sm text-muted-foreground leading-relaxed">{a}</div>}
+        </li>
+    );
+}
+
+function QuickCard({ icon: Icon, label, href }) {
+    return (
+        <Link
+            to={href}
+            className="rounded-2xl border border-border bg-surface p-4 hover:-translate-y-0.5 transition-transform text-center"
+        >
+            <div className="h-9 w-9 mx-auto rounded-2xl bg-primary/10 text-primary grid place-items-center">
                 <Icon className="h-4 w-4" />
             </div>
-
-            <div>
-                <h3 className="font-bold text-sm">{label}</h3>
-                <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-                    {text}
-                </p>
-            </div>
-        </div>
-    </div>
-);
-
-const QuickAction = ({ icon: Icon, title, text }) => (
-    <div className="flex gap-3 rounded-2xl border border-border bg-background p-4">
-        <div className="grid h-9 w-9 shrink-0 place-items-center rounded-2xl bg-primary/10 text-primary">
-            <Icon className="h-4 w-4" />
-        </div>
-
-        <div>
-            <h3 className="text-sm font-bold">{title}</h3>
-            <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-                {text}
-            </p>
-        </div>
-    </div>
-);
+            <div className="mt-2 font-semibold text-sm">{label}</div>
+        </Link>
+    );
+}

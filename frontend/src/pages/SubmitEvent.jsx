@@ -30,43 +30,51 @@ export default function SubmitEvent() {
     const { addEvent, orgs } = useApp();
     const [form, setForm] = useState(initial);
     const [submitted, setSubmitted] = useState(false);
+    const [busy, setBusy] = useState(false);
     const navigate = useNavigate();
 
     const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.type === "checkbox" ? e.target.checked : e.target.value }));
 
-    const submit = (e) => {
+    const submit = async (e) => {
         e.preventDefault();
         if (!form.consent) {
             toast.error("Please consent before submitting");
             return;
         }
+        setBusy(true);
         const start = new Date(`${form.date}T${form.start || "10:00"}`).toISOString();
         const end = new Date(`${form.date}T${form.end || form.start || "11:00"}`).toISOString();
         const orgSlug =
             orgs.find((o) => o.name.toLowerCase() === form.orgName.toLowerCase())?.slug ||
             "blackrod-sports-community-centre";
 
-        addEvent({
-            title: form.title,
-            orgSlug,
-            category: form.category,
-            start,
-            end,
-            venue: form.venue,
-            address: form.address,
-            description: form.description,
-            cost: form.cost,
-            age: form.age,
-            accessibility: form.accessibility,
-            booking: form.booking,
-            contactEmail: form.contactEmail,
-            contactPhone: form.contactPhone,
-            image: form.image || "https://images.unsplash.com/photo-1533174072545-7a4b6ad7a6c3?w=1200&q=80",
-        });
-        setSubmitted(true);
-        toast.success("Event submitted for approval", {
-            description: "Our admins will review and publish it shortly.",
-        });
+        try {
+            await addEvent({
+                title: form.title,
+                orgSlug,
+                category: form.category,
+                start,
+                end,
+                venue: form.venue,
+                address: form.address,
+                description: form.description,
+                cost: form.cost,
+                age: form.age,
+                accessibility: form.accessibility,
+                booking: form.booking,
+                contactEmail: form.contactEmail,
+                contactPhone: form.contactPhone,
+                image: form.image || "https://images.unsplash.com/photo-1533174072545-7a4b6ad7a6c3?w=1200&q=80",
+            });
+            setSubmitted(true);
+            toast.success("Event submitted for approval", {
+                description: "Our admins will review and publish it shortly.",
+            });
+        } catch (err) {
+            toast.error("Couldn't submit — please try again");
+        } finally {
+            setBusy(false);
+        }
     };
 
     if (submitted) {

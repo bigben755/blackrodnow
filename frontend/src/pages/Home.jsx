@@ -20,7 +20,17 @@ const COMMUNITY_IMAGES = {
 };
 
 export default function Home() {
-    const { events, orgs, volunteerOpps, subscribers } = useApp();
+    const { events, orgs, volunteerOpps, stats, ready } = useApp();
+    const subscribers = stats?.subscribers || 0;
+
+    // Guard early loading: return a skeleton while seed/refresh is in flight
+    if (!ready || orgs.length === 0) {
+        return (
+            <div data-testid="home-page" className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-20 text-center">
+                <div className="animate-pulse text-muted-foreground text-sm">Loading Blackrod Now…</div>
+            </div>
+        );
+    }
 
     const approved = events.filter((e) => e.status === "approved");
     const now = new Date();

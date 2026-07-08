@@ -1,5 +1,13 @@
-import React, { createContext, useContext, useEffect, useState } from "react";
-import { EVENTS, ORGANISATIONS, FEED_POSTS, VOLUNTEER_OPPS } from "../data/mockData";
+import React, { createContext, useContext, useEffect, useMemo, useState, useCallback } from "react";
+import { api } from "@/lib/api";
+import { getDeviceId } from "@/lib/device";
+import {
+    EVENTS as SEED_EVENTS,
+    ORGANISATIONS as SEED_ORGS,
+    FEED_POSTS as SEED_FEED,
+    VENUES as SEED_VENUES,
+    VOLUNTEER_OPPS as SEED_VOLS,
+} from "@/data/mockData";
 
 const AppContext = createContext(null);
 
@@ -8,35 +16,19 @@ export function AppProvider({ children }) {
         if (typeof window === "undefined") return "light";
         return localStorage.getItem("rl-theme") || "light";
     });
+    const [role, setRole] = useState(() => localStorage.getItem("rn-role") || "guest");
 
-    const [role, setRole] = useState("guest"); // guest | admin | org
-    const [demoActive, setDemoActive] = useState(false);
-    const [demoRole, setDemoRole] = useState("guest");
-    const [demoStepIndex, setDemoStepIndex] = useState(0);
-    const [events, setEvents] = useState(EVENTS);
-    const [orgs, setOrgs] = useState(ORGANISATIONS);
-    const [feed, setFeed] = useState(FEED_POSTS);
-    const [volunteerOpps, setVolunteerOpps] = useState(VOLUNTEER_OPPS);
-    const [follows, setFollows] = useState([]); // array of org slugs
-    const initialSubscribers = [
-        { id: "sub-1", email: "hello@blackrodnow.example" },
-        { id: "sub-2", email: "events@blackrodnow.example" },
-        { id: "sub-3", email: "community@blackrodnow.example" },
-        { id: "sub-4", email: "local@blackrodnow.example" },
-    ];
-    const [subscriberList, setSubscriberList] = useState(initialSubscribers);
-    const [subscribers, setSubscribers] = useState(initialSubscribers.length);
-    const [users, setUsers] = useState([
-        { id: "user-admin", name: "Site Admin", email: "admin@blackrodnow.example", role: "Site admin", lastReset: "2026-05-01" },
-        { id: "user-org1", name: "Events Team", email: "events@blackrodnow.example", role: "Organisation admin", lastReset: "2026-04-22" },
-        { id: "user-editor", name: "Content Editor", email: "editor@blackrodnow.example", role: "Contributor", lastReset: "2026-04-30" },
-    ]);
-    const [notifPrefs, setNotifPrefs] = useState({
-        email: true,
-        push: false,
-        calendar: false,
-        digest: true,
-    });
+    const [orgs, setOrgs] = useState([]);
+    const [events, setEvents] = useState([]);
+    const [feed, setFeed] = useState([]);
+    const [venues, setVenues] = useState([]);
+    const [volunteerOpps, setVolunteerOpps] = useState([]);
+    const [follows, setFollows] = useState({ orgs: [], categories: [] });
+    const [stats, setStats] = useState({ subscribers: 0, events_total: 0, orgs_total: 0, events_pending: 0, orgs_pending: 0, messages_unread: 0 });
+    const [notifPrefs, setNotifPrefs] = useState({ email: true, push: false, calendar: false, digest: true });
+    const [ready, setReady] = useState(false);
+    // Active org (for org dashboard)
+    const [activeOrgSlug, setActiveOrgSlug] = useState(() => localStorage.getItem("rn-active-org") || "");
 
     useEffect(() => {
         const root = document.documentElement;
@@ -45,143 +37,134 @@ export function AppProvider({ children }) {
         localStorage.setItem("rl-theme", theme);
     }, [theme]);
 
+    useEffect(() => {
+        localStorage.setItem("rn-role", role);
+    }, [role]);
+
+    useEffect(() => {
+        if (activeOrgSlug) localStorage.setItem("rn-active-org", activeOrgSlug);
+    }, [activeOrgSlug]);
+
     const toggleTheme = () => setTheme((t) => (t === "dark" ? "light" : "dark"));
 
-    const toggleFollow = (slug) =>
-        setFollows((f) => (f.includes(slug) ? f.filter((s) => s !== slug) : [...f, slug]));
-
-    const addEvent = (evt) => {
-        const org = orgs.find((o) => o.slug === evt.orgSlug);
-        const status =
-            evt.status || (org && org.status === "approved" ? "approved" : "pending");
-        setEvents((prev) => [
-            { id: `evt-${Date.now()}`, status, featured: false, ...evt },
-            ...prev,
+    // ─────────── Bootstrap: seed if empty, then load ───────────
+    const refresh = useCallback(async () => {
+        const [orgsR, evR, feedR, vR, volR, fR, sR] = await Promise.all([
+            api.orgs({ include_pending: true }).catch(() => []),
+            api.events({ include_pending: true }).catch(() => []),
+            api.feed().catch(() => []),
+            api.venues().catch(() => []),
+            api.volunteers().catch(() => []),
+            api.follows().catch(() => ({ orgs: [], categories: [] })),
+            api.stats().catch(() => ({})),
         ]);
+        setOrgs(orgsR);
+        setEvents(evR);
+        setFeed(feedR);
+        setVenues(vR);
+        setVolunteerOpps(volR);
+        setFollows({ orgs: fR.orgs || [], categories: fR.categories || [] });
+        setStats((prev) => ({ ...prev, ...sR }));
+    }, []);
+
+    useEffect(() => {
+        (async () => {
+            try {
+                const seeded = await api.isSeeded();
+                if (!seeded.seeded) {
+                    // Bootstrap: push seed data from bundled mock
+                    await api.seed({
+                        organisations: SEED_ORGS,
+                        events: SEED_EVENTS,
+                        feed_posts: SEED_FEED,
+                        venues: SEED_VENUES,
+                        volunteers: SEED_VOLS,
+                    });
+                }
+            } catch (e) {
+                console.warn("Seed check failed", e);
+            }
+            await refresh();
+            setReady(true);
+        })();
+    }, [refresh]);
+
+    // ─────────── Follows ───────────
+    const isFollowingOrg = (slug) => follows.orgs.includes(slug);
+    const isFollowingCategory = (cat) => follows.categories.includes(cat);
+
+    const toggleFollowOrg = async (slug) => {
+        const already = isFollowingOrg(slug);
+        const res = await api.toggleFollow("org", slug, already ? "remove" : "add");
+        setFollows({ orgs: res.orgs || [], categories: res.categories || [] });
+        return !already;
+    };
+    const toggleFollowCategory = async (cat) => {
+        const already = isFollowingCategory(cat);
+        const res = await api.toggleFollow("category", cat, already ? "remove" : "add");
+        setFollows({ orgs: res.orgs || [], categories: res.categories || [] });
+        return !already;
     };
 
-    const updateEventStatus = (id, status) =>
-        setEvents((prev) => prev.map((e) => (e.id === id ? { ...e, status } : e)));
-
-    const toggleEventFeatured = (id) =>
-        setEvents((prev) => prev.map((e) => (e.id === id ? { ...e, featured: !e.featured } : e)));
-
-    const deleteEvent = (id) => setEvents((prev) => prev.filter((e) => e.id !== id));
-
-    const addOrg = (org) =>
-        setOrgs((prev) => [
-            {
-                slug: org.slug || `org-${Date.now()}`,
-                upcoming: 0,
-                status: "pending",
-                tags: [],
-                logo: "✨",
-                cover: "",
-                socials: {},
-                ...org,
-            },
-            ...prev,
-        ]);
-
-    const updateOrgStatus = (slug, status) =>
-        setOrgs((prev) => prev.map((o) => (o.slug === slug ? { ...o, status } : o)));
-
-    const deleteOrg = (slug) => setOrgs((prev) => prev.filter((o) => o.slug !== slug));
-
-    const addFeedPost = (post) =>
-        setFeed((prev) => [{ id: `feed-${Date.now()}`, time: new Date().toISOString(), ...post }, ...prev]);
-
-    const addSubscriber = (email) => {
-        setSubscriberList((prev) => [{ id: `sub-${Date.now()}`, email }, ...prev]);
-        setSubscribers((prev) => prev + 1);
+    // ─────────── Mutations ───────────
+    const addEvent = async (evt) => {
+        const created = await api.createEvent({ ...evt, status: "pending" });
+        setEvents((prev) => [created, ...prev]);
+        return created;
+    };
+    const setEventStatus = async (id, status) => {
+        const updated = await api.setEventStatus(id, status);
+        setEvents((prev) => prev.map((e) => (e.id === id ? updated : e)));
+    };
+    const toggleEventFeatured = async (id) => {
+        const updated = await api.featureEvent(id);
+        setEvents((prev) => prev.map((e) => (e.id === id ? updated : e)));
+    };
+    const deleteEvent = async (id) => {
+        await api.deleteEvent(id);
+        setEvents((prev) => prev.filter((e) => e.id !== id));
+    };
+    const addOrg = async (org) => {
+        const created = await api.submitOrg(org);
+        setOrgs((prev) => [created, ...prev]);
+        return created;
+    };
+    const patchOrg = async (slug, patch) => {
+        const updated = await api.patchOrg(slug, patch);
+        setOrgs((prev) => prev.map((o) => (o.slug === slug ? updated : o)));
+        return updated;
+    };
+    const setOrgStatus = async (slug, status) => {
+        const updated = await api.setOrgStatus(slug, status);
+        setOrgs((prev) => prev.map((o) => (o.slug === slug ? updated : o)));
+    };
+    const deleteOrg = async (slug) => {
+        await api.deleteOrg(slug);
+        setOrgs((prev) => prev.filter((o) => o.slug !== slug));
+    };
+    const addFeedPost = async (post) => {
+        const created = await api.createFeedPost(post);
+        setFeed((prev) => [created, ...prev]);
+        return created;
     };
 
-    const removeSubscriber = (id) => {
-        setSubscriberList((prev) => prev.filter((s) => s.id !== id));
-        setSubscribers((prev) => Math.max(0, prev - 1));
-    };
-
-    const resetPassword = (id) =>
-        setUsers((prev) =>
-            prev.map((user) =>
-                user.id === id
-                    ? { ...user, lastReset: new Date().toISOString().split("T")[0] }
-                    : user,
-            ),
-        );
-
-    const updateEvent = (id, updates) =>
-        setEvents((prev) => prev.map((e) => (e.id === id ? { ...e, ...updates } : e)));
-
-    const bulkAddEvents = (items) =>
-        setEvents((prev) =>
-            items
-                .map((item) => ({ id: `evt-${Date.now()}-${Math.floor(Math.random() * 10000)}`, featured: false, ...item }))
-                .concat(prev),
-        );
-
-    const updateOrg = (slug, updates) =>
-        setOrgs((prev) => prev.map((o) => (o.slug === slug ? { ...o, ...updates } : o)));
-
-    const startDemo = (roleName) => {
-        const demoTarget = roleName;
-        setRole(demoTarget);
-        setDemoRole(demoTarget);
-        setDemoStepIndex(0);
-        setDemoActive(true);
-    };
-
-    const stopDemo = () => {
-        setDemoActive(false);
-        setDemoStepIndex(0);
-        setDemoRole("guest");
-    };
-
-    const nextDemoStep = () =>
-        setDemoStepIndex((prev) => Math.max(prev + 1, 0));
-
-    const prevDemoStep = () =>
-        setDemoStepIndex((prev) => Math.max(prev - 1, 0));
-
-    const value = {
-        theme,
-        toggleTheme,
-        role,
-        setRole,
-        demoActive,
-        demoRole,
-        demoStepIndex,
-        startDemo,
-        stopDemo,
-        nextDemoStep,
-        prevDemoStep,
-        events,
-        orgs,
-        feed,
-        volunteerOpps,
-        follows,
-        toggleFollow,
-        subscribers,
-        setSubscribers,
-        subscriberList,
-        addSubscriber,
-        removeSubscriber,
-        users,
-        resetPassword,
-        notifPrefs,
-        setNotifPrefs,
-        addEvent,
-        updateEventStatus,
-        toggleEventFeatured,
-        deleteEvent,
-        updateEvent,
-        bulkAddEvents,
-        addOrg,
-        updateOrgStatus,
-        updateOrg,
-        deleteOrg,
-        addFeedPost,
-    };
+    const value = useMemo(
+        () => ({
+            ready,
+            theme, toggleTheme,
+            role, setRole,
+            orgs, events, feed, venues, volunteerOpps,
+            follows, toggleFollowOrg, toggleFollowCategory, isFollowingOrg, isFollowingCategory,
+            stats, refresh,
+            notifPrefs, setNotifPrefs,
+            activeOrgSlug, setActiveOrgSlug,
+            addEvent, setEventStatus, toggleEventFeatured, deleteEvent,
+            addOrg, patchOrg, setOrgStatus, deleteOrg,
+            addFeedPost,
+            deviceId: getDeviceId(),
+        }),
+        [ready, theme, role, orgs, events, feed, venues, volunteerOpps, follows, stats, notifPrefs, activeOrgSlug, refresh],
+    );
 
     return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
 }

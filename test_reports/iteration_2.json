@@ -1,0 +1,47 @@
+{
+  "summary": "Full backend + frontend regression on the Blackrod Now Mongo-backed feature pass. Backend: 17/17 pytest cases pass — root/health, seeded flag, subscribe (unique unsub_token + pref_token), re-subscribe merges follows and preserves tokens, GET/PATCH /preferences, unsubscribe, personalised newsletter preview (matched_events count), broadcast returns mocked:true when RESEND_API_KEY unset, /parse-content returns 2 items for the multi-event paste 'Summer Fair Sat 14 June... Also Youth Football Sun 15 June...', /contact-admin + /admin/messages + PATCH read, /admin/notifications + /organisations/{slug}/notifications, PATCH /organisations/{slug} persists changes, /facebook/connect flips DB flag + returns mocked:true, /facebook/publish returns mocked:true, /organisations/{slug}/documents (multipart .txt upload) creates a Document in Emergent object storage and lists it back. Frontend: home shows 33 events / 29 orgs after the ~2s skeleton, FAQ contains no 'create account / register / log in' language, newsletter subscribe flow → success card → Personalise → /preferences/{token} with pre-filled email + follows, /unsubscribe/{token} renders 'You're unsubscribed' confirmation, follow persists across page navigation, admin dashboard shows Broadcast + Newsletter + Inbox + Notify sections and 29 edit-org buttons, newsletter preview dialog renders an iframe, /edit-organisation/{slug} loads with pre-filled form and Save persists to DB, org dashboard shows notification-bell + notification-count + contact-admin + fb-card + doc-upload-input, notification popover lists notifications, FB dialog opens from fb-card and Connect Facebook flips fb_connected in DB, contact-admin dialog sends message, document upload input works (test .txt appears with download link), AI parser returns multiple ParsedCard components (Summer Fair + Youth Football) in the results panel.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "OrgDashboard FacebookCard", "issue": "After successfully connecting via the mocked FB dialog (backend fb_connected flips to true, page_id set), the FacebookCard on the dashboard still shows 'NOT CONNECTED' until a hard reload — org list isn't refreshed after api.fbConnect resolves.", "selector": "[data-testid='fb-card']", "priority": "MEDIUM"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Admin newsletter preview dialog", "issues": ["React Radix DialogContent warning in console: 'Missing Description or aria-describedby={undefined} for DialogContent' — accessibility, add DialogDescription or aria-describedby to shadcn dialogs (newsletter preview, contact admin, FB)."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "After api.fbConnect / api.fbDisconnect / api.contactAdmin succeed inside OrgDashboard, call ctx.refresh() (or an org-specific reload) so the FacebookCard picks up fb_connected without a hard reload. Same pattern would apply to future org-level state mutations.",
+    "Add DialogDescription (or aria-describedby) to the shadcn Dialog wrappers in Admin.jsx (NewsletterPreviewDialog) and OrgDashboard.jsx (ContactAdminDialog, FacebookDialog) to silence the a11y warnings.",
+    "Frontend seed data does NOT include an org with slug 'rodlife-events' (which the review request kept referring to — that's actually the deployment subdomain, not an org slug). Tests were run against a real seeded slug 'blackrod-town-council'. If the intent was for a specific demo org, add it to mockData or update the review request."
+  ],
+  "critical_code_review_comments": [
+    "server.py line 904: `(sent := sent + 1) if result.get('ok') else (failed := failed + 1)` — clever but confusing; a plain `if/else` block is safer and easier to read.",
+    "server.py init_storage() gates on EMERGENT_LLM_KEY (both storage and LLM share the same key at boot). Currently works because the key is set; document this coupling so if storage ever needs a different key you don't get silent 500s on uploads.",
+    "server.py /admin/broadcast and /admin/newsletter/send are unauthenticated — anyone hitting the public API could spam every subscriber (currently mocked out, but real Resend key would blast). Add an admin auth guard or IP/CORS restriction before production.",
+    "Subscriber creation stores email as EmailStr but response object reads existing['unsub_token'] before checking existence properly if `unsubscribed` was True on an existing record — a re-subscribe on an unsubscribed row currently falls through and creates a *new* Subscriber row, hitting the unique index on email → 500. Handle the 'existing but unsubscribed' branch explicitly (reactivate).",
+    "AppContext.refresh does not re-run after mutations like fbConnect / patchOrg happen outside of the local setter path — leads to stale cards on the same page (see FB card bug above). Consider exposing refresh() from the mutation callers or updating local state per-org via the returned document.",
+    "OrgDashboard.jsx Facebook block: the disconnect() path calls api.fbDisconnect and toasts but likewise does not update the local org row, so the badge stays 'Connected' until refresh.",
+    "Consider adding rate limiting to /parse-content and /subscribe — both are public and hit LLM / DB with no throttle."
+  ],
+  "updated_files": [
+    "/app/backend/tests/backend_test.py"
+  ],
+  "success_rate": {
+    "backend": "100% (17/17)",
+    "frontend": "95% (all critical flows working; only stale FB-card badge after connect)"
+  },
+  "test_credentials": "N/A — anonymous device-based follows, no accounts. Role switching via localStorage keys 'rn-role' (guest|admin|org|contributor) and 'rn-active-org' (org slug).",
+  "seed_data_creation": "Backend seeding happens automatically from /app/frontend/src/data/mockData.js on first frontend load via POST /api/admin/seed (already seeded before this run: 29 orgs + 33 events). Test data prefixed with TEST_ for cleanup.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Backend base URL from REACT_APP_BACKEND_URL. Run tests via `pytest /app/backend/tests/backend_test.py -v`. The review request mentioned 'rodlife-events' as an org slug — that is the deployment subdomain, not a real slug. Use 'blackrod-town-council' (or any slug from GET /api/organisations). RESEND_API_KEY intentionally unset → broadcast returns mocked:true. EMERGENT_LLM_KEY set → /parse-content uses Claude Sonnet 4.5 and reliably returns 2+ items for multi-event paste. Notifications, contact-admin messages and profile edits all persist. Facebook connect flips DB flag but UI card doesn't refresh until reload — known minor bug documented above.",
+  "rca of the issue": "FB card stale-badge RCA: OrgDashboard's FacebookDialog calls api.fbConnect(slug, ...) which returns 200 + mocked:true and sets fb_connected=true in Mongo, but the dialog only calls onClose() — it never mutates the local `orgs` array in AppContext nor refetches. Fix: after successful fbConnect/fbDisconnect, call ctx.refresh() (already exposed in AppContext) OR use patchOrg-style local update with the returned org shape (backend can return the updated org from the connect endpoint instead of just {ok,mocked,page_id}). Same fix applies to the disconnect button."
+}

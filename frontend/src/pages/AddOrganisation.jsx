@@ -35,7 +35,7 @@ export default function AddOrganisation() {
     const set = (k) => (e) =>
         setForm((f) => ({ ...f, [k]: e.target.type === "checkbox" ? e.target.checked : e.target.value }));
 
-    const submit = (e) => {
+    const submit = async (e) => {
         e.preventDefault();
         if (!form.consent) {
             toast.error("Please consent before submitting");
@@ -45,32 +45,36 @@ export default function AddOrganisation() {
             .toLowerCase()
             .replace(/[^a-z0-9]+/g, "-")
             .replace(/(^-|-$)/g, "");
-        addOrg({
-            slug,
-            name: form.name,
-            category: form.category,
-            short: form.short,
-            about: form.about,
-            does: form.about,
-            forWho: "",
-            meeting: form.meeting,
-            address: form.address,
-            location: "Blackrod",
-            email: form.email,
-            phone: form.phone,
-            website: form.website,
-            socials: {
-                facebook: form.facebook,
-                instagram: form.instagram,
-                tiktok: form.tiktok,
-                linkedin: form.linkedin,
-            },
-            brandColor: form.brandColor,
-            logo: form.logo || "✨",
-            cover: form.cover,
-        });
-        toast.success("Organisation submitted for approval");
-        setSubmitted(true);
+        try {
+            await addOrg({
+                slug,
+                name: form.name,
+                category: form.category,
+                short: form.short,
+                about: form.about,
+                does: form.about,
+                forWho: "",
+                meeting: form.meeting,
+                address: form.address,
+                location: "Blackrod",
+                email: form.email,
+                phone: form.phone,
+                website: form.website,
+                socials: {
+                    facebook: form.facebook,
+                    instagram: form.instagram,
+                    tiktok: form.tiktok,
+                    linkedin: form.linkedin,
+                },
+                brandColor: form.brandColor,
+                logo: form.logo || "✨",
+                cover: form.cover,
+            });
+            toast.success("Organisation submitted for approval");
+            setSubmitted(true);
+        } catch (err) {
+            toast.error("Couldn't submit — is the name already taken?");
+        }
     };
 
     if (submitted) {
