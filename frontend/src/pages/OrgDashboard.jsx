@@ -394,7 +394,7 @@ function NotificationDialog({ notif, onClose, onCopy }) {
                                 })}
                             </DialogDescription>
                         </DialogHeader>
-                        <div className="rounded-2xl bg-muted/50 p-4 text-sm whitespace-pre-wrap leading-relaxed max-h-[50vh] overflow-y-auto">
+                        <div className="rounded-2xl bg-muted/50 p-4 text-sm whitespace-pre-wrap leading-relaxed max-h-[45vh] overflow-y-auto">
                             {notif.body}
                         </div>
                         <div className="flex justify-end gap-2 pt-2">
