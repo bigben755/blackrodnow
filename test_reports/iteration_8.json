@@ -1,0 +1,44 @@
+{
+  "summary": "Frontend-only test of the new NotificationDialog flow in OrgDashboard. All 7 requested behaviours pass: dropdown 'Open' hint, click-to-open dialog with Admin-message label + title + formatted 'Received' date + full whitespace-preserved body (max-h-[50vh] scroll), Copy button copies '<title>\\n\\n<body>' with 'Message copied' toast, mark-as-read decrements badge count by 1 and removes unread styling (bg-primary/5 + blue dot), Escape/Close/X all close the dialog cleanly, dashboard stays interactive, and POST /api/admin/notifications regression correctly adds a new notif at the top of the dropdown with count incremented.",
+  "backend_issues": { "critical": [], "minor": [] },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "OrgDashboard.jsx is 666 lines — approaching the 700-line soft limit. Consider extracting NotificationBell + NotificationDialog into /components/notifications/*.jsx for maintainability.",
+    "NotificationDialog re-clicks on an already-read notification still call the PATCH endpoint? — Verified via code: openMessage only calls onRead(n.id) when !n.read, so no redundant PATCH. Good.",
+    "Received-date parses n.created_at with `new Date(...)`. If backend ever returns a naive UTC string without 'Z', browser will treat it as local time and the 'Fri, 10 Jul 2026, 12:39' label may drift. Consider ensuring ISO-8601 with timezone on the backend.",
+    "The DialogContent uses max-w-lg. On very small mobile widths this is fine, but the body's `max-h-[50vh]` combined with the outer DialogContent padding can leave the Copy/Close row below the fold on short mobile screens — consider `max-h-[45vh]` or making the whole DialogContent scroll instead of the inner div.",
+    "The dropdown itself is `max-h-96 overflow-y-auto` — good. But there is no explicit 'mark all as read' affordance in the dropdown; the only way to clear the badge is to click through each unread item."
+  ],
+  "updated_files": [],
+  "success_rate": { "backend": "n/a (frontend only)", "frontend": "100%" },
+  "test_credentials": "No auth needed. Role switched to 'org' via [data-testid=role-switcher] -> [data-testid=role-org]. Org slug: blackrod-town-council.",
+  "seed_data_creation": "Created two TEST_ notifications via POST /api/admin/notifications during the run: 'TEST_Notif_Dialog' (multi-line body) and 'TEST_Regression_Top_2026'. They remain in Mongo — main agent may want a cleanup step for TEST_ prefixed notifications.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Notification dialog flow (bell -> dropdown -> click -> Radix Dialog with copy/close/escape + mark-as-read) is fully verified end-to-end against the live preview URL. Testids present: notification-bell, notification-count, notif-<id>, notification-dialog, notif-dialog-copy, notif-dialog-close. Clipboard permissions must be granted via page.context.grant_permissions(['clipboard-read','clipboard-write']) when re-testing the Copy button.",
+  "detailed_pass_matrix": {
+    "dropdown_opens_and_shows_open_hint": true,
+    "click_notif_closes_dropdown_and_opens_dialog": true,
+    "dialog_has_admin_message_label": true,
+    "dialog_shows_full_title": true,
+    "dialog_shows_formatted_received_date (e.g. 'Received Fri, 10 Jul 2026, 12:43')": true,
+    "dialog_body_preserves_whitespace_and_multiple_paragraphs": true,
+    "dialog_body_has_max_h_50vh_and_whitespace_pre_wrap": true,
+    "copy_button_copies_title_newline_newline_body": true,
+    "copy_button_shows_message_copied_toast": true,
+    "escape_closes_dialog": true,
+    "close_button_closes_dialog": true,
+    "badge_count_decrements_by_1_after_first_click": "6 -> 5 verified",
+    "clicked_notif_loses_bg_primary_5_and_blue_dot": true,
+    "reclicking_read_notif_still_opens_dialog": true,
+    "dashboard_interactive_after_dialog_close": true,
+    "regression_new_notif_at_top_after_POST_and_reload": true,
+    "regression_count_increments_after_new_POST": "5 -> 6 verified"
+  }
+}

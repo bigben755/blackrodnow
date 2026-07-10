@@ -7,11 +7,11 @@ import OrgAvatar from "@/components/OrgAvatar";
 import {
     Wand2, Copy, Calendar, Megaphone, Bell, Sparkles, Loader2,
     Image as ImageIcon, FileText, UploadCloud,
-    Send, Edit3, Trash2, Mail,
+    Send, Edit3, Trash2, Mail, ChevronRight,
 } from "lucide-react";
 import { toast } from "sonner";
 import {
-    Dialog, DialogContent, DialogHeader, DialogTitle,
+    Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription,
 } from "@/components/ui/dialog";
 import ShareButtons from "@/components/ShareButtons";
 
@@ -297,9 +297,17 @@ export default function OrgDashboard() {
     );
 }
 
-/* Notification bell */
+/* Notification bell + full-message dialog */
 function NotificationBell({ count, notifications, onRead }) {
     const [open, setOpen] = useState(false);
+    const [selected, setSelected] = useState(null);
+
+    const openMessage = (n) => {
+        setSelected(n);
+        if (!n.read) onRead(n.id);
+        setOpen(false); // close dropdown so the dialog isn't fighting for focus
+    };
+
     return (
         <div className="relative">
             <button
@@ -317,23 +325,30 @@ function NotificationBell({ count, notifications, onRead }) {
             </button>
             {open && (
                 <div className="absolute right-0 mt-2 w-80 rounded-2xl border border-border bg-surface shadow-xl z-50 max-h-96 overflow-y-auto">
-                    <div className="p-3 border-b border-border font-semibold text-sm">Notifications from admin</div>
+                    <div className="p-3 border-b border-border font-semibold text-sm flex items-center gap-2">
+                        <Bell className="h-3.5 w-3.5" /> Notifications from admin
+                    </div>
                     {notifications.length === 0 ? (
                         <div className="p-4 text-sm text-muted-foreground">No messages.</div>
                     ) : notifications.map((n) => (
                         <button
                             key={n.id}
                             data-testid={`notif-${n.id}`}
-                            onClick={() => { if (!n.read) onRead(n.id); }}
+                            onClick={() => openMessage(n)}
                             className={`w-full text-left px-4 py-3 border-b border-border/50 hover:bg-muted transition ${n.read ? "" : "bg-primary/5"}`}
                         >
                             <div className="flex items-start gap-2">
                                 {!n.read && <span className="mt-1.5 h-2 w-2 rounded-full bg-primary shrink-0" />}
-                                <div className="flex-1">
-                                    <div className="font-semibold text-sm">{n.title}</div>
-                                    <div className="text-xs text-muted-foreground mt-0.5">{n.body}</div>
-                                    <div className="text-[10px] text-muted-foreground mt-1">
-                                        {new Date(n.created_at).toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}
+                                <div className="flex-1 min-w-0">
+                                    <div className="font-semibold text-sm truncate">{n.title}</div>
+                                    <div className="text-xs text-muted-foreground mt-0.5 line-clamp-2">{n.body}</div>
+                                    <div className="text-[10px] text-muted-foreground mt-1 flex items-center justify-between gap-2">
+                                        <span>
+                                            {new Date(n.created_at).toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}
+                                        </span>
+                                        <span className="inline-flex items-center gap-0.5 font-semibold text-primary uppercase tracking-wider text-[9px]">
+                                            Open <ChevronRight className="h-2.5 w-2.5" />
+                                        </span>
                                     </div>
                                 </div>
                             </div>
@@ -341,7 +356,67 @@ function NotificationBell({ count, notifications, onRead }) {
                     ))}
                 </div>
             )}
+
+            <NotificationDialog
+                notif={selected}
+                onClose={() => setSelected(null)}
+                onCopy={async (text) => {
+                    try {
+                        await navigator.clipboard.writeText(text);
+                        toast.success("Message copied");
+                    } catch {
+                        toast.error("Copy failed");
+                    }
+                }}
+            />
         </div>
+    );
+}
+
+/* Full-message dialog for a single admin notification */
+function NotificationDialog({ notif, onClose, onCopy }) {
+    return (
+        <Dialog open={!!notif} onOpenChange={(v) => !v && onClose()}>
+            <DialogContent className="max-w-lg" data-testid="notification-dialog">
+                {notif && (
+                    <>
+                        <DialogHeader>
+                            <div className="inline-flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.2em] text-primary">
+                                <Bell className="h-3 w-3" /> Admin message
+                            </div>
+                            <DialogTitle className="mt-1 text-xl leading-tight">
+                                {notif.title}
+                            </DialogTitle>
+                            <DialogDescription className="text-xs">
+                                Received {new Date(notif.created_at).toLocaleString("en-GB", {
+                                    weekday: "short", day: "numeric", month: "short", year: "numeric",
+                                    hour: "2-digit", minute: "2-digit",
+                                })}
+                            </DialogDescription>
+                        </DialogHeader>
+                        <div className="rounded-2xl bg-muted/50 p-4 text-sm whitespace-pre-wrap leading-relaxed max-h-[50vh] overflow-y-auto">
+                            {notif.body}
+                        </div>
+                        <div className="flex justify-end gap-2 pt-2">
+                            <button
+                                data-testid="notif-dialog-copy"
+                                onClick={() => onCopy(`${notif.title}\n\n${notif.body}`)}
+                                className="inline-flex items-center gap-1 px-3 py-1.5 rounded-full border border-border text-xs font-semibold hover:bg-muted"
+                            >
+                                <Copy className="h-3.5 w-3.5" /> Copy
+                            </button>
+                            <button
+                                data-testid="notif-dialog-close"
+                                onClick={onClose}
+                                className="inline-flex items-center px-4 py-1.5 rounded-full bg-primary text-primary-foreground text-xs font-semibold"
+                            >
+                                Close
+                            </button>
+                        </div>
+                    </>
+                )}
+            </DialogContent>
+        </Dialog>
     );
 }
 
@@ -497,10 +572,10 @@ function SharePackPreviewDialog({ open, onClose, pack }) {
                                 </div>
                                 <p className="mt-2 text-xs text-muted-foreground line-clamp-2">{e.description}</p>
                                 <div className="mt-3 flex flex-wrap gap-2">
-                                    <a href={e.share_links.facebook} target="_blank" rel="noopener" data-testid={`pack-fb-${e.id}`} className="inline-flex items-center px-3 py-1.5 rounded-full bg-[#1877F2] text-white text-[11px] font-semibold">Facebook</a>
-                                    <a href={e.share_links.linkedin} target="_blank" rel="noopener" className="inline-flex items-center px-3 py-1.5 rounded-full bg-[#0A66C2] text-white text-[11px] font-semibold">LinkedIn</a>
-                                    <a href={e.share_links.twitter} target="_blank" rel="noopener" className="inline-flex items-center px-3 py-1.5 rounded-full bg-black text-white text-[11px] font-semibold">X</a>
-                                    <a href={e.share_links.whatsapp} target="_blank" rel="noopener" className="inline-flex items-center px-3 py-1.5 rounded-full bg-[#25D366] text-white text-[11px] font-semibold">WhatsApp</a>
+                                    <a href={e.share_links.facebook} target="_blank" rel="noopener noreferrer" data-testid={`pack-fb-${e.id}`} className="inline-flex items-center px-3 py-1.5 rounded-full bg-[#1877F2] text-white text-[11px] font-semibold">Facebook</a>
+                                    <a href={e.share_links.linkedin} target="_blank" rel="noopener noreferrer" className="inline-flex items-center px-3 py-1.5 rounded-full bg-[#0A66C2] text-white text-[11px] font-semibold">LinkedIn</a>
+                                    <a href={e.share_links.twitter} target="_blank" rel="noopener noreferrer" className="inline-flex items-center px-3 py-1.5 rounded-full bg-black text-white text-[11px] font-semibold">X</a>
+                                    <a href={e.share_links.whatsapp} target="_blank" rel="noopener noreferrer" className="inline-flex items-center px-3 py-1.5 rounded-full bg-[#25D366] text-white text-[11px] font-semibold">WhatsApp</a>
                                     <button
                                         onClick={async () => { try { await navigator.clipboard.writeText(`${e.share_text}\n${e.canonical_url}`); toast.success("Caption copied"); } catch { toast.error("Copy failed"); } }}
                                         className="inline-flex items-center px-3 py-1.5 rounded-full bg-muted text-foreground text-[11px] font-semibold"
