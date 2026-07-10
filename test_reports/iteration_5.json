@@ -1,0 +1,23 @@
+{
+  "summary": "Follow-up cleanup verification for the share-buttons bug fix on /events/evt-festival-2026. Confirmed that the legacy popup code and 3 redundant ActionButton tiles have been fully removed from /pages/EventDetail.jsx, and the new one-tap ShareButtons row still works end-to-end. Source grep: `noopener,noreferrer,width` — 0 matches across /app/frontend/src; `openPopup|shareToFacebook|shareToWhatsApp|buildWhatsAppText` — 0 matches; `MessageCircle` import in EventDetail.jsx — 0 matches (fully purged). UI verification: (a) the ActionButton grid under 'Promote this event' now contains EXACTLY 3 tiles — 'Copy Facebook Post', 'Copy Poster Link', 'Download Calendar File'; (b) the 3 legacy labels 'Share to Facebook', 'Share on WhatsApp', 'Copy Event Link' are absent from the entire rendered page; (c) the 'One-tap share' row above renders all 6 ShareButtons (share-facebook, share-linkedin, share-twitter, share-whatsapp, share-instagram, share-copy). Behaviour verification via window.open interception: Facebook → `https://www.facebook.com/sharer/sharer.php?u=<encoded event URL>` (no quote param), LinkedIn → `share-offsite/?url=<encoded>`, X/Twitter → `intent/tweet?text=<encoded caption>&url=<encoded>`, WhatsApp → `wa.me/?text=<encoded caption+url>` — all with target=_blank and features=null (i.e. no deprecated `noopener,noreferrer,width,height` string). Clipboard tiles: 'Copy Facebook Post' fires Sonner toast 'Facebook post copied'; 'Copy Poster Link' fires 'Poster image link copied'. 'Download Calendar File' triggered a real download event with suggested_filename='evt-festival-2026.ics'. OrgDashboard ParsedCard ShareButtons regression: /components/ShareButtons.jsx is byte-identical to iteration_4 and the OrgDashboard import/usage (line 389 of OrgDashboard.jsx) is unchanged, so the iteration_4 pass still holds.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "EventDetail.jsx line 27–30: `SITE_ORIGIN` is derived from window.location.origin at module-eval time. This is fine for a browser build but means the constant is captured once when the module is first imported. If the module is ever imported in an SSR/prerender context the fallback string `https://rodlife.co.uk` will leak — consider moving to inside the component or reading from an env var (REACT_APP_SITE_URL).",
+    "P3 (from iteration_4, still applicable): OG/Twitter tags in /public/index.html remain static site-level, so Facebook/LinkedIn crawlers of /events/<id> URLs will still see the generic site image/title. Per-event previews would need SSR or a small backend HTML endpoint that injects per-event og tags — main agent already flagged this as out-of-scope for this bug fix."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "N/A (frontend only)", "frontend": "100% — all cleanup checks pass, all 6 share buttons open correct URLs with no deprecated features string, all 3 remaining ActionButton tiles fire correct toast/download."},
+  "test_credentials": "None required — event id evt-festival-2026 from seed data.",
+  "seed_data_creation": "None",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Bug is fully resolved. EventDetail.jsx now imports only ShareButtons for one-tap sharing and 3 non-duplicating utility tiles (Copy FB post, Copy poster link, Download .ics). Legacy helpers (openPopup, shareToFacebook, shareToWhatsApp, buildWhatsAppText) and the MessageCircle icon import have been fully removed. ShareButtons.jsx is unchanged from iteration_4 (verified: no `noopener,noreferrer,width` in the whole /app/frontend/src tree). If future edits touch /public/index.html, a `sudo supervisorctl restart frontend` is required for CRA dev-server to pick up the new template.",
+  "rca of the issue": "N/A — this iteration was cleanup verification only; the underlying window.open + noopener,noreferrer,width/height silent-popup-block RCA remains as documented in iteration_4."
+}

@@ -15,7 +15,6 @@ import {
     Share2,
     ArrowLeft,
     ExternalLink,
-    MessageCircle,
     Copy,
     Download,
     Edit3,
@@ -147,12 +146,6 @@ const buildFacebookPost = (event, eventUrl, org) => {
         .join("\n");
 };
 
-const buildWhatsAppText = (event, eventUrl) => {
-    return `Blackrod Event: ${event.title}\n\n${formatDate(
-        event.start
-    )} · ${formatTime(event.start)}\n\nFull details: ${eventUrl}`;
-};
-
 const copyToClipboard = async (text, successMessage) => {
     try {
         await navigator.clipboard.writeText(text);
@@ -160,10 +153,6 @@ const copyToClipboard = async (text, successMessage) => {
     } catch {
         toast.error("Could not copy to clipboard");
     }
-};
-
-const openPopup = (url) => {
-    window.open(url, "_blank", "noopener,noreferrer,width=720,height=640");
 };
 
 export default function EventDetail() {
@@ -212,16 +201,6 @@ export default function EventDetail() {
         } catch {
             // User cancelled native share.
         }
-    };
-
-    const shareToFacebook = () => {
-        const url = encodeURIComponent(eventUrl);
-        openPopup(`https://www.facebook.com/sharer/sharer.php?u=${url}`);
-    };
-
-    const shareToWhatsApp = () => {
-        const text = encodeURIComponent(buildWhatsAppText(event, eventUrl));
-        openPopup(`https://wa.me/?text=${text}`);
     };
 
     const downloadPoster = async () => {
@@ -466,8 +445,8 @@ export default function EventDetail() {
 
                     <p className="mt-3 text-sm sm:text-base text-muted-foreground leading-relaxed">
                         Are you involved with this event, or do you want to help more
-                        people find it? Use the tools below to copy a Facebook-ready post,
-                        share to WhatsApp, copy the event link, or save the event to your
+                        people find it? Use the one-tap buttons below to share to any
+                        social platform, copy the poster link, or save the event to your
                         calendar.
                     </p>
 
@@ -489,27 +468,6 @@ export default function EventDetail() {
                         onClick={() =>
                             copyToClipboard(facebookPost, "Facebook post copied")
                         }
-                    />
-
-                    <ActionButton
-                        icon={Share2}
-                        label="Share to Facebook"
-                        description="Open Facebook sharing for this event page."
-                        onClick={shareToFacebook}
-                    />
-
-                    <ActionButton
-                        icon={MessageCircle}
-                        label="Share on WhatsApp"
-                        description="Send the event link to a chat or group."
-                        onClick={shareToWhatsApp}
-                    />
-
-                    <ActionButton
-                        icon={Share2}
-                        label="Copy Event Link"
-                        description="Copy the public event page URL."
-                        onClick={() => copyToClipboard(eventUrl, "Event link copied")}
                     />
 
                     <ActionButton
