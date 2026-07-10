@@ -456,6 +456,9 @@ async def event_og_page(event_id: str, request: _Req):
     if e.get("description"):
         raw_desc = (raw_desc + " — " + e["description"]) if raw_desc else e["description"]
     raw_desc = raw_desc[:280]
+    # Trim to nearest word boundary for prettier previews.
+    if len(raw_desc) == 280 and " " in raw_desc:
+        raw_desc = raw_desc.rsplit(" ", 1)[0].rstrip(",.:;-—") + "…"
 
     esc = _html_lib.escape
     title = esc(raw_title)
