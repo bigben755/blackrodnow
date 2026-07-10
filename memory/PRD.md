@@ -24,6 +24,8 @@ A modern community website for Blackrod, Bolton showcasing local events, clubs, 
 - Mobile-responsive calendar with `.ics` download.
 - **[NEW — Feb 10 2026] Simple share-to-socials.** Removed the mock Facebook Page Connect / Graph API flow entirely (was overkill). New `ShareButtons` component drops in one-tap share buttons for **Facebook, LinkedIn, X/Twitter, WhatsApp, Copy for Instagram, and Copy link** — all client-side (no API keys, no app review). Placed on the AI parsed drafts (Org Dashboard) and on Event Detail pages. Instagram uses the standard "copy caption then paste" pattern since Instagram has no web share URL.
 - **[NEW — Feb 10 2026] Per-event Open Graph endpoint.** `GET /api/events/{id}/og` returns crawler-friendly HTML with event-specific `og:title/description/image/url` + Twitter Card tags, then meta-refresh + JS redirects humans to the canonical React page. FB/LinkedIn/X/WhatsApp now render **rich per-event link previews** (event title, date, venue, image) instead of the generic site card. Image fallback chain: `event.image → org cover → org logo → /logo.png`. Description trimmed at word boundary. Copy-link + Copy-for-Instagram still use the pretty canonical URL for human-facing UX.
+- **[NEW — Feb 10 2026] Live calendar sync (webcal://).** `GET /api/calendar.ics` returns an RFC 5545 iCalendar feed with `X-WR-CALNAME`, hourly refresh hint, and per-event UID/DTSTART/DTEND/SUMMARY/LOCATION/URL. Filterable via `?device=<uuid>` (uses the user's followed orgs+categories), `?orgs=slug1,slug2`, or `?category=<name>`. New `SubscribeCalendarDialog` on the Events page with scope toggle and 1-click add to Apple Calendar / Google Calendar / Outlook.com / Copy webcal:// link, plus a fallback `.ics` download.
+- **[NEW — Feb 10 2026] Weekly share pack for orgs.** `GET /api/organisations/{slug}/share-pack` returns the org's next 6 upcoming events with per-event share links to Facebook/LinkedIn/X/WhatsApp (all wired to the OG endpoint so previews are rich). `POST .../share-pack/email` renders an HTML email with previews + share buttons and sends via Resend (mocked with `[MOCK EMAIL]` until `RESEND_API_KEY` is set). New "Weekly share pack" card on the Org Dashboard with "Preview" and "Email me the pack" actions.
 - **[NEW — Feb 10 2026] Organisation logo + cover image uploads.** Pillow processes uploads server-side:
   - Logo → 512×512 PNG (center-crop) + 128×128 PNG thumbnail
   - Cover → 1600×500 JPEG (fit-crop)
@@ -50,9 +52,10 @@ A modern community website for Blackrod, Bolton showcasing local events, clubs, 
 
 ### P2
 - Ownership check on `PATCH /api/organisations/{slug}` and `POST /admin/broadcast` (flagged in iteration_2).
-- Refactor `server.py` (~1200 lines now — past the 700-line split threshold) into APIRouter modules by domain (events, orgs, subscribers, newsletter, images, og).
+- Refactor `server.py` (now ~1475 lines) into APIRouter modules by domain — testing agent flagged in iteration_7.
 - Site-wide search (orgs + events + feed) from navbar.
 - Per-org OG page (mirrors the per-event one, so sharing an organisation profile gets a rich card too).
+- Real weekly scheduler for share-pack email (cron/APScheduler) — right now it's on-demand only.
 
 ### P3
 - Admin analytics (real metrics beyond placeholder tiles).

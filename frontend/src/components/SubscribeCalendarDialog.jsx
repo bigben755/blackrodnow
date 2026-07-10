@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from "react";
 import {
-    Dialog, DialogContent, DialogHeader, DialogTitle,
+    Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription,
 } from "@/components/ui/dialog";
 import { CalendarDays, Apple, Copy, Download, Rss, Sparkles, ExternalLink } from "lucide-react";
 import { toast } from "sonner";
@@ -54,11 +54,11 @@ export default function SubscribeCalendarDialog({ open, onClose, allCategories =
                         <Rss className="h-5 w-5 text-primary" />
                         Subscribe to the live calendar
                     </DialogTitle>
+                    <DialogDescription>
+                        Auto-updating feed — new events appear in your calendar as soon as
+                        they&rsquo;re published on Blackrod Now.
+                    </DialogDescription>
                 </DialogHeader>
-                <p className="text-sm text-muted-foreground -mt-1">
-                    Auto-updating feed — new events appear in your calendar as soon as
-                    they&rsquo;re published on Blackrod Now.
-                </p>
 
                 {/* Scope picker */}
                 <div className="mt-3">
