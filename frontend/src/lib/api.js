@@ -114,12 +114,4 @@ export const api = {
         client.get("/admin/newsletter/preview", { params: email ? { email } : {} }).then((r) => r.data),
     sendNewsletter: (data) => client.post("/admin/newsletter/send", data).then((r) => r.data),
     broadcast: (data) => client.post("/admin/broadcast", data).then((r) => r.data),
-
-    // Facebook (mocked)
-    fbConnect: (slug, data) =>
-        client.post(`/organisations/${slug}/facebook/connect`, data).then((r) => r.data),
-    fbDisconnect: (slug) =>
-        client.post(`/organisations/${slug}/facebook/disconnect`).then((r) => r.data),
-    fbPublish: (slug, data) =>
-        client.post(`/organisations/${slug}/facebook/publish`, data).then((r) => r.data),
 };

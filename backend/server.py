@@ -141,8 +141,6 @@ class Organisation(BaseModel):
     cover_path: Optional[str] = None
     upcoming: int = 0
     status: Literal["approved", "pending", "rejected"] = "approved"
-    fb_page_id: Optional[str] = None
-    fb_connected: bool = False
     updated_at: str = Field(default_factory=now_iso)
 
 
@@ -365,8 +363,6 @@ class OrgPatch(BaseModel):
     logo_path: Optional[str] = None
     logo_thumb_path: Optional[str] = None
     cover_path: Optional[str] = None
-    fb_page_id: Optional[str] = None
-    fb_connected: Optional[bool] = None
 
 
 @api.patch("/organisations/{slug}")
@@ -1088,44 +1084,6 @@ async def broadcast(req: BroadcastReq):
         else:
             failed += 1
     return {"ok": True, "sent": sent, "failed": failed, "mocked": not RESEND_API_KEY}
-
-
-# ─────────── Facebook (mocked, ready for real Graph API) ───────────
-class FBConnectReq(BaseModel):
-    page_id: Optional[str] = None
-    page_name: Optional[str] = None
-
-
-@api.post("/organisations/{slug}/facebook/connect")
-async def fb_connect(slug: str, req: FBConnectReq):
-    await _find_org(slug)
-    await db.orgs.update_one(
-        {"slug": slug},
-        {"$set": {"fb_connected": True, "fb_page_id": req.page_id or f"mock-page-{slug}", "updated_at": now_iso()}},
-    )
-    logger.info("[MOCK FB] connected page for %s (page_id=%s)", slug, req.page_id)
-    return {"ok": True, "mocked": True, "page_id": req.page_id or f"mock-page-{slug}"}
-
-
-@api.post("/organisations/{slug}/facebook/disconnect")
-async def fb_disconnect(slug: str):
-    await db.orgs.update_one({"slug": slug}, {"$set": {"fb_connected": False, "fb_page_id": None}})
-    return {"ok": True}
-
-
-class FBPublishReq(BaseModel):
-    event_id: Optional[str] = None
-    message: str
-    link: Optional[str] = None
-
-
-@api.post("/organisations/{slug}/facebook/publish")
-async def fb_publish(slug: str, req: FBPublishReq):
-    org = await _find_org(slug)
-    if not org.get("fb_connected"):
-        raise HTTPException(400, "Facebook not connected for this organisation")
-    logger.info("[MOCK FB] publish for %s: %s (link=%s)", slug, req.message[:60], req.link)
-    return {"ok": True, "mocked": True, "fb_post_id": f"mock-{new_id()}"}
 
 
 # ─────────── Startup ───────────

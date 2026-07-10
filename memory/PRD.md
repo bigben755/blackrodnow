@@ -22,7 +22,7 @@ A modern community website for Blackrod, Bolton showcasing local events, clubs, 
 - Super-admin: org status/edit, event feature/delete, dashboard notifications, broadcasts.
 - Emergent Object Storage: org documents (PDF/doc/xls/etc up to 10MB).
 - Mobile-responsive calendar with `.ics` download.
-- 1-way Facebook publish endpoint (mocked pending Meta credentials).
+- **[NEW — Feb 10 2026] Simple share-to-socials.** Removed the mock Facebook Page Connect / Graph API flow entirely (was overkill). New `ShareButtons` component drops in one-tap share buttons for **Facebook, LinkedIn, X/Twitter, WhatsApp, Copy for Instagram, and Copy link** — all client-side (no API keys, no app review). Placed on the AI parsed drafts (Org Dashboard) and on Event Detail pages. Instagram uses the standard "copy caption then paste" pattern since Instagram has no web share URL.
 - **[NEW — Feb 10 2026] Organisation logo + cover image uploads.** Pillow processes uploads server-side:
   - Logo → 512×512 PNG (center-crop) + 128×128 PNG thumbnail
   - Cover → 1600×500 JPEG (fit-crop)
@@ -41,7 +41,6 @@ A modern community website for Blackrod, Bolton showcasing local events, clubs, 
 ## Prioritised Backlog
 ### P0 (blocked on user)
 - **Resend API key** — activate real newsletters/broadcasts.
-- **Meta Facebook credentials** — activate real 1-way FB publishing (App ID, Secret, Page Access Token with `pages_manage_posts`).
 
 ### P1
 - Real JWT / Emergent Google Auth replacing simulated role switcher.
@@ -60,5 +59,4 @@ A modern community website for Blackrod, Bolton showcasing local events, clubs, 
 
 ## Notes / Mocked Integrations
 - **Resend** — mocked (`[MOCK EMAIL]` in logs) until `RESEND_API_KEY` is set in `/app/backend/.env`.
-- **Facebook Graph API** — mocked (`[MOCK FB]` in logs) until Meta credentials provided.
 - **Auth** — simulated role switcher in navbar (guest / org / admin). No real login.

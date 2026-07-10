@@ -3,6 +3,7 @@ import { useParams, Link } from "react-router-dom";
 import { useApp, eventsByOrg } from "@/context/AppContext";
 import { CategoryBadge, formatDate, formatTime } from "@/components/Cards";
 import NewsletterSection from "@/components/NewsletterSection";
+import ShareButtons from "@/components/ShareButtons";
 import {
     CalendarDays,
     MapPin,
@@ -469,6 +470,15 @@ export default function EventDetail() {
                         share to WhatsApp, copy the event link, or save the event to your
                         calendar.
                     </p>
+
+                    <div className="mt-5">
+                        <div className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground mb-2">One-tap share</div>
+                        <ShareButtons
+                            text={`${event.title} — ${formatDate(event.start)} at ${event.venue || "Blackrod"}`}
+                            url={eventUrl}
+                            title={event.title}
+                        />
+                    </div>
                 </div>
 
                 <div className="mt-6 grid sm:grid-cols-2 lg:grid-cols-3 gap-3">

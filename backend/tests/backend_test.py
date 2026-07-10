@@ -236,35 +236,6 @@ class TestOrgProfilePatch:
         assert d["brandColor"] == "#123456"
 
 
-# ─────────── Facebook mocked ───────────
-class TestFacebookMocked:
-    def test_connect_flips_flag(self, api):
-        r = api.post(
-            f"{API}/organisations/blackrod-town-council/facebook/connect",
-            json={"page_name": "TEST Page"},
-            timeout=15,
-        )
-        assert r.status_code == 200, r.text
-        d = r.json()
-        assert d.get("mocked") is True
-        assert d.get("ok") is True
-        # verify DB flag
-        r2 = api.get(f"{API}/organisations/blackrod-town-council", timeout=15)
-        assert r2.status_code == 200
-        assert r2.json().get("fb_connected") is True
-
-    def test_publish_mocked(self, api):
-        r = api.post(
-            f"{API}/organisations/blackrod-town-council/facebook/publish",
-            json={"message": "TEST publish", "link": "https://example.com"},
-            timeout=15,
-        )
-        assert r.status_code == 200, r.text
-        d = r.json()
-        assert d.get("mocked") is True
-        assert d.get("fb_post_id")
-
-
 # ─────────── Documents (Emergent object storage) ───────────
 class TestDocuments:
     def test_upload_and_list(self, api):
