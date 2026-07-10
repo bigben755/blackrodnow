@@ -401,7 +401,9 @@ function NotificationDialog({ notif, org, onClose, onCopy }) {
             }
         })();
         return () => { cancelled = true; };
-    }, [notif]);
+        // Re-fetch only when the notification identity changes, not on parent re-renders.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [notif?.id]);
 
     const sendReply = async () => {
         if (!notif || !replyBody.trim()) return;
