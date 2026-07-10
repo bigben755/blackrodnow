@@ -236,6 +236,41 @@ class TestOrgProfilePatch:
         assert d["brandColor"] == "#123456"
 
 
+# ─────────── Event OG page ───────────
+class TestEventOgPage:
+    """GET /api/events/{id}/og returns crawler-friendly HTML with per-event
+    Open Graph tags plus a redirect to the canonical event page."""
+
+    def test_og_page_returns_event_specific_tags(self, api):
+        r = api.get(f"{API}/events?upcoming_only=false", timeout=15)
+        assert r.status_code == 200
+        events = r.json()
+        assert events, "seed events missing"
+        event_id = events[0]["id"]
+        expected_title = events[0]["title"]
+
+        og = api.get(f"{API}/events/{event_id}/og", timeout=15)
+        assert og.status_code == 200
+        assert "text/html" in og.headers.get("content-type", "").lower()
+        body = og.text
+
+        assert 'property="og:type"' in body
+        assert 'property="og:site_name" content="Blackrod Now"' in body
+        assert 'property="og:title"' in body
+        assert 'property="og:description"' in body
+        assert 'property="og:image"' in body
+        assert 'property="og:url"' in body
+        assert 'name="twitter:card" content="summary_large_image"' in body
+        import html as _h
+        assert _h.escape(expected_title) in body or expected_title in body
+        assert f"/events/{event_id}" in body
+        assert 'http-equiv="refresh"' in body
+
+    def test_og_404_for_missing_event(self, api):
+        r = api.get(f"{API}/events/does-not-exist/og", timeout=15)
+        assert r.status_code == 404
+
+
 # ─────────── Documents (Emergent object storage) ───────────
 class TestDocuments:
     def test_upload_and_list(self, api):

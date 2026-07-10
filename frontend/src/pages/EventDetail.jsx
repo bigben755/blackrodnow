@@ -4,6 +4,7 @@ import { useApp, eventsByOrg } from "@/context/AppContext";
 import { CategoryBadge, formatDate, formatTime } from "@/components/Cards";
 import NewsletterSection from "@/components/NewsletterSection";
 import ShareButtons from "@/components/ShareButtons";
+import { API } from "@/lib/api";
 import {
     CalendarDays,
     MapPin,
@@ -183,6 +184,11 @@ export default function EventDetail() {
         typeof window !== "undefined"
             ? window.location.href
             : `${SITE_ORIGIN}/events/${event.id}`;
+
+    // Crawler-friendly URL that renders per-event OG tags; redirects humans
+    // to the canonical `eventUrl`. Used for FB / LinkedIn / X / WhatsApp
+    // shares so each post gets a rich preview card.
+    const shareOgUrl = `${API}/events/${event.id}/og`;
 
     const location = [event.venue, event.address].filter(Boolean).join(", ");
     const facebookPost = buildFacebookPost(event, eventUrl, org);
@@ -455,6 +461,7 @@ export default function EventDetail() {
                         <ShareButtons
                             text={`${event.title} — ${formatDate(event.start)} at ${event.venue || "Blackrod"}`}
                             url={eventUrl}
+                            ogUrl={shareOgUrl}
                             title={event.title}
                         />
                     </div>

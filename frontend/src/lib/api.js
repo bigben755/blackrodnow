@@ -3,6 +3,7 @@ import axios from "axios";
 import { getDeviceId } from "./device";
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
+export { API };
 
 const client = axios.create({ baseURL: API, timeout: 30000 });
 

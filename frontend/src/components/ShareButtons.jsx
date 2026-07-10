@@ -7,20 +7,26 @@ import { toast } from "sonner";
  *
  * Props:
  *   text  – caption / message to share
- *   url   – URL to link to (defaults to current page)
+ *   url   – human-facing / canonical URL (used for Copy link + Instagram)
+ *   ogUrl – optional crawler URL for social platforms that fetch OG tags
+ *            (Facebook, LinkedIn, X/Twitter, WhatsApp). When provided we
+ *            share this URL so their scrapers see per-event OG meta and
+ *            render a rich preview card. It should immediately redirect
+ *            humans to `url`.
  *   title – optional title for native share
  *   compact – if true, renders icon-only buttons
  *   platforms – array to filter which platforms to show
- *                (default: ["facebook","linkedin","twitter","whatsapp","instagram","copy"])
  */
 export default function ShareButtons({
     text = "",
     url,
+    ogUrl,
     title = "",
     compact = false,
     platforms = ["facebook", "linkedin", "twitter", "whatsapp", "instagram", "copy"],
 }) {
-    const shareUrl = url || (typeof window !== "undefined" ? window.location.href : "");
+    const canonicalUrl = url || (typeof window !== "undefined" ? window.location.href : "");
+    const socialUrl = ogUrl || canonicalUrl;
     const enc = (s) => encodeURIComponent(s || "");
 
     /**
@@ -48,25 +54,25 @@ export default function ShareButtons({
             // NOTE: the `quote` param was deprecated by Facebook in 2017 and now
             // triggers "must use a domain you own" errors — the sharer only
             // reads OG tags from the URL, which we set in index.html.
-            onClick: () => open(`https://www.facebook.com/sharer/sharer.php?u=${enc(shareUrl)}`),
+            onClick: () => open(`https://www.facebook.com/sharer/sharer.php?u=${enc(socialUrl)}`),
         },
         linkedin: {
             label: "LinkedIn",
             icon: Linkedin,
             className: "bg-[#0A66C2] text-white hover:brightness-110",
-            onClick: () => open(`https://www.linkedin.com/sharing/share-offsite/?url=${enc(shareUrl)}`),
+            onClick: () => open(`https://www.linkedin.com/sharing/share-offsite/?url=${enc(socialUrl)}`),
         },
         twitter: {
             label: "X / Twitter",
             icon: TwitterX,
             className: "bg-black text-white hover:brightness-110",
-            onClick: () => open(`https://twitter.com/intent/tweet?text=${enc(text)}&url=${enc(shareUrl)}`),
+            onClick: () => open(`https://twitter.com/intent/tweet?text=${enc(text)}&url=${enc(socialUrl)}`),
         },
         whatsapp: {
             label: "WhatsApp",
             icon: MessageCircle,
             className: "bg-[#25D366] text-white hover:brightness-110",
-            onClick: () => open(`https://wa.me/?text=${enc(`${text}\n${shareUrl}`.trim())}`),
+            onClick: () => open(`https://wa.me/?text=${enc(`${text}\n${socialUrl}`.trim())}`),
         },
         instagram: {
             label: "Copy for Instagram",
@@ -74,7 +80,7 @@ export default function ShareButtons({
             className: "bg-gradient-to-br from-[#E1306C] via-[#F56040] to-[#FCAF45] text-white hover:brightness-110",
             onClick: async () => {
                 try {
-                    await navigator.clipboard.writeText(`${text}\n${shareUrl}`.trim());
+                    await navigator.clipboard.writeText(`${text}\n${canonicalUrl}`.trim());
                     toast.success("Caption copied — open Instagram and paste into your post or story.");
                 } catch {
                     toast.error("Couldn't copy caption");
@@ -87,7 +93,7 @@ export default function ShareButtons({
             className: "bg-muted text-foreground hover:bg-muted/80",
             onClick: async () => {
                 try {
-                    await navigator.clipboard.writeText(shareUrl);
+                    await navigator.clipboard.writeText(canonicalUrl);
                     toast.success("Link copied");
                 } catch {
                     toast.error("Couldn't copy link");
@@ -101,11 +107,11 @@ export default function ShareButtons({
             onClick: async () => {
                 if (typeof navigator !== "undefined" && navigator.share) {
                     try {
-                        await navigator.share({ title, text, url: shareUrl });
+                        await navigator.share({ title, text, url: canonicalUrl });
                     } catch { /* user cancelled */ }
                 } else {
                     try {
-                        await navigator.clipboard.writeText(`${text}\n${shareUrl}`);
+                        await navigator.clipboard.writeText(`${text}\n${canonicalUrl}`);
                         toast.success("Copied — paste anywhere to share");
                     } catch {
                         toast.error("Sharing not supported");

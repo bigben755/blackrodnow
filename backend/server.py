@@ -408,6 +408,98 @@ async def get_event(event_id: str):
     return e
 
 
+# ─────────── Event OG page (rich Facebook/LinkedIn/WhatsApp previews) ───────────
+# Returns a tiny HTML page with per-event Open Graph tags for social crawlers,
+# plus a meta-refresh + JS redirect so real humans land on the canonical
+# React event page. Crawlers ignore the redirect; humans never linger here.
+import html as _html_lib
+from fastapi import Request as _Req
+from fastapi.responses import HTMLResponse as _HTMLResp
+
+
+def _abs_base_url(req: _Req) -> str:
+    proto = req.headers.get("x-forwarded-proto") or req.url.scheme or "https"
+    host = req.headers.get("x-forwarded-host") or req.headers.get("host") or req.url.netloc
+    return f"{proto}://{host}"
+
+
+@api.get("/events/{event_id}/og", response_class=_HTMLResp)
+async def event_og_page(event_id: str, request: _Req):
+    e = await db.events.find_one({"id": event_id}, {"_id": 0})
+    if not e:
+        raise HTTPException(404, "Event not found")
+
+    org = await db.orgs.find_one({"slug": e.get("orgSlug")}, {"_id": 0}) or {}
+    base = _abs_base_url(request)
+    canonical = f"{base}/events/{event_id}"
+
+    # Resolve a good preview image (event image → org cover → org logo → site logo)
+    img = e.get("image") or ""
+    if not img and org.get("cover_path"):
+        img = f"{base}/api/organisations/{org['slug']}/cover"
+    if not img and org.get("logo_path"):
+        img = f"{base}/api/organisations/{org['slug']}/logo"
+    if not img:
+        img = f"{base}/logo.png"
+
+    # Format a human date line for the description prefix
+    try:
+        start_iso = e.get("start") or ""
+        dt = datetime.fromisoformat(start_iso.replace("Z", "+00:00")) if start_iso else None
+        when = dt.strftime("%a %d %b %Y · %H:%M") if dt else ""
+    except Exception:
+        when = ""
+
+    raw_title = e.get("title") or "Blackrod Event"
+    raw_desc_parts = [p for p in [when, e.get("venue"), e.get("description")] if p]
+    raw_desc = " · ".join(raw_desc_parts[:2])
+    if e.get("description"):
+        raw_desc = (raw_desc + " — " + e["description"]) if raw_desc else e["description"]
+    raw_desc = raw_desc[:280]
+
+    esc = _html_lib.escape
+    title = esc(raw_title)
+    desc = esc(raw_desc)
+    site_name = "Blackrod Now"
+    img_url = esc(img)
+    canonical_esc = esc(canonical)
+
+    body = f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>{title} — Blackrod Now</title>
+<meta name="description" content="{desc}" />
+<link rel="canonical" href="{canonical_esc}" />
+
+<meta property="og:type" content="event" />
+<meta property="og:site_name" content="{site_name}" />
+<meta property="og:title" content="{title}" />
+<meta property="og:description" content="{desc}" />
+<meta property="og:url" content="{canonical_esc}" />
+<meta property="og:image" content="{img_url}" />
+<meta property="og:image:alt" content="{title}" />
+
+<meta name="twitter:card" content="summary_large_image" />
+<meta name="twitter:title" content="{title}" />
+<meta name="twitter:description" content="{desc}" />
+<meta name="twitter:image" content="{img_url}" />
+
+<meta http-equiv="refresh" content="0; url={canonical_esc}" />
+<script>window.location.replace({canonical_esc!r});</script>
+<style>body{{font-family:system-ui,sans-serif;padding:2rem;color:#333;max-width:640px;margin:0 auto}}a{{color:#0052FF}}</style>
+</head>
+<body>
+<p>Redirecting to <a href="{canonical_esc}">{title}</a>…</p>
+</body>
+</html>"""
+
+    return _HTMLResp(
+        content=body,
+        headers={"Cache-Control": "public, max-age=300"},
+    )
+
+
 @api.post("/events")
 async def create_event(evt: Event):
     if evt.status not in ("pending", "approved"):
