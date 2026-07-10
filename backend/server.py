@@ -205,6 +205,7 @@ class AdminMessage(BaseModel):
     from_name: Optional[str] = None
     subject: str
     body: str
+    in_reply_to: Optional[str] = None  # notification id the org is replying to
     read: bool = False
     created_at: str = Field(default_factory=now_iso)
 
@@ -948,6 +949,7 @@ class ContactAdminReq(BaseModel):
     from_name: Optional[str] = None
     subject: str
     body: str
+    in_reply_to: Optional[str] = None
 
 
 @api.post("/contact-admin")
@@ -955,6 +957,16 @@ async def contact_admin(req: ContactAdminReq):
     m = AdminMessage(**req.model_dump())
     await db.messages.insert_one(m.model_dump())
     return m
+
+
+@api.get("/notifications/{nid}/thread")
+async def notification_thread(nid: str):
+    """Return the admin notification + any org replies linked to it (oldest first)."""
+    notif = await db.notifications.find_one({"id": nid}, {"_id": 0})
+    if not notif:
+        raise HTTPException(404, "Notification not found")
+    replies = await db.messages.find({"in_reply_to": nid}, {"_id": 0}).sort("created_at", 1).to_list(200)
+    return {"notification": notif, "replies": replies}
 
 
 @api.get("/admin/messages")

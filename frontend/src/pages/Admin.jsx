@@ -323,11 +323,17 @@ function AdminInbox({ onChange }) {
                 <ul className="space-y-2 max-h-72 overflow-y-auto">
                     {msgs.map((m) => (
                         <li key={m.id} data-testid={`msg-${m.id}`} className={`p-3 rounded-2xl border border-border ${m.read ? "bg-background" : "bg-primary/5"}`}>
-                            <div className="text-xs text-muted-foreground">
-                                <b className="text-foreground">{m.from_org_slug || m.from_name || m.from_email || "Anonymous"}</b> · {new Date(m.created_at).toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}
+                            <div className="text-xs text-muted-foreground flex items-center gap-2 flex-wrap">
+                                <b className="text-foreground">{m.from_org_slug || m.from_name || m.from_email || "Anonymous"}</b>
+                                <span>· {new Date(m.created_at).toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}</span>
+                                {m.in_reply_to && (
+                                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-secondary/40 text-secondary-foreground text-[10px] font-bold uppercase tracking-wider">
+                                        Reply
+                                    </span>
+                                )}
                             </div>
                             <div className="font-semibold text-sm mt-1">{m.subject}</div>
-                            <div className="text-sm text-muted-foreground mt-1">{m.body}</div>
+                            <div className="text-sm text-muted-foreground mt-1 whitespace-pre-wrap">{m.body}</div>
                             {!m.read && (
                                 <button
                                     onClick={async () => { await api.markMessageRead(m.id); setMsgs((prev) => prev.map((x) => x.id === m.id ? { ...x, read: true } : x)); onChange?.(); }}

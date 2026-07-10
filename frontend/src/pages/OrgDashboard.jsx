@@ -161,6 +161,7 @@ export default function OrgDashboard() {
                     <NotificationBell
                         count={unreadCount}
                         notifications={notifications}
+                        org={org}
                         onRead={async (id) => {
                             await api.markNotificationRead(id);
                             setNotifications((prev) => prev.map((n) => n.id === id ? { ...n, read: true } : n));
@@ -298,7 +299,7 @@ export default function OrgDashboard() {
 }
 
 /* Notification bell + full-message dialog */
-function NotificationBell({ count, notifications, onRead }) {
+function NotificationBell({ count, notifications, onRead, org }) {
     const [open, setOpen] = useState(false);
     const [selected, setSelected] = useState(null);
 
@@ -359,6 +360,7 @@ function NotificationBell({ count, notifications, onRead }) {
 
             <NotificationDialog
                 notif={selected}
+                org={org}
                 onClose={() => setSelected(null)}
                 onCopy={async (text) => {
                     try {
@@ -373,8 +375,56 @@ function NotificationBell({ count, notifications, onRead }) {
     );
 }
 
-/* Full-message dialog for a single admin notification */
-function NotificationDialog({ notif, onClose, onCopy }) {
+/* Full-message dialog for a single admin notification + reply thread */
+function NotificationDialog({ notif, org, onClose, onCopy }) {
+    const [replies, setReplies] = useState([]);
+    const [replyBody, setReplyBody] = useState("");
+    const [sending, setSending] = useState(false);
+    const [loadingThread, setLoadingThread] = useState(false);
+
+    useEffect(() => {
+        if (!notif) {
+            setReplies([]);
+            setReplyBody("");
+            return;
+        }
+        let cancelled = false;
+        (async () => {
+            setLoadingThread(true);
+            try {
+                const t = await api.notificationThread(notif.id);
+                if (!cancelled) setReplies(t.replies || []);
+            } catch {
+                if (!cancelled) setReplies([]);
+            } finally {
+                if (!cancelled) setLoadingThread(false);
+            }
+        })();
+        return () => { cancelled = true; };
+    }, [notif]);
+
+    const sendReply = async () => {
+        if (!notif || !replyBody.trim()) return;
+        setSending(true);
+        try {
+            const created = await api.contactAdmin({
+                from_org_slug: org?.slug,
+                from_email: org?.email,
+                from_name: org?.name,
+                subject: `Re: ${notif.title}`,
+                body: replyBody.trim(),
+                in_reply_to: notif.id,
+            });
+            setReplies((r) => [...r, created]);
+            setReplyBody("");
+            toast.success("Reply sent to admin");
+        } catch {
+            toast.error("Couldn't send reply");
+        } finally {
+            setSending(false);
+        }
+    };
+
     return (
         <Dialog open={!!notif} onOpenChange={(v) => !v && onClose()}>
             <DialogContent className="max-w-lg" data-testid="notification-dialog">
@@ -394,9 +444,75 @@ function NotificationDialog({ notif, onClose, onCopy }) {
                                 })}
                             </DialogDescription>
                         </DialogHeader>
-                        <div className="rounded-2xl bg-muted/50 p-4 text-sm whitespace-pre-wrap leading-relaxed max-h-[45vh] overflow-y-auto">
+
+                        <div className="rounded-2xl bg-muted/50 p-4 text-sm whitespace-pre-wrap leading-relaxed max-h-[35vh] overflow-y-auto">
                             {notif.body}
                         </div>
+
+                        {/* Reply thread */}
+                        {replies.length > 0 && (
+                            <div className="mt-1">
+                                <div className="text-[10px] font-bold tracking-wider uppercase text-muted-foreground mb-2">
+                                    Conversation
+                                </div>
+                                <div className="space-y-2 max-h-[25vh] overflow-y-auto">
+                                    {replies.map((r) => (
+                                        <div
+                                            key={r.id}
+                                            data-testid={`notif-reply-${r.id}`}
+                                            className="rounded-2xl border border-border bg-background p-3 text-sm"
+                                        >
+                                            <div className="flex items-center justify-between gap-2 mb-1">
+                                                <span className="text-[10px] font-bold uppercase tracking-wider text-secondary-foreground/70">
+                                                    {r.from_name || "Your reply"} → Admin
+                                                </span>
+                                                <span className="text-[10px] text-muted-foreground">
+                                                    {new Date(r.created_at).toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}
+                                                </span>
+                                            </div>
+                                            <div className="whitespace-pre-wrap leading-relaxed">{r.body}</div>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
+                        {loadingThread && <div className="text-xs text-muted-foreground">Loading conversation…</div>}
+
+                        {/* Reply composer */}
+                        <div className="mt-2 rounded-2xl border border-border bg-background p-3">
+                            <label className="text-[10px] font-bold tracking-wider uppercase text-muted-foreground">
+                                Reply to admin
+                            </label>
+                            <textarea
+                                data-testid="notif-reply-input"
+                                value={replyBody}
+                                onChange={(e) => setReplyBody(e.target.value)}
+                                placeholder="Add a quick reply — for example, 'Accessibility notes added, ready for review.'"
+                                rows={3}
+                                className="mt-1.5 w-full text-sm rounded-xl bg-muted/40 border border-border p-2.5 focus:outline-none focus:ring-2 focus:ring-primary/40 resize-none"
+                                onKeyDown={(e) => {
+                                    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                                        e.preventDefault();
+                                        sendReply();
+                                    }
+                                }}
+                            />
+                            <div className="mt-2 flex items-center justify-between">
+                                <span className="text-[10px] text-muted-foreground">
+                                    <kbd className="px-1 py-0.5 rounded bg-muted border border-border text-[9px]">⌘/Ctrl</kbd>+<kbd className="px-1 py-0.5 rounded bg-muted border border-border text-[9px]">Enter</kbd> to send
+                                </span>
+                                <button
+                                    data-testid="notif-reply-send"
+                                    onClick={sendReply}
+                                    disabled={sending || !replyBody.trim()}
+                                    className="inline-flex items-center gap-1 px-3 py-1.5 rounded-full bg-primary text-primary-foreground text-xs font-semibold disabled:opacity-50"
+                                >
+                                    {sending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
+                                    Send reply
+                                </button>
+                            </div>
+                        </div>
+
                         <div className="flex justify-end gap-2 pt-2">
                             <button
                                 data-testid="notif-dialog-copy"

@@ -61,6 +61,7 @@ export const api = {
 
     // Contact admin
     contactAdmin: (data) => client.post("/contact-admin", data).then((r) => r.data),
+    notificationThread: (nid) => client.get(`/notifications/${nid}/thread`).then((r) => r.data),
     adminMessages: () => client.get("/admin/messages").then((r) => r.data),
     markMessageRead: (id) => client.patch(`/admin/messages/${id}/read`).then((r) => r.data),
 

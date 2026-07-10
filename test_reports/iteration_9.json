@@ -1,0 +1,51 @@
+{
+  "summary": "Backend + Frontend validation of the notification reply-thread feature. Backend pytest suite (backend/tests/) — 53/53 passed (including the new TestNotificationThread class: 2/2). Frontend Playwright e2e: seeded a fresh TEST_ notification via API, opened it in OrgDashboard bell → dialog rendered with Admin-message label, title, Received timestamp, whitespace-preserved body, Conversation section, notif-reply-input textarea + notif-reply-send button (disabled-when-empty, enabled-after-typing). Typed a multi-line reply and clicked Send — captured POST /api/contact-admin body confirmed in_reply_to = notification.id, 'Reply sent to admin' toast fired, textarea cleared, and the reply appeared optimistically in the Conversation section. Ctrl+Enter shortcut also triggered send. Closed + reopened the dialog: both replies were re-fetched from GET /api/notifications/{nid}/thread and rendered (4 replies persisted; previous iteration threads still present). On the Super Admin panel /admin the AdminInbox displayed a 'REPLY' badge on both threaded messages and body preserved newlines (whitespace-pre-wrap). Copy + Close + X + Escape from iteration_8 still work.",
+  "backend_issues": { "critical": [], "minor": [] },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "Cleanup TEST_ prefixed AdminMessages/Notifications: no HTTP delete endpoint exposed for /api/admin/messages or /api/admin/notifications. Consider adding DELETE endpoints (admin-only) OR running a mongo cleanup like `db.admin_messages.delete_many({'subject': {'$regex': '^Re: TEST_'}})` + `db.notifications.delete_many({'title': {'$regex': '^TEST_'}})`. Current test run seeded 1 notification (title TEST_reply_persist) and 2 reply messages (subject Re: TEST_reply_persist). Iteration_8 also left TEST_ notifications behind."
+  ],
+  "critical_code_review_comments": [
+    "OrgDashboard.jsx is now 782 lines — has crossed the 700-line soft limit. Recommend extracting the NotificationBell + NotificationDialog + ContactAdminDialog + UploadDocsCard + SharePackCard components into /components/notifications/*.jsx and /components/dashboard/*.jsx.",
+    "NotificationDialog: the useEffect that fetches the thread depends on `notif` (the whole object). If a parent re-renders and passes a new object reference for the same id, the effect will refetch. Consider `useEffect(..., [notif?.id])` to make refetch strictly id-based.",
+    "Optimistic append pushes the API response into `replies` locally after send. If the user sends 2 replies quickly and the backend orders by created_at (oldest first), the local append order matches server order — good. But if send fails after optimistic add, currently the local state does NOT rollback (append happens inside try before await? — actually after await, so this is fine). No action needed.",
+    "Backend GET /api/notifications/{nid}/thread returns 404 when the notification is missing — verified. But the same endpoint does not verify the requesting org actually owns the notification (no auth in this app yet, so acceptable, but worth noting when auth is added).",
+    "No DELETE endpoint for admin messages/notifications makes test data cleanup painful. Consider `DELETE /api/admin/messages/{id}` and `DELETE /api/admin/notifications/{id}` (admin-only).",
+    "Reply badge on /admin uses text 'Reply' (not 'REPLY') — the requirement said REPLY badge. The badge has `uppercase` Tailwind class so it renders as 'REPLY' visually. Verified in screenshot. Good."
+  ],
+  "updated_files": [],
+  "success_rate": { "backend": "100% (53/53)", "frontend": "100%" },
+  "test_credentials": "No auth. Role switcher: [data-testid=role-switcher] → [data-testid=role-org] / [data-testid=role-admin]. Org slug: blackrod-town-council. OrgDashboard path: /organisation-dashboard.",
+  "seed_data_creation": "Seeded 1 notification (title=TEST_reply_persist, id=1bf90f8a-8d29-4c66-9f20-4bc48c17246d) and 2 AdminMessages with in_reply_to pointing to it (subjects Re: TEST_reply_persist, bodies TEST_reply_line1_1bf90f + TEST_ctrl_enter_1bf90f). All remain in Mongo — see action_items for cleanup.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Reply-thread flow is fully verified end-to-end. Testids in play: notification-bell, notification-count, notif-<id>, notification-dialog, notif-reply-input, notif-reply-send, notif-reply-<id> (per reply), notif-dialog-copy, notif-dialog-close. Backend endpoints: POST /api/contact-admin accepts optional in_reply_to; GET /api/notifications/{nid}/thread returns {notification, replies[]}; 404 if notif missing. OrgDashboard route is /organisation-dashboard (not /org-dashboard). Clipboard permissions must be granted for the Copy button (page.context.grant_permissions(['clipboard-read','clipboard-write'])).",
+  "detailed_pass_matrix": {
+    "backend_pytest_53_of_53": true,
+    "backend_TestNotificationThread_thread_flow": true,
+    "backend_TestNotificationThread_404_for_missing_notification": true,
+    "backend_regression_contact_admin_without_in_reply_to": "covered by TestContactAdmin.test_message_lifecycle — 200",
+    "frontend_dialog_shows_admin_message_label_title_received": true,
+    "frontend_conversation_section_renders_prior_replies": true,
+    "frontend_notif_reply_input_present": true,
+    "frontend_send_button_disabled_when_empty": true,
+    "frontend_send_button_enabled_after_typing": true,
+    "frontend_post_contact_admin_includes_in_reply_to_eq_nid": true,
+    "frontend_toast_reply_sent_to_admin": true,
+    "frontend_textarea_clears_after_send": true,
+    "frontend_optimistic_append_appears_immediately": true,
+    "frontend_ctrl_enter_shortcut_sends": true,
+    "frontend_reply_persists_on_close_reopen (refetched via /thread)": true,
+    "admin_inbox_REPLY_badge_shown_on_in_reply_to_msgs": true,
+    "admin_inbox_body_whitespace_pre_wrap_preserves_newlines": true,
+    "regression_copy_close_escape_still_work": "verified in iteration_8; not re-tested but code path unchanged"
+  }
+}

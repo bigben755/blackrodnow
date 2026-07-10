@@ -345,6 +345,44 @@ class TestSharePack:
         assert r.status_code == 400
 
 
+class TestNotificationThread:
+    """POST /contact-admin with in_reply_to threads a reply to a notification,
+    and GET /notifications/{id}/thread returns the notification + replies."""
+
+    def test_thread_flow(self, api):
+        r = api.post(
+            f"{API}/admin/notifications",
+            json={"org_slug": "blackrod-town-council", "title": "TEST_thread_notif", "body": "Please review."},
+            timeout=15,
+        )
+        assert r.status_code == 200, r.text
+        nid = r.json()["id"]
+
+        r2 = api.post(
+            f"{API}/contact-admin",
+            json={
+                "from_org_slug": "blackrod-town-council",
+                "subject": "Re: TEST_thread_notif",
+                "body": "Ack — will update by Friday.",
+                "in_reply_to": nid,
+            },
+            timeout=15,
+        )
+        assert r2.status_code == 200, r2.text
+        assert r2.json()["in_reply_to"] == nid
+
+        r3 = api.get(f"{API}/notifications/{nid}/thread", timeout=15)
+        assert r3.status_code == 200
+        d = r3.json()
+        assert d["notification"]["id"] == nid
+        reply_bodies = [x["body"] for x in d["replies"]]
+        assert "Ack — will update by Friday." in reply_bodies
+
+    def test_thread_404_for_missing_notification(self, api):
+        r = api.get(f"{API}/notifications/does-not-exist/thread", timeout=15)
+        assert r.status_code == 404
+
+
 class TestDocuments:
     def test_upload_and_list(self, api):
         content = b"Hello Blackrod " + uuid.uuid4().hex.encode()
