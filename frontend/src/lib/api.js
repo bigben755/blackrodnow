@@ -115,4 +115,9 @@ export const api = {
         client.get("/admin/newsletter/preview", { params: email ? { email } : {} }).then((r) => r.data),
     sendNewsletter: (data) => client.post("/admin/newsletter/send", data).then((r) => r.data),
     broadcast: (data) => client.post("/admin/broadcast", data).then((r) => r.data),
+
+    // Share pack
+    getSharePack: (slug) => client.get(`/organisations/${slug}/share-pack`).then((r) => r.data),
+    emailSharePack: (slug, to) =>
+        client.post(`/organisations/${slug}/share-pack/email`, to ? { to } : {}).then((r) => r.data),
 };

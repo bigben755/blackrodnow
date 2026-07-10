@@ -3,17 +3,10 @@ import { useApp } from "@/context/AppContext";
 import { EventCard, CategoryBadge, formatTime } from "@/components/Cards";
 import NewsletterSection from "@/components/NewsletterSection";
 import { CATEGORIES } from "@/data/mockData";
-import { Search, LayoutGrid, CalendarDays, ChevronLeft, ChevronRight, Download, Rss, Apple, Copy } from "lucide-react";
+import { Search, LayoutGrid, CalendarDays, ChevronLeft, ChevronRight, Rss } from "lucide-react";
 import { Link } from "react-router-dom";
 import { downloadICS } from "@/lib/ics";
-import {
-    DropdownMenu,
-    DropdownMenuContent,
-    DropdownMenuItem,
-    DropdownMenuLabel,
-    DropdownMenuSeparator,
-    DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
+import SubscribeCalendarDialog from "@/components/SubscribeCalendarDialog";
 import { toast } from "sonner";
 
 const startOfMonth = (d) => new Date(d.getFullYear(), d.getMonth(), 1);
@@ -28,6 +21,7 @@ export default function Events() {
     const [cat, setCat] = useState("All");
     const [orgFilter, setOrgFilter] = useState("All");
     const [tag, setTag] = useState("All"); // Free | Family | Accessible | All
+    const [subOpen, setSubOpen] = useState(false);
     const [cursor, setCursor] = useState(new Date());
     const [selectedDay, setSelectedDay] = useState(new Date().toDateString());
 
@@ -127,73 +121,13 @@ export default function Events() {
                             <CalendarDays className="h-3.5 w-3.5" /> Month
                         </button>
                     </div>
-                    <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                            <button
-                                data-testid="sync-calendar"
-                                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-full border border-border bg-surface text-xs font-semibold uppercase tracking-wider hover:bg-muted"
-                            >
-                                <CalendarDays className="h-3.5 w-3.5" /> Sync calendar
-                            </button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end" className="rounded-2xl w-72">
-                            <DropdownMenuLabel>Add Blackrod Now to your calendar</DropdownMenuLabel>
-                            <DropdownMenuSeparator />
-                            <DropdownMenuItem
-                                data-testid="sync-download-ics"
-                                onClick={() => {
-                                    downloadICS(filtered.length ? filtered : filteredAll, "blackrod-now.ics");
-                                    toast.success("Downloaded blackrod-now.ics", {
-                                        description: "Open the file to import into Google, Apple or Outlook Calendar.",
-                                    });
-                                }}
-                            >
-                                <Download className="h-4 w-4 mr-2" /> Download .ics file (all upcoming)
-                            </DropdownMenuItem>
-                            <DropdownMenuItem
-                                data-testid="sync-apple"
-                                onClick={() => {
-                                    downloadICS(filtered.length ? filtered : filteredAll, "blackrod-now.ics");
-                                    toast.success("Opening in Apple Calendar", {
-                                        description: "On iPhone or Mac, tap the downloaded file to add.",
-                                    });
-                                }}
-                            >
-                                <Apple className="h-4 w-4 mr-2" /> Add to Apple Calendar
-                            </DropdownMenuItem>
-                            <DropdownMenuItem
-                                data-testid="sync-google"
-                                onClick={() => {
-                                    downloadICS(filtered.length ? filtered : filteredAll, "blackrod-now.ics");
-                                    toast.info("Import into Google Calendar", {
-                                        description:
-                                            "Downloaded file → open calendar.google.com → Settings → Import.",
-                                    });
-                                }}
-                            >
-                                <CalendarDays className="h-4 w-4 mr-2" /> Add to Google Calendar
-                            </DropdownMenuItem>
-                            <DropdownMenuSeparator />
-                            <DropdownMenuItem
-                                data-testid="sync-subscribe"
-                                onClick={async () => {
-                                    try {
-                                        await navigator.clipboard.writeText(
-                                            `${window.location.origin}/api/calendar.ics`,
-                                        );
-                                        toast.info("Subscribe link copied", {
-                                            description:
-                                                "Live-updating subscription is coming soon. For now, use the .ics download above.",
-                                        });
-                                    } catch {
-                                        toast.info("Live subscription coming soon");
-                                    }
-                                }}
-                            >
-                                <Rss className="h-4 w-4 mr-2" /> Copy subscribe link (coming soon)
-                            </DropdownMenuItem>
-                        </DropdownMenuContent>
-                    </DropdownMenu>
+                    <button
+                        data-testid="sync-calendar"
+                        onClick={() => setSubOpen(true)}
+                        className="inline-flex items-center gap-1.5 px-4 py-2 rounded-full border border-border bg-surface text-xs font-semibold uppercase tracking-wider hover:bg-muted"
+                    >
+                        <Rss className="h-3.5 w-3.5" /> Sync calendar
+                    </button>
                 </div>
             </div>
 
@@ -408,6 +342,15 @@ export default function Events() {
             
             {/* NEWSLETTER */}
             <NewsletterSection />
+            <SubscribeCalendarDialog
+                open={subOpen}
+                onClose={() => setSubOpen(false)}
+                allCategories={CATEGORIES}
+                onDownloadIcs={() => {
+                    downloadICS(filtered.length ? filtered : filteredAll, "blackrod-now.ics");
+                    toast.success("Downloaded blackrod-now.ics");
+                }}
+            />
         </div>
     );
 }

@@ -272,6 +272,79 @@ class TestEventOgPage:
 
 
 # ─────────── Documents (Emergent object storage) ───────────
+class TestCalendarFeed:
+    """GET /api/calendar.ics returns a valid iCalendar feed with filter params."""
+
+    def test_all_events_feed(self, api):
+        r = api.get(f"{API}/calendar.ics", timeout=15)
+        assert r.status_code == 200
+        assert "text/calendar" in r.headers.get("content-type", "").lower()
+        body = r.text
+        assert body.startswith("BEGIN:VCALENDAR")
+        assert "END:VCALENDAR" in body
+        assert "PRODID:-//Blackrod Now//" in body
+        assert "X-WR-CALNAME:Blackrod Now" in body
+        assert "REFRESH-INTERVAL;VALUE=DURATION:PT1H" in body
+        # At least one VEVENT
+        assert body.count("BEGIN:VEVENT") >= 1
+        assert body.count("BEGIN:VEVENT") == body.count("END:VEVENT")
+
+    def test_category_filter(self, api):
+        r = api.get(f"{API}/calendar.ics?category=Community", timeout=15)
+        assert r.status_code == 200
+        assert "X-WR-CALNAME:Blackrod Now · Community" in r.text
+
+    def test_orgs_filter(self, api):
+        r = api.get(f"{API}/calendar.ics?orgs=blackrod-town-council", timeout=15)
+        assert r.status_code == 200
+        assert "X-WR-CALNAME" in r.text
+
+
+class TestSharePack:
+    """Per-org share pack (data + email)."""
+
+    def test_get_share_pack(self, api):
+        r = api.get(f"{API}/organisations/blackrod-town-council/share-pack", timeout=15)
+        assert r.status_code == 200
+        d = r.json()
+        assert d["org"]["slug"] == "blackrod-town-council"
+        assert isinstance(d["events"], list)
+        if d["events"]:
+            e = d["events"][0]
+            assert e["og_url"].endswith("/og")
+            assert e["canonical_url"].startswith("http")
+            assert "facebook" in e["share_links"]
+            assert "linkedin" in e["share_links"]
+            assert "twitter" in e["share_links"]
+            assert "whatsapp" in e["share_links"]
+
+    def test_email_share_pack_mocked(self, api):
+        r = api.post(
+            f"{API}/organisations/blackrod-town-council/share-pack/email",
+            json={"to": "regression@example.com"},
+            timeout=30,
+        )
+        assert r.status_code == 200, r.text
+        d = r.json()
+        assert d["ok"] is True
+        assert d["to"] == "regression@example.com"
+        assert d["email"]["mocked"] is True
+
+    def test_email_share_pack_requires_recipient(self, api):
+        # A fake org with no email would 400, but existing seed orgs may have email set.
+        # Just verify that passing empty `to` and missing org email produces 400 or 200.
+        # Since we can't guarantee no email, skip the negative case if org.email is set.
+        r_org = api.get(f"{API}/organisations/blackrod-town-council", timeout=15)
+        if r_org.json().get("email"):
+            return
+        r = api.post(
+            f"{API}/organisations/blackrod-town-council/share-pack/email",
+            json={},
+            timeout=15,
+        )
+        assert r.status_code == 400
+
+
 class TestDocuments:
     def test_upload_and_list(self, api):
         content = b"Hello Blackrod " + uuid.uuid4().hex.encode()

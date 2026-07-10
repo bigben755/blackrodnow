@@ -1,0 +1,36 @@
+{
+  "summary": "Full regression + edge-case testing of Live Calendar Sync (webcal/.ics) and Weekly Share Pack features. Backend: 51/51 pytest tests pass (37 baseline + 14 new edge cases in /app/backend/tests/test_calendar_share_edge.py). Verified iCal RFC 5545 conformance (CRLF endings, UTC Z timestamps, PRODID, X-WR-CALNAME, REFRESH-INTERVAL PT1H, X-PUBLISHED-TTL PT1H), filter combinations (category filters restrict to CATEGORIES:Community events; orgs filter restricts UIDs to that org; multi-org filter unions correctly; unknown category returns valid empty feed; unknown device UUID returns valid base feed without error). Verified share-pack JSON payload shape (canonical_url absolute, og_url absolute ending with /og, share_links contain URL-encoded og_url for facebook/linkedin/twitter/whatsapp), 404 for unknown org, mocked email returns email.mocked=true with matching to+count, org.email fallback when body omitted, and 400 when org.email is null AND to omitted. MOCK EMAIL log entries confirmed in backend.out.log for each mocked send. Frontend: Events page 'Sync calendar' opens SubscribeCalendarDialog with all 4 platform buttons (sub-apple webcal://, sub-google calendar.google.com, sub-outlook outlook.live.com, sub-copy) + sub-download; scope toggle updates URL to include ?category=<value> and ?device=<uuid> correctly; Copy button writes webcal:// to clipboard and fires toast. OrgDashboard SharePackCard shows Preview + Email buttons; Preview dialog renders event(s) with Facebook/LinkedIn/X/WhatsApp/Copy caption per event; Email button fires MOCKED toast with recipient+count; when org.email is missing (verified via horwich-blackrod-community-events-cic) Email button becomes disabled and 'Add an email on your profile to enable emailing.' help text appears.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "SubscribeCalendarDialog", "issues": ["Radix DialogContent warning in console: 'Missing Description or aria-describedby={undefined}' — accessibility polish, add <DialogDescription>. Non-blocking."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/backend_test.py",
+    "/app/backend/tests/test_calendar_share_edge.py",
+    "/app/backend/tests/test_org_images.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "Optional a11y polish: add <DialogDescription> inside SubscribeCalendarDialog to silence the Radix aria-describedby console warning.",
+    "server.py is now 1475 lines — well past the 700-line guideline. Suggest splitting into routers (calendar_router.py, sharepack_router.py, og_router.py, subscribers_router.py) in a follow-up refactor. Not blocking."
+  ],
+  "critical_code_review_comments": [
+    "Calendar feed correctly handles empty-follows edge case: an unknown device UUID silently returns the un-filtered feed (sub = {} default). Good defensive coding, verified by test_unknown_device_returns_valid_feed.",
+    "Share pack email endpoint uses `to.strip()` after `req.to or org.get('email')` — a `to: '   '` payload would collapse to empty string and return 400, which is the correct behaviour. Nice.",
+    "_ics_fold wraps lines >75 octets at char boundaries (73 chars); acceptable but multi-byte UTF-8 titles could theoretically split a codepoint. Extremely unlikely with current seed data. Minor.",
+    "_org_share_pack_data limits to 6 events by default — no way for admins to configure this limit; consider a `limit` query param on /share-pack for larger orgs. Non-blocking enhancement."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_calendar_share_edge.py (new — 14 edge-case tests)"
+  ],
+  "success_rate": {"backend": "100% (51/51)", "frontend": "100%"},
+  "seed_data_creation": "None — used existing seeded orgs (blackrod-town-council with email set, horwich-blackrod-community-events-cic without email).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Baseline for calendar/share-pack features. To rerun regression: `cd /app && REACT_APP_BACKEND_URL=<preview_url> python -m pytest backend/tests/ -q` (expect 51 passed). New edge tests live in test_calendar_share_edge.py — TestCalendarEdge (8 tests) and TestSharePackEdge (6 tests). The MOCK EMAIL log entry is written via logger.info in resend_send(); verify with `grep 'MOCK EMAIL' /var/log/supervisor/backend.out.log`. Frontend testids used: sync-calendar, subscribe-calendar-dialog, sub-{apple|google|outlook|copy|download}, scope-{all|follows|category}, scope-category-select, share-pack-{preview|email}, pack-{fb|li|tw|wa}-<eventId>, org-switcher. To force the disabled Email state in UI tests, select 'horwich-blackrod-community-events-cic' in org-switcher.",
+  "rca of the issue": "N/A — feature verification, no bugs found."
+}

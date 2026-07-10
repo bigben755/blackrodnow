@@ -503,6 +503,268 @@ async def event_og_page(event_id: str, request: _Req):
     )
 
 
+# ─────────── Live calendar feed (.ics / webcal) ───────────
+from fastapi.responses import PlainTextResponse as _PlainResp
+
+
+def _ics_escape(txt: str) -> str:
+    """Escape reserved iCalendar characters per RFC 5545."""
+    if not txt:
+        return ""
+    return (
+        txt.replace("\\", "\\\\")
+        .replace(",", "\\,")
+        .replace(";", "\\;")
+        .replace("\n", "\\n")
+        .replace("\r", "")
+    )
+
+
+def _ics_dt(iso: str) -> str:
+    """Convert ISO datetime to iCal UTC form: 20260912T140000Z."""
+    if not iso:
+        return ""
+    try:
+        dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    except Exception:
+        return ""
+
+
+def _ics_fold(line: str) -> str:
+    """Fold long lines to 75 octets per RFC 5545."""
+    if len(line.encode("utf-8")) <= 75:
+        return line
+    out = []
+    while line:
+        chunk = line[:73]
+        out.append(chunk)
+        line = line[73:]
+        if line:
+            line = " " + line  # leading space marks continuation
+    return "\r\n".join(out)
+
+
+@api.get("/calendar.ics", response_class=_PlainResp)
+async def calendar_feed(
+    request: _Req,
+    device: Optional[str] = None,
+    orgs: Optional[str] = None,
+    category: Optional[str] = None,
+    upcoming_only: bool = True,
+):
+    """Live iCalendar feed of Blackrod events.
+
+    Filters (all optional, apply in order of precedence):
+      • ?device=<uuid>   – events for orgs/categories the anonymous user follows
+      • ?orgs=slug1,slug2
+      • ?category=Community
+      • ?upcoming_only=false to include past events (default true)
+    """
+    base = _abs_base_url(request)
+    q: Dict[str, Any] = {"status": {"$ne": "pending"}}
+
+    org_slugs: Optional[List[str]] = None
+    cats: Optional[List[str]] = None
+
+    if device:
+        sub = await db.subscribers.find_one({"deviceId": device}) or {}
+        follows = sub.get("follows") or {}
+        org_slugs = follows.get("orgs") or None
+        cats = follows.get("categories") or None
+    if orgs:
+        org_slugs = [s.strip() for s in orgs.split(",") if s.strip()]
+    if category:
+        cats = [category]
+
+    if org_slugs and cats:
+        q["$or"] = [{"orgSlug": {"$in": org_slugs}}, {"category": {"$in": cats}}]
+    elif org_slugs:
+        q["orgSlug"] = {"$in": org_slugs}
+    elif cats:
+        q["category"] = {"$in": cats}
+
+    events = await db.events.find(q, {"_id": 0}).sort("start", 1).to_list(2000)
+    if upcoming_only:
+        nowi = now_iso()
+        events = [e for e in events if (e.get("end") or e.get("start") or "") >= nowi]
+
+    # Calendar name reflects the applied filter
+    name_parts = ["Blackrod Now"]
+    if org_slugs:
+        name_parts.append(f"{len(org_slugs)} orgs")
+    if cats:
+        name_parts.append(cats[0] if len(cats) == 1 else f"{len(cats)} categories")
+    if device and not org_slugs and not cats:
+        name_parts.append("Personal")
+    cal_name = " · ".join(name_parts)
+    cal_desc = "Live-updating calendar feed from Blackrod Now"
+
+    lines = [
+        "BEGIN:VCALENDAR",
+        "VERSION:2.0",
+        "PRODID:-//Blackrod Now//Events Feed//EN",
+        "CALSCALE:GREGORIAN",
+        "METHOD:PUBLISH",
+        f"X-WR-CALNAME:{_ics_escape(cal_name)}",
+        f"NAME:{_ics_escape(cal_name)}",
+        f"X-WR-CALDESC:{_ics_escape(cal_desc)}",
+        "REFRESH-INTERVAL;VALUE=DURATION:PT1H",
+        "X-PUBLISHED-TTL:PT1H",
+    ]
+
+    dtstamp = _ics_dt(now_iso())
+    for e in events:
+        dtstart = _ics_dt(e.get("start") or "")
+        dtend = _ics_dt(e.get("end") or e.get("start") or "")
+        if not dtstart:
+            continue
+        canonical = f"{base}/events/{e.get('id')}"
+        loc = ", ".join([p for p in [e.get("venue"), e.get("address")] if p])
+        desc_parts = [e.get("description") or "", f"Details: {canonical}"]
+        desc = "\n\n".join([p for p in desc_parts if p])
+        lines += [
+            "BEGIN:VEVENT",
+            _ics_fold(f"UID:{e.get('id')}@blackrodnow"),
+            f"DTSTAMP:{dtstamp}",
+            f"DTSTART:{dtstart}",
+            f"DTEND:{dtend}",
+            _ics_fold(f"SUMMARY:{_ics_escape(e.get('title') or 'Blackrod event')}"),
+            _ics_fold(f"DESCRIPTION:{_ics_escape(desc)}"),
+        ]
+        if loc:
+            lines.append(_ics_fold(f"LOCATION:{_ics_escape(loc)}"))
+        if e.get("category"):
+            lines.append(_ics_fold(f"CATEGORIES:{_ics_escape(e['category'])}"))
+        lines.append(f"URL:{canonical}")
+        lines.append("END:VEVENT")
+    lines.append("END:VCALENDAR")
+
+    body = "\r\n".join(lines) + "\r\n"
+    return _PlainResp(
+        content=body,
+        media_type="text/calendar; charset=utf-8",
+        headers={"Cache-Control": "public, max-age=1800"},
+    )
+
+
+# ─────────── Org "share pack" (per-org email pack of upcoming events) ───────────
+def _org_share_pack_data(org: Dict[str, Any], events: List[Dict[str, Any]], base: str, limit: int = 6) -> Dict[str, Any]:
+    upcoming = [e for e in events if e.get("orgSlug") == org["slug"] and (e.get("end") or e.get("start") or "") >= now_iso()]
+    upcoming.sort(key=lambda x: x.get("start", ""))
+    upcoming = upcoming[:limit]
+    items = []
+    for e in upcoming:
+        canonical = f"{base}/events/{e['id']}"
+        og_url = f"{base}/api/events/{e['id']}/og"
+        share_text = f"{e['title']} — {e.get('venue') or 'Blackrod'}"
+        items.append({
+            "id": e["id"],
+            "title": e["title"],
+            "start": e.get("start"),
+            "venue": e.get("venue") or "",
+            "description": (e.get("description") or "")[:220],
+            "image": e.get("image") or "",
+            "canonical_url": canonical,
+            "og_url": og_url,
+            "share_text": share_text,
+            "share_links": {
+                "facebook": f"https://www.facebook.com/sharer/sharer.php?u={requests.utils.quote(og_url, safe='')}",
+                "linkedin": f"https://www.linkedin.com/sharing/share-offsite/?url={requests.utils.quote(og_url, safe='')}",
+                "twitter": f"https://twitter.com/intent/tweet?text={requests.utils.quote(share_text, safe='')}&url={requests.utils.quote(og_url, safe='')}",
+                "whatsapp": f"https://wa.me/?text={requests.utils.quote(share_text + ' ' + og_url, safe='')}",
+            },
+        })
+    return {"org": {"slug": org["slug"], "name": org["name"], "brandColor": org.get("brandColor", "#0052FF")}, "events": items, "count": len(items)}
+
+
+def _render_share_pack_html(pack: Dict[str, Any], base: str) -> str:
+    org = pack["org"]
+    brand = org.get("brandColor", "#0052FF")
+    if not pack["events"]:
+        return f"""<div style="font-family:system-ui,sans-serif;padding:24px;color:#333">
+          <h1 style="color:{brand}">Hello {org['name']}</h1>
+          <p>You have no upcoming events on Blackrod Now this week. Add one and we'll include it in your next share pack.</p>
+          <p><a href="{base}/organisation-dashboard" style="color:{brand}">Open your dashboard →</a></p>
+        </div>"""
+    rows = []
+    for e in pack["events"]:
+        img = e["image"] or f"{base}/logo.png"
+        try:
+            dt = datetime.fromisoformat((e["start"] or "").replace("Z", "+00:00"))
+            when = dt.strftime("%a %d %b · %H:%M")
+        except Exception:
+            when = ""
+        rows.append(f"""
+        <table role="presentation" cellspacing="0" cellpadding="0" width="100%" style="margin:0 0 24px 0;border:1px solid #E5E7EB;border-radius:16px;overflow:hidden">
+          <tr><td>
+            <img src="{img}" alt="" width="600" style="width:100%;max-width:600px;display:block;object-fit:cover;height:220px" />
+          </td></tr>
+          <tr><td style="padding:16px 20px">
+            <div style="font-size:11px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:{brand}">{when}</div>
+            <div style="font-size:20px;font-weight:800;margin-top:4px;color:#111827">{_html_lib.escape(e['title'])}</div>
+            <div style="font-size:14px;color:#6B7280;margin-top:4px">{_html_lib.escape(e['venue'])}</div>
+            <p style="font-size:14px;color:#374151;line-height:1.5;margin:12px 0 16px 0">{_html_lib.escape(e['description'])}</p>
+            <div>
+              <a href="{e['share_links']['facebook']}" style="display:inline-block;padding:8px 14px;margin:0 6px 6px 0;background:#1877F2;color:#fff;border-radius:999px;font-size:12px;font-weight:700;text-decoration:none">Facebook</a>
+              <a href="{e['share_links']['linkedin']}" style="display:inline-block;padding:8px 14px;margin:0 6px 6px 0;background:#0A66C2;color:#fff;border-radius:999px;font-size:12px;font-weight:700;text-decoration:none">LinkedIn</a>
+              <a href="{e['share_links']['twitter']}" style="display:inline-block;padding:8px 14px;margin:0 6px 6px 0;background:#111;color:#fff;border-radius:999px;font-size:12px;font-weight:700;text-decoration:none">X</a>
+              <a href="{e['share_links']['whatsapp']}" style="display:inline-block;padding:8px 14px;margin:0 6px 6px 0;background:#25D366;color:#fff;border-radius:999px;font-size:12px;font-weight:700;text-decoration:none">WhatsApp</a>
+              <a href="{e['canonical_url']}" style="display:inline-block;padding:8px 14px;margin:0 6px 6px 0;background:#F3F4F6;color:#111;border-radius:999px;font-size:12px;font-weight:700;text-decoration:none">Event page</a>
+            </div>
+          </td></tr>
+        </table>
+        """)
+    body = "\n".join(rows)
+    return f"""<!doctype html>
+<html><body style="margin:0;padding:0;background:#F9FAFB;font-family:system-ui,-apple-system,Segoe UI,sans-serif">
+<table role="presentation" cellspacing="0" cellpadding="0" width="100%" bgcolor="#F9FAFB">
+<tr><td align="center">
+<table role="presentation" cellspacing="0" cellpadding="0" width="640" style="max-width:640px;padding:24px">
+  <tr><td style="text-align:center;padding:12px 0 24px 0">
+    <div style="font-size:12px;letter-spacing:0.2em;text-transform:uppercase;color:{brand};font-weight:800">Blackrod Now · Share Pack</div>
+    <h1 style="font-size:28px;color:#111827;margin:8px 0 4px 0">Your upcoming events</h1>
+    <p style="font-size:15px;color:#6B7280;margin:0">Ready-to-share posts for {_html_lib.escape(org['name'])}. Tap a button below any event to share.</p>
+  </td></tr>
+  <tr><td>{body}</td></tr>
+  <tr><td style="text-align:center;padding:24px 0;color:#9CA3AF;font-size:12px">
+    Sent from Blackrod Now · <a href="{base}/organisation-dashboard" style="color:{brand}">Open dashboard</a>
+  </td></tr>
+</table>
+</td></tr>
+</table>
+</body></html>"""
+
+
+@api.get("/organisations/{slug}/share-pack")
+async def get_share_pack(slug: str, request: _Req):
+    org = await _find_org(slug)
+    all_events = await db.events.find({"status": {"$ne": "pending"}}, {"_id": 0}).to_list(2000)
+    base = _abs_base_url(request)
+    return _org_share_pack_data(org, all_events, base)
+
+
+class SharePackEmailReq(BaseModel):
+    to: Optional[str] = None  # override; else uses org.email
+
+
+@api.post("/organisations/{slug}/share-pack/email")
+async def email_share_pack(slug: str, req: SharePackEmailReq, request: _Req):
+    org = await _find_org(slug)
+    to = (req.to or org.get("email") or "").strip()
+    if not to:
+        raise HTTPException(400, "No recipient email — set an email on the org profile or pass `to`.")
+    all_events = await db.events.find({"status": {"$ne": "pending"}}, {"_id": 0}).to_list(2000)
+    base = _abs_base_url(request)
+    pack = _org_share_pack_data(org, all_events, base)
+    html = _render_share_pack_html(pack, base)
+    subject = f"Your Blackrod Now share pack — {pack['count']} upcoming event{'s' if pack['count'] != 1 else ''}"
+    result = await asyncio.to_thread(resend_send, to, subject, html)
+    return {"ok": True, "to": to, "count": pack["count"], "email": result}
+
+
 @api.post("/events")
 async def create_event(evt: Event):
     if evt.status not in ("pending", "approved"):

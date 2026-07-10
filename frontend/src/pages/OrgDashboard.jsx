@@ -7,7 +7,7 @@ import OrgAvatar from "@/components/OrgAvatar";
 import {
     Wand2, Copy, Calendar, Megaphone, Bell, Sparkles, Loader2,
     Image as ImageIcon, FileText, UploadCloud,
-    Send, Edit3, Trash2,
+    Send, Edit3, Trash2, Mail,
 } from "lucide-react";
 import { toast } from "sonner";
 import {
@@ -180,8 +180,8 @@ export default function OrgDashboard() {
                 </div>
             </div>
 
-            {/* Quick actions row: profile, docs upload */}
-            <section className="grid sm:grid-cols-2 gap-4 mb-8">
+            {/* Quick actions row: profile, docs upload, share pack */}
+            <section className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4 mb-8">
                 <Link
                     to={`/edit-organisation/${selectedOrgSlug}`}
                     data-testid="qa-profile"
@@ -194,6 +194,8 @@ export default function OrgDashboard() {
                 </Link>
 
                 <UploadDocsCard slug={selectedOrgSlug} docs={docs} onChange={loadDocs} />
+
+                <SharePackCard slug={selectedOrgSlug} org={org} />
             </section>
 
             {/* AI Feature */}
@@ -389,6 +391,127 @@ function ParsedCard({ it, onPublishEvent, onPublishUpdate, onCopy }) {
                 <ShareButtons text={it.social_caption || it.description} url={shareUrl} title={it.title} />
             </div>
         </div>
+    );
+}
+
+/* Share Pack card */
+function SharePackCard({ slug, org }) {
+    const [busy, setBusy] = useState(false);
+    const [previewOpen, setPreviewOpen] = useState(false);
+    const [pack, setPack] = useState(null);
+
+    const openPreview = async () => {
+        if (!slug) return;
+        setBusy(true);
+        try {
+            const p = await api.getSharePack(slug);
+            setPack(p);
+            setPreviewOpen(true);
+        } catch {
+            toast.error("Couldn't load share pack");
+        } finally { setBusy(false); }
+    };
+
+    const sendEmail = async () => {
+        setBusy(true);
+        try {
+            const r = await api.emailSharePack(slug);
+            if (r.email?.mocked) {
+                toast.success("Share pack email queued (MOCKED)", {
+                    description: `Recipient: ${r.to} · ${r.count} event${r.count === 1 ? "" : "s"}. Real send activates once Resend key is set.`,
+                });
+            } else {
+                toast.success(`Share pack sent to ${r.to}`);
+            }
+        } catch (e) {
+            toast.error(e?.response?.data?.detail || "Send failed");
+        } finally { setBusy(false); }
+    };
+
+    return (
+        <>
+            <div className="rounded-3xl border border-border bg-surface p-6">
+                <div className="h-10 w-10 rounded-2xl bg-accent/15 text-accent-foreground grid place-items-center"><Mail className="h-5 w-5" /></div>
+                <h3 className="font-display font-bold mt-3">Weekly share pack</h3>
+                <p className="text-sm text-muted-foreground mt-1">
+                    A ready-to-share pack of your upcoming events with copy-paste captions and 1-tap social links.
+                </p>
+                <div className="mt-3 flex flex-wrap gap-2">
+                    <button
+                        data-testid="share-pack-preview"
+                        onClick={openPreview}
+                        disabled={busy}
+                        className="inline-flex items-center gap-1 px-3 py-1.5 rounded-full border border-border text-xs font-semibold hover:bg-muted disabled:opacity-60"
+                    >
+                        {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />} Preview
+                    </button>
+                    <button
+                        data-testid="share-pack-email"
+                        onClick={sendEmail}
+                        disabled={busy || !org?.email}
+                        title={org?.email ? `Send to ${org.email}` : "Add an email on the org profile first"}
+                        className="inline-flex items-center gap-1 px-3 py-1.5 rounded-full bg-primary text-primary-foreground text-xs font-semibold hover:brightness-110 disabled:opacity-60"
+                    >
+                        <Send className="h-3.5 w-3.5" /> Email me the pack
+                    </button>
+                </div>
+                {!org?.email && (
+                    <div className="mt-2 text-[11px] text-muted-foreground">
+                        Add an email on your profile to enable emailing.
+                    </div>
+                )}
+            </div>
+            <SharePackPreviewDialog open={previewOpen} onClose={() => setPreviewOpen(false)} pack={pack} />
+        </>
+    );
+}
+
+/* Share Pack preview dialog */
+function SharePackPreviewDialog({ open, onClose, pack }) {
+    if (!pack) return null;
+    return (
+        <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
+            <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">
+                <DialogHeader>
+                    <DialogTitle>Share pack — {pack.count} upcoming event{pack.count === 1 ? "" : "s"}</DialogTitle>
+                </DialogHeader>
+                {pack.events.length === 0 ? (
+                    <p className="text-sm text-muted-foreground">
+                        No upcoming events to include. Create some events first and they'll appear here.
+                    </p>
+                ) : (
+                    <div className="space-y-4">
+                        {pack.events.map((e) => (
+                            <div key={e.id} className="rounded-2xl border border-border bg-background p-4">
+                                <div className="flex items-start gap-3">
+                                    {e.image && (
+                                        <img src={e.image} alt="" className="h-16 w-16 rounded-xl object-cover shrink-0" />
+                                    )}
+                                    <div className="flex-1 min-w-0">
+                                        <div className="text-[10px] font-bold tracking-wider uppercase text-primary">
+                                            {e.start ? new Date(e.start).toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : ""}
+                                        </div>
+                                        <div className="font-display font-bold text-base leading-tight">{e.title}</div>
+                                        <div className="text-xs text-muted-foreground">{e.venue}</div>
+                                    </div>
+                                </div>
+                                <p className="mt-2 text-xs text-muted-foreground line-clamp-2">{e.description}</p>
+                                <div className="mt-3 flex flex-wrap gap-2">
+                                    <a href={e.share_links.facebook} target="_blank" rel="noopener" data-testid={`pack-fb-${e.id}`} className="inline-flex items-center px-3 py-1.5 rounded-full bg-[#1877F2] text-white text-[11px] font-semibold">Facebook</a>
+                                    <a href={e.share_links.linkedin} target="_blank" rel="noopener" className="inline-flex items-center px-3 py-1.5 rounded-full bg-[#0A66C2] text-white text-[11px] font-semibold">LinkedIn</a>
+                                    <a href={e.share_links.twitter} target="_blank" rel="noopener" className="inline-flex items-center px-3 py-1.5 rounded-full bg-black text-white text-[11px] font-semibold">X</a>
+                                    <a href={e.share_links.whatsapp} target="_blank" rel="noopener" className="inline-flex items-center px-3 py-1.5 rounded-full bg-[#25D366] text-white text-[11px] font-semibold">WhatsApp</a>
+                                    <button
+                                        onClick={async () => { try { await navigator.clipboard.writeText(`${e.share_text}\n${e.canonical_url}`); toast.success("Caption copied"); } catch { toast.error("Copy failed"); } }}
+                                        className="inline-flex items-center px-3 py-1.5 rounded-full bg-muted text-foreground text-[11px] font-semibold"
+                                    >Copy caption</button>
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                )}
+            </DialogContent>
+        </Dialog>
     );
 }
 
