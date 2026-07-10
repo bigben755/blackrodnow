@@ -14,6 +14,8 @@ import uuid
 import asyncio
 import logging
 import requests
+from io import BytesIO
+from PIL import Image, ImageOps
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
@@ -134,6 +136,9 @@ class Organisation(BaseModel):
     brandColor: str = "#0052FF"
     logo: str = "✨"
     cover: str = ""
+    logo_path: Optional[str] = None
+    logo_thumb_path: Optional[str] = None
+    cover_path: Optional[str] = None
     upcoming: int = 0
     status: Literal["approved", "pending", "rejected"] = "approved"
     fb_page_id: Optional[str] = None
@@ -357,6 +362,9 @@ class OrgPatch(BaseModel):
     brandColor: Optional[str] = None
     logo: Optional[str] = None
     cover: Optional[str] = None
+    logo_path: Optional[str] = None
+    logo_thumb_path: Optional[str] = None
+    cover_path: Optional[str] = None
     fb_page_id: Optional[str] = None
     fb_connected: Optional[bool] = None
 
@@ -665,6 +673,161 @@ async def download_document(doc_id: str):
         media_type=d.get("content_type", ctype),
         headers={"Content-Disposition": f'attachment; filename="{d["name"]}"'},
     )
+
+
+# ─────────── Organisation Logo & Cover images ───────────
+IMAGE_EXT = {"png", "jpg", "jpeg", "webp"}
+LOGO_AVATAR_SIZE = 512
+LOGO_THUMB_SIZE = 128
+COVER_WIDTH = 1600
+COVER_HEIGHT = 500
+MAX_IMAGE_BYTES = 5 * 1024 * 1024  # 5 MB
+
+
+def _open_image(data: bytes) -> Image.Image:
+    try:
+        img = Image.open(BytesIO(data))
+        img = ImageOps.exif_transpose(img)
+    except Exception as e:
+        raise HTTPException(400, f"Invalid image: {e}")
+    if img.mode not in ("RGB", "RGBA"):
+        img = img.convert("RGBA")
+    return img
+
+
+def _process_and_upload_logo(slug: str, data: bytes) -> tuple[str, str]:
+    """Center-crop to 512x512 + 128x128 thumb. Returns (avatar_path, thumb_path)."""
+    img = _open_image(data)
+    avatar = ImageOps.fit(img, (LOGO_AVATAR_SIZE, LOGO_AVATAR_SIZE), Image.Resampling.LANCZOS)
+    thumb = ImageOps.fit(img, (LOGO_THUMB_SIZE, LOGO_THUMB_SIZE), Image.Resampling.LANCZOS)
+
+    def _to_png_bytes(im: Image.Image) -> bytes:
+        buf = BytesIO()
+        im.save(buf, format="PNG", optimize=True)
+        return buf.getvalue()
+
+    avatar_bytes = _to_png_bytes(avatar)
+    thumb_bytes = _to_png_bytes(thumb)
+    avatar_path = f"{APP_NAME}/orgs/{slug}/logo-{uuid.uuid4()}.png"
+    thumb_path = f"{APP_NAME}/orgs/{slug}/logo-thumb-{uuid.uuid4()}.png"
+    put_object(avatar_path, avatar_bytes, "image/png")
+    put_object(thumb_path, thumb_bytes, "image/png")
+    return avatar_path, thumb_path
+
+
+def _process_and_upload_cover(slug: str, data: bytes) -> str:
+    """Fit-crop to 1600x500 cover banner. Returns storage path."""
+    img = _open_image(data)
+    if img.mode == "RGBA":
+        # Cover is a background — flatten to RGB for smaller JPEG
+        bg = Image.new("RGB", img.size, (255, 255, 255))
+        bg.paste(img, mask=img.split()[-1])
+        img = bg
+    elif img.mode != "RGB":
+        img = img.convert("RGB")
+    cover = ImageOps.fit(img, (COVER_WIDTH, COVER_HEIGHT), Image.Resampling.LANCZOS)
+    buf = BytesIO()
+    cover.save(buf, format="JPEG", quality=85, optimize=True, progressive=True)
+    cover_path = f"{APP_NAME}/orgs/{slug}/cover-{uuid.uuid4()}.jpg"
+    put_object(cover_path, buf.getvalue(), "image/jpeg")
+    return cover_path
+
+
+def _validate_image_upload(file: UploadFile, data: bytes) -> None:
+    filename = file.filename or "image"
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    if ext not in IMAGE_EXT:
+        raise HTTPException(400, "Only PNG, JPG or WebP allowed")
+    if len(data) > MAX_IMAGE_BYTES:
+        raise HTTPException(413, "Image too large (max 5 MB)")
+
+
+@api.post("/organisations/{slug}/logo")
+async def upload_org_logo(slug: str, file: UploadFile = File(...)):
+    await _find_org(slug)
+    data = await file.read()
+    _validate_image_upload(file, data)
+    try:
+        avatar_path, thumb_path = _process_and_upload_logo(slug, data)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"Upload failed: {e}")
+    await db.orgs.update_one(
+        {"slug": slug},
+        {"$set": {"logo_path": avatar_path, "logo_thumb_path": thumb_path, "updated_at": now_iso()}},
+    )
+    return {"ok": True, "logo_url": f"/api/organisations/{slug}/logo", "thumb_url": f"/api/organisations/{slug}/logo/thumb"}
+
+
+@api.post("/organisations/{slug}/cover")
+async def upload_org_cover(slug: str, file: UploadFile = File(...)):
+    await _find_org(slug)
+    data = await file.read()
+    _validate_image_upload(file, data)
+    try:
+        cover_path = _process_and_upload_cover(slug, data)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"Upload failed: {e}")
+    await db.orgs.update_one(
+        {"slug": slug},
+        {"$set": {"cover_path": cover_path, "updated_at": now_iso()}},
+    )
+    return {"ok": True, "cover_url": f"/api/organisations/{slug}/cover"}
+
+
+@api.delete("/organisations/{slug}/logo")
+async def delete_org_logo(slug: str):
+    await _find_org(slug)
+    await db.orgs.update_one(
+        {"slug": slug},
+        {"$set": {"logo_path": None, "logo_thumb_path": None, "updated_at": now_iso()}},
+    )
+    return {"ok": True}
+
+
+@api.delete("/organisations/{slug}/cover")
+async def delete_org_cover(slug: str):
+    await _find_org(slug)
+    await db.orgs.update_one(
+        {"slug": slug},
+        {"$set": {"cover_path": None, "updated_at": now_iso()}},
+    )
+    return {"ok": True}
+
+
+def _serve_org_image(path: Optional[str], content_type_default: str = "image/png"):
+    if not path:
+        raise HTTPException(404, "Image not set")
+    try:
+        data, ctype = get_object(path)
+    except Exception as e:
+        raise HTTPException(500, f"Fetch failed: {e}")
+    return Response(
+        content=data,
+        media_type=content_type_default if not ctype or ctype == "application/octet-stream" else ctype,
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
+
+
+@api.get("/organisations/{slug}/logo")
+async def get_org_logo(slug: str):
+    org = await _find_org(slug)
+    return _serve_org_image(org.get("logo_path"), "image/png")
+
+
+@api.get("/organisations/{slug}/logo/thumb")
+async def get_org_logo_thumb(slug: str):
+    org = await _find_org(slug)
+    return _serve_org_image(org.get("logo_thumb_path") or org.get("logo_path"), "image/png")
+
+
+@api.get("/organisations/{slug}/cover")
+async def get_org_cover(slug: str):
+    org = await _find_org(slug)
+    return _serve_org_image(org.get("cover_path"), "image/jpeg")
 
 
 # ─────────── AI parse (multi-event) ───────────

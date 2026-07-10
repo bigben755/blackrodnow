@@ -64,14 +64,14 @@ export default function Home() {
                         </div>
 
                         <h1 className="font-display font-black tracking-tight text-5xl sm:text-6xl lg:text-7xl leading-[0.95] text-foreground">
-                            Blackrod & South Horwich<span className="text-primary"> Now</span>
+                            Blackrod<span className="text-primary"> Now</span>
                             <span className="block text-foreground/70 text-3xl sm:text-4xl lg:text-5xl font-bold mt-3">
                                 What's on, what's new, what's next.
                             </span>
                         </h1>
 
                         <p className="mt-6 max-w-xl text-base sm:text-lg text-muted-foreground leading-relaxed">
-                            Blackrod & South HorwichNow brings together local events, groups, clubs, schools, businesses and
+                            Blackrod Now brings together local events, groups, clubs, schools, businesses and
                             community projects in one easy-to-use digital space.
                         </p>
 

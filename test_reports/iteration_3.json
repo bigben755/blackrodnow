@@ -1,0 +1,41 @@
+{
+  "summary": "Full E2E test of the new Organisation logo + cover image upload feature on Blackrod Now. Backend: 14/14 pytest cases pass in /app/backend/tests/test_org_images.py — logo POST returns 200 with logo_url + thumb_url and updates logo_path/logo_thumb_path in Mongo; cover POST returns 200 and updates cover_path; GET endpoints serve exactly 512×512 PNG, 128×128 PNG thumb and 1600×500 JPEG (validated via Pillow); WebP source uploads produce correct 512×512 PNG output; replace flow updates logo_path + updated_at; GIF is rejected with 400 'Only PNG, JPG or WebP allowed'; invalid PNG bytes rejected with 400 'Invalid image'; >5MB PNG payload rejected with 413; DELETE clears both paths and subsequent GET returns 404; GET /api/organisations/{slug} reflects logo_path / logo_thumb_path / cover_path fields. Frontend (super-admin role): /edit-organisation/blackrod-town-council renders with data-testids logo-uploader-input, cover-uploader-input, logo-uploader-remove, cover-uploader-remove. Uploading a PNG shows 'Logo updated' toast, the top preview panel updates with the 512×512 image, and the uploader tile shows the new preview and swaps 'Upload' → 'Replace' + Remove button. Uploading a JPG cover shows 'Cover updated' toast and cover preview banner updates to the 1600×500 image. /organisations/blackrod-town-council hero shows an <img> inside data-testid='org-avatar-blackrod-town-council' with naturalWidth=512 (uploaded avatar, not emoji). /organisations directory OrgCard for blackrod-town-council contains an <img> with the /logo/thumb URL and naturalWidth=128 (thumbnail). Regression check: an org without logo_path (blackrod-neighbourhood-plan-delivery-group) still renders its emoji fallback (🗺️) inside the OrgAvatar with no <img> child. Remove flow: clicking logo-uploader-remove clears the image and shows 'Logo removed' toast.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_org_images.py",
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py — /api/organisations/{slug}/logo, /cover, DELETE and PATCH endpoints have NO authentication or ownership check. Any client can upload/replace or delete any organisation's logo & cover (and change profile fields via existing PATCH). Same public-mutation issue was flagged in iteration_2 for /admin/broadcast; the image endpoints inherit the same risk. Add an admin/org-owner guard before production (device_id + role, or auth middleware).",
+    "server.py _open_image() catches broad Exception and returns 400 'Invalid image: <exc>' — the leaked exception message can be verbose. Consider a fixed 'Invalid image' string with the raw error only in server logs.",
+    "server.py _validate_image_upload() checks extension from filename only. A file uploaded with extension .png but MIME-type application/pdf and non-image bytes is caught later by Pillow (returns 400 Invalid image), which is fine, but for defence-in-depth also sniff the leading magic bytes (or use file.content_type).",
+    "server.py orphaned object storage: on replace, the previous avatar/thumb/cover objects in Emergent object storage are never deleted (only the DB path is overwritten). Over time this accumulates dead files. Consider deleting the old path in the update_one flow.",
+    "server.py cover flatten path always fills RGBA with white — good — but ImageOps.fit uses centering=(0.5,0.5) by default, so a 16:9 source photo will crop top+bottom evenly. If preserving 'top of image' is important for banners with faces near top, consider centering=(0.5,0.4).",
+    "frontend/src/pages/OrgProfileEdit.jsx — after api.uploadOrgLogo/api.uploadOrgCover resolves, ctx.refresh?.() is called, but the toast fires before refresh completes. If refresh() throws or is slow, the preview won't update while the toast still says 'Logo updated'. Consider awaiting refresh() before toasting, or optimistically updating org.logo_path via patchOrg-style local write.",
+    "frontend/src/components/OrgAvatar.jsx uses object-contain in a square container — that's the intended aspect-preserving behaviour per the review, good. But the container also has border-border + bg-background, which will show white bars around non-square uploads on the hero. That's the trade-off requested; keep in mind if design changes to full-bleed.",
+    "frontend/src/lib/api.js orgLogoUrl/orgCoverUrl append `?v=<updated_at>` which contains characters like `:` and `+` that are technically fine in query strings but should be encoded for consistency. Consider encodeURIComponent(v) to avoid caching quirks."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_org_images.py (new)"
+  ],
+  "success_rate": {
+    "backend": "100% (14/14 image tests + previous 17/17 in backend_test.py)",
+    "frontend": "100% (upload → toast → preview → detail hero → directory card → emoji-fallback regression → remove flow all verified)"
+  },
+  "test_credentials": "None — role switcher via localStorage 'rn-role' = 'admin' (super admin) or 'org' to access the edit page. Slug used: blackrod-town-council.",
+  "seed_data_creation": "Reused existing seed (29 orgs). Uploaded temporary logo/cover onto blackrod-town-council during tests and deleted them at teardown to avoid polluting fixtures.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "The org slug 'rodlife-events' referenced in the review request is again the deployment subdomain, not an org slug. Use 'blackrod-town-council' (present in seed). New image endpoints live at /api/organisations/{slug}/{logo,logo/thumb,cover} (GET/POST/DELETE, no auth). Pillow verifies exact 512×512 / 128×128 / 1600×500 output sizes. The frontend cache-busts image URLs using org.updated_at, so after upload you must refresh AppContext.orgs (already done via ctx.refresh()) before the preview will reflect the new file.",
+  "rca of the issue": "N/A — no bugs found in the logo/cover feature. All requirements from the review request are satisfied: multipart upload, Pillow processing to correct dimensions, format allow-list PNG/JPG/WebP, 5MB cap, delete endpoint, DB path updates, object-contain avatar display, emoji fallback preserved, and data-testids present on both uploader inputs plus remove buttons."
+}

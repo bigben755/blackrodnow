@@ -1,17 +1,21 @@
 import React, { useEffect, useState } from "react";
 import { useParams, useNavigate, Link } from "react-router-dom";
 import { useApp } from "@/context/AppContext";
+import { api } from "@/lib/api";
 import { ORG_TYPES } from "@/data/mockData";
-import { ArrowLeft, Save, Building2 } from "lucide-react";
+import { ArrowLeft, Save, Building2, Upload, Trash2, Loader2, Image as ImageIcon } from "lucide-react";
 import { toast } from "sonner";
+import OrgAvatar from "@/components/OrgAvatar";
 
 export default function OrgProfileEdit() {
     const { slug } = useParams();
-    const { orgs, patchOrg, role } = useApp();
+    const { orgs, patchOrg, role, refresh } = useApp();
     const org = orgs.find((o) => o.slug === slug);
     const navigate = useNavigate();
     const [form, setForm] = useState(null);
     const [busy, setBusy] = useState(false);
+    const [logoBusy, setLogoBusy] = useState(false);
+    const [coverBusy, setCoverBusy] = useState(false);
 
     useEffect(() => {
         if (org && !form) {
@@ -87,13 +91,79 @@ export default function OrgProfileEdit() {
                     className="rounded-2xl overflow-hidden border border-border"
                     style={{ background: `linear-gradient(135deg, ${form.brandColor}CC, ${form.brandColor}44)` }}
                 >
-                    <div className="h-24 relative">
-                        {form.cover && <img src={form.cover} alt="" className="absolute inset-0 h-full w-full object-cover opacity-40" />}
+                    <div className="h-28 sm:h-32 relative">
+                        {org.cover_path ? (
+                            <img
+                                src={api.orgCoverUrl(org.slug, org.updated_at || "")}
+                                alt=""
+                                className="absolute inset-0 h-full w-full object-cover opacity-70"
+                            />
+                        ) : form.cover ? (
+                            <img src={form.cover} alt="" className="absolute inset-0 h-full w-full object-cover opacity-40" />
+                        ) : null}
                         <div className="absolute bottom-2 left-4 flex items-center gap-3">
-                            <div className="h-12 w-12 rounded-2xl bg-white grid place-items-center text-2xl">{form.logo}</div>
+                            <OrgAvatar
+                                org={{ ...org, ...form }}
+                                size={56}
+                                rounded="rounded-2xl"
+                                className="shadow-md ring-2 ring-white/70"
+                            />
                             <div className="text-white font-display font-bold text-lg drop-shadow">{form.name || "Your organisation"}</div>
                         </div>
                     </div>
+                </div>
+
+                {/* Logo + Cover uploaders */}
+                <div className="grid sm:grid-cols-2 gap-4">
+                    <ImageUploader
+                        label="Logo"
+                        hint="PNG, JPG or WebP. Center-cropped to 512×512 automatically. Max 5MB."
+                        preview={org.logo_path ? api.orgLogoUrl(org.slug, false, org.updated_at || "") : null}
+                        emojiFallback={form.logo}
+                        busy={logoBusy}
+                        onUpload={async (file) => {
+                            setLogoBusy(true);
+                            try {
+                                await api.uploadOrgLogo(slug, file);
+                                await refresh?.();
+                                toast.success("Logo updated");
+                            } catch (e) {
+                                toast.error(e?.response?.data?.detail || "Upload failed");
+                            } finally { setLogoBusy(false); }
+                        }}
+                        onRemove={org.logo_path ? async () => {
+                            setLogoBusy(true);
+                            try { await api.deleteOrgLogo(slug); await refresh?.(); toast.info("Logo removed"); }
+                            catch { toast.error("Failed"); }
+                            finally { setLogoBusy(false); }
+                        } : null}
+                        testId="logo-uploader"
+                        aspect="aspect-square"
+                    />
+                    <ImageUploader
+                        label="Cover image"
+                        hint="Wide banner. Fit-cropped to 1600×500. Max 5MB."
+                        preview={org.cover_path ? api.orgCoverUrl(org.slug, org.updated_at || "") : null}
+                        busy={coverBusy}
+                        onUpload={async (file) => {
+                            setCoverBusy(true);
+                            try {
+                                await api.uploadOrgCover(slug, file);
+                                await refresh?.();
+                                toast.success("Cover updated");
+                            } catch (e) {
+                                toast.error(e?.response?.data?.detail || "Upload failed");
+                            } finally { setCoverBusy(false); }
+                        }}
+                        onRemove={org.cover_path ? async () => {
+                            setCoverBusy(true);
+                            try { await api.deleteOrgCover(slug); await refresh?.(); toast.info("Cover removed"); }
+                            catch { toast.error("Failed"); }
+                            finally { setCoverBusy(false); }
+                        } : null}
+                        testId="cover-uploader"
+                        aspect="aspect-[16/5]"
+                    />
                 </div>
 
                 <div className="grid sm:grid-cols-2 gap-4">
@@ -125,9 +195,8 @@ export default function OrgProfileEdit() {
                     <Field label="Phone"><input data-testid="ed-phone" value={form.phone} onChange={set("phone")} className={inp} /></Field>
                     <Field label="Website"><input data-testid="ed-website" value={form.website} onChange={set("website")} className={inp} /></Field>
                 </div>
-                <div className="grid sm:grid-cols-3 gap-4">
-                    <Field label="Logo (emoji or char)"><input data-testid="ed-logo" value={form.logo} onChange={set("logo")} className={inp} maxLength={4} /></Field>
-                    <Field label="Cover image URL"><input data-testid="ed-cover" value={form.cover} onChange={set("cover")} className={inp} /></Field>
+                <div className="grid sm:grid-cols-2 gap-4">
+                    <Field label="Emoji fallback (used if no logo uploaded)"><input data-testid="ed-logo" value={form.logo} onChange={set("logo")} className={inp} maxLength={4} /></Field>
                     <Field label="Brand colour"><input data-testid="ed-color" type="color" value={form.brandColor} onChange={set("brandColor")} className="h-11 w-full rounded-2xl border border-border bg-background" /></Field>
                 </div>
                 <fieldset className="border border-border rounded-2xl p-4">
@@ -163,3 +232,62 @@ const Field = ({ label, required, children }) => (
         <div className="mt-1.5">{children}</div>
     </label>
 );
+
+function ImageUploader({ label, hint, preview, emojiFallback, busy, onUpload, onRemove, testId, aspect = "aspect-square" }) {
+    const inputId = `upload-${testId}`;
+    return (
+        <div className="rounded-2xl border border-border bg-background p-4">
+            <div className="flex items-center justify-between mb-2">
+                <span className="text-xs font-bold tracking-wider uppercase text-muted-foreground">{label}</span>
+                {onRemove && (
+                    <button
+                        type="button"
+                        data-testid={`${testId}-remove`}
+                        onClick={onRemove}
+                        disabled={busy}
+                        className="inline-flex items-center gap-1 text-[11px] font-semibold text-muted-foreground hover:text-destructive"
+                    >
+                        <Trash2 className="h-3 w-3" /> Remove
+                    </button>
+                )}
+            </div>
+            <div className={`relative w-full ${aspect} rounded-xl bg-muted/50 border border-dashed border-border overflow-hidden grid place-items-center`}>
+                {preview ? (
+                    <img src={preview} alt="" className={`h-full w-full ${aspect === "aspect-square" ? "object-contain p-2" : "object-cover"}`} />
+                ) : emojiFallback ? (
+                    <span aria-hidden className="text-5xl">{emojiFallback}</span>
+                ) : (
+                    <div className="text-center text-muted-foreground text-xs px-4">
+                        <ImageIcon className="h-6 w-6 mx-auto mb-1 opacity-60" />
+                        No image uploaded yet
+                    </div>
+                )}
+                {busy && (
+                    <div className="absolute inset-0 bg-background/70 grid place-items-center">
+                        <Loader2 className="h-5 w-5 animate-spin" />
+                    </div>
+                )}
+            </div>
+            <p className="text-[11px] text-muted-foreground mt-2">{hint}</p>
+            <label
+                htmlFor={inputId}
+                className="mt-2 inline-flex items-center gap-1 px-3 py-1.5 rounded-full bg-primary text-primary-foreground font-semibold text-xs cursor-pointer disabled:opacity-60"
+            >
+                <Upload className="h-3.5 w-3.5" /> {preview ? "Replace" : "Upload"}
+                <input
+                    id={inputId}
+                    type="file"
+                    accept="image/png,image/jpeg,image/webp"
+                    data-testid={`${testId}-input`}
+                    className="hidden"
+                    disabled={busy}
+                    onChange={(e) => {
+                        const f = e.target.files?.[0];
+                        if (f) onUpload(f);
+                        e.target.value = "";
+                    }}
+                />
+            </label>
+        </div>
+    );
+}

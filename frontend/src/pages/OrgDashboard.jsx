@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { useApp } from "@/context/AppContext";
 import { api } from "@/lib/api";
 import { CategoryBadge, formatDate, formatTime } from "@/components/Cards";
+import OrgAvatar from "@/components/OrgAvatar";
 import {
     Wand2, Copy, Calendar, Megaphone, Bell, Sparkles, Loader2, Share2,
     Facebook, Instagram, Image as ImageIcon, FileText, UploadCloud,
@@ -117,14 +118,11 @@ export default function OrgDashboard() {
                 contactPhone: org?.phone || "",
                 image: "https://images.unsplash.com/photo-1533174072545-7a4b6ad7a6c3?w=1200&q=80",
             });
-            toast.success("Event draft created — pending approval");
-            if (org?.fb_connected) {
-                await api.fbPublish(selectedOrgSlug, {
-                    message: it.social_caption || it.description,
-                    link: window.location.origin + "/events",
-                }).catch(() => {});
-                toast.info("Auto-posted to Facebook (mocked)");
-            }
+            toast.success("Event draft created — pending approval", {
+                description: org?.fb_connected
+                    ? "Use the Post to Facebook button below to share it on your page."
+                    : "Connect Facebook to also post it to your page.",
+            });
         } catch {
             toast.error("Couldn't create event");
         }
@@ -138,29 +136,48 @@ export default function OrgDashboard() {
                 title: it.title,
                 body: it.description,
             });
-            toast.success("Update published to Local Feed");
-            if (org?.fb_connected) {
-                await api.fbPublish(selectedOrgSlug, { message: it.social_caption || it.description }).catch(() => {});
-                toast.info("Auto-posted to Facebook (mocked)");
-            }
+            toast.success("Update published to Local Feed", {
+                description: org?.fb_connected
+                    ? "Tap Post to Facebook to share it too."
+                    : "",
+            });
         } catch { toast.error("Couldn't publish"); }
+    };
+
+    const postToFacebook = async (it) => {
+        if (!org?.fb_connected) {
+            toast.info("Connect your Facebook page first (see the Post to Facebook card above).");
+            return;
+        }
+        try {
+            await api.fbPublish(selectedOrgSlug, {
+                message: it.social_caption || it.description,
+                link: window.location.origin + "/events",
+            });
+            toast.success("Posted to Facebook (mocked — real posting activates once Meta app is approved)");
+        } catch {
+            toast.error("Failed to post to Facebook");
+        }
     };
 
     return (
         <div data-testid="org-dashboard" className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
             {/* Header */}
             <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4 mb-8">
-                <div>
-                    <span className="text-xs font-bold uppercase tracking-[0.2em] text-primary">
-                        Organisation dashboard
-                    </span>
-                    <h1 className="font-display font-black text-4xl sm:text-5xl tracking-tight mt-2">
-                        Hi, {org?.name || "team"} 👋
-                    </h1>
-                    <p className="mt-2 text-muted-foreground text-sm max-w-xl">
-                        Edit your profile, add events, post updates, and use our AI tool to publish
-                        everywhere at once.
-                    </p>
+                <div className="flex items-start gap-4">
+                    {org && <OrgAvatar org={org} size={64} rounded="rounded-2xl" className="shadow-sm" />}
+                    <div>
+                        <span className="text-xs font-bold uppercase tracking-[0.2em] text-primary">
+                            Organisation dashboard
+                        </span>
+                        <h1 className="font-display font-black text-4xl sm:text-5xl tracking-tight mt-2">
+                            Hi, {org?.name || "team"} 👋
+                        </h1>
+                        <p className="mt-2 text-muted-foreground text-sm max-w-xl">
+                            Edit your profile, add events, post updates, and use our AI tool to publish
+                            everywhere at once.
+                        </p>
+                    </div>
                 </div>
                 <div className="flex items-center gap-2">
                     <NotificationBell
@@ -256,8 +273,10 @@ export default function OrgDashboard() {
                         {items.map((it, idx) => (
                             <ParsedCard
                                 key={idx} it={it}
+                                fbConnected={!!org?.fb_connected}
                                 onPublishEvent={() => publishEvent(it)}
                                 onPublishUpdate={() => publishUpdate(it)}
+                                onPostToFacebook={() => postToFacebook(it)}
                                 onCopy={copy}
                             />
                         ))}
@@ -352,7 +371,7 @@ function NotificationBell({ count, notifications, onRead }) {
 }
 
 /* Parsed AI card (single item) */
-function ParsedCard({ it, onPublishEvent, onPublishUpdate, onCopy }) {
+function ParsedCard({ it, fbConnected, onPublishEvent, onPublishUpdate, onPostToFacebook, onCopy }) {
     return (
         <div className="rounded-3xl border border-background/20 bg-background/10 backdrop-blur p-5">
             <div className="flex items-center gap-2">
@@ -381,12 +400,24 @@ function ParsedCard({ it, onPublishEvent, onPublishUpdate, onCopy }) {
                 <div className="text-[10px] font-bold uppercase tracking-wider text-accent flex items-center gap-1"><Bell className="h-3 w-3" /> Notification</div>
                 <p className="mt-1 text-sm text-background/90">{it.notification_text}</p>
             </div>
-            <div className="mt-3 flex gap-2">
-                <button onClick={onPublishEvent} className="inline-flex items-center gap-1 px-4 py-2 rounded-full bg-secondary text-secondary-foreground font-semibold text-xs">
+            <div className="mt-3 flex flex-wrap gap-2">
+                <button data-testid="parsed-publish-event" onClick={onPublishEvent} className="inline-flex items-center gap-1 px-4 py-2 rounded-full bg-secondary text-secondary-foreground font-semibold text-xs">
                     <Calendar className="h-3.5 w-3.5" /> Create event
                 </button>
-                <button onClick={onPublishUpdate} className="inline-flex items-center gap-1 px-4 py-2 rounded-full bg-primary text-primary-foreground font-semibold text-xs">
+                <button data-testid="parsed-publish-update" onClick={onPublishUpdate} className="inline-flex items-center gap-1 px-4 py-2 rounded-full bg-primary text-primary-foreground font-semibold text-xs">
                     <Megaphone className="h-3.5 w-3.5" /> Post to feed
+                </button>
+                <button
+                    data-testid="parsed-post-fb"
+                    onClick={onPostToFacebook}
+                    className={`inline-flex items-center gap-1 px-4 py-2 rounded-full font-semibold text-xs ${
+                        fbConnected
+                            ? "bg-[#1877F2] text-white"
+                            : "bg-[#1877F2]/10 text-[#1877F2] border border-[#1877F2]/30"
+                    }`}
+                    title={fbConnected ? "Post this to your Facebook page" : "Connect Facebook to enable"}
+                >
+                    <Facebook className="h-3.5 w-3.5" /> Post to Facebook
                 </button>
             </div>
         </div>
@@ -450,11 +481,11 @@ function FacebookCard({ org, onOpen }) {
             className="text-left rounded-3xl border border-border bg-surface p-6 hover:-translate-y-1 transition-transform"
         >
             <div className="h-10 w-10 rounded-2xl bg-[#1877F2]/10 text-[#1877F2] grid place-items-center"><Facebook className="h-5 w-5" /></div>
-            <h3 className="font-display font-bold mt-3">Facebook sync</h3>
+            <h3 className="font-display font-bold mt-3">Post to Facebook</h3>
             <p className="text-sm text-muted-foreground mt-1">
                 {org?.fb_connected
-                    ? "Connected — new events auto-post to your Facebook page."
-                    : "Connect once, then every new event auto-posts to your Facebook page. Facebook posts also flow back here."}
+                    ? "Connected — each new event gives you a one-click 'Post to Facebook' button."
+                    : "Connect your Facebook page once. Then every event or update you publish here can be posted to Facebook in one click."}
             </p>
             <div className={`mt-3 inline-flex items-center gap-1 px-3 py-1 rounded-full text-[11px] font-bold uppercase tracking-wider ${
                 org?.fb_connected ? "bg-secondary text-secondary-foreground" : "bg-muted text-foreground"
@@ -492,7 +523,7 @@ function ContactAdminDialog({ open, onClose, fromOrgSlug, fromEmail, fromName })
 }
 
 /* Facebook dialog (mocked connect + explanation) */
-function FacebookDialog({ open, onClose, org, slug }) {
+function FacebookDialog({ open, onClose, org, slug, refresh }) {
     const [pageName, setPageName] = useState("");
     const [busy, setBusy] = useState(false);
     const connect = async () => {
@@ -514,16 +545,15 @@ function FacebookDialog({ open, onClose, org, slug }) {
     return (
         <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
             <DialogContent className="max-w-lg">
-                <DialogHeader><DialogTitle>Facebook sync</DialogTitle></DialogHeader>
+                <DialogHeader><DialogTitle>Post to Facebook</DialogTitle></DialogHeader>
                 <p className="text-sm text-muted-foreground">
-                    <b>What this does (once live):</b> when you publish an event or post here, we'll auto-post
-                    to your Facebook page. Posts on your Facebook page will also appear on your Local Feed
-                    here. No copy-pasting between the two.
+                    <b>What this does:</b> once connected, every event or update you publish on Blackrod Now
+                    shows a one-click <i>"Post to Facebook"</i> button — we send the caption, image and event
+                    link to your page. No copy-pasting. You stay in control (nothing is sent without your click).
                 </p>
                 <p className="text-xs text-muted-foreground">
-                    <b>Setup right now:</b> the connection UI is ready. Full activation waits on Meta's app
-                    review for our platform (needed to publish on your behalf). We'll email you the moment
-                    it's approved — no action needed from you.
+                    <b>Setup right now:</b> the connection UI is ready. Real posting is waiting on Meta's app
+                    review for our platform. We'll email you the moment it goes live — no action needed from you.
                 </p>
                 {org?.fb_connected ? (
                     <>

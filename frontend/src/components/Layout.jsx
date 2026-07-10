@@ -34,13 +34,11 @@ const NAV = [
 
 export const Brand = ({ size = "default" }) => (
     <Link to="/" data-testid="brand-link" className="flex items-center gap-2 group">
-        <span
-            className={`grid place-items-center rounded-2xl bg-primary text-primary-foreground font-display font-black ${
-                size === "lg" ? "h-12 w-12 text-2xl" : "h-9 w-9 text-lg"
-            } shadow-lg shadow-primary/20 group-hover:rotate-[-6deg] transition-transform duration-300`}
-        >
-            B
-        </span>
+        <img
+            src="/logo.png"
+            alt="Blackrod Now"
+            className={`${size === "lg" ? "h-12 w-12" : "h-10 w-10"} object-contain group-hover:rotate-[-6deg] transition-transform duration-300`}
+        />
         <span className="font-display font-black tracking-tight text-foreground text-xl leading-none">
             Blackrod<span className="text-primary"> Now</span>
         </span>

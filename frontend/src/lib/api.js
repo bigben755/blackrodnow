@@ -79,6 +79,33 @@ export const api = {
         client.delete(`/organisations/${slug}/documents/${id}`).then((r) => r.data),
     docDownloadUrl: (id) => `${API}/documents/${id}/download`,
 
+    // Org logo & cover images
+    uploadOrgLogo: (slug, file) => {
+        const fd = new FormData();
+        fd.append("file", file);
+        return client
+            .post(`/organisations/${slug}/logo`, fd, {
+                headers: { "Content-Type": "multipart/form-data" },
+                timeout: 60000,
+            })
+            .then((r) => r.data);
+    },
+    uploadOrgCover: (slug, file) => {
+        const fd = new FormData();
+        fd.append("file", file);
+        return client
+            .post(`/organisations/${slug}/cover`, fd, {
+                headers: { "Content-Type": "multipart/form-data" },
+                timeout: 60000,
+            })
+            .then((r) => r.data);
+    },
+    deleteOrgLogo: (slug) => client.delete(`/organisations/${slug}/logo`).then((r) => r.data),
+    deleteOrgCover: (slug) => client.delete(`/organisations/${slug}/cover`).then((r) => r.data),
+    orgLogoUrl: (slug, thumb = false, v = "") =>
+        `${API}/organisations/${slug}/logo${thumb ? "/thumb" : ""}${v ? `?v=${v}` : ""}`,
+    orgCoverUrl: (slug, v = "") => `${API}/organisations/${slug}/cover${v ? `?v=${v}` : ""}`,
+
     // AI parse (multi-item)
     parseContent: (text) => client.post("/parse-content", { text }).then((r) => r.data),
 

@@ -90,6 +90,7 @@ export default function LocalFeed() {
                                 orgName={o.name || "Unknown"}
                                 orgLogo={o.logo || "📍"}
                                 orgSlug={p.orgSlug}
+                                org={o}
                             />
                         );
                     })}

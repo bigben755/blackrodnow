@@ -3,6 +3,8 @@ import NewsletterSection from "@/components/NewsletterSection";
 import { Link, useParams } from "react-router-dom";
 import { useApp, eventsByOrg } from "@/context/AppContext";
 import { CategoryBadge, formatDate, formatTime, VolunteerCard, FeedCard } from "@/components/Cards";
+import OrgAvatar from "@/components/OrgAvatar";
+import { api } from "@/lib/api";
 import {
     MapPin,
     Mail,
@@ -55,9 +57,15 @@ export default function OrganisationDetail() {
                 className="relative h-56 sm:h-72 overflow-hidden"
                 style={{ background: `linear-gradient(135deg, ${brand}DD, ${brand}66)` }}
             >
-                {org.cover && (
+                {org.cover_path ? (
+                    <img
+                        src={api.orgCoverUrl(org.slug, org.updated_at || "")}
+                        alt=""
+                        className="absolute inset-0 h-full w-full object-cover"
+                    />
+                ) : org.cover ? (
                     <img src={org.cover} alt="" className="absolute inset-0 h-full w-full object-cover opacity-50" />
-                )}
+                ) : null}
                 <div className="absolute inset-0 bg-gradient-to-t from-background to-transparent" />
                 <div className="absolute top-6 left-4 sm:left-6">
                     <Link to="/organisations" className="inline-flex items-center gap-1 text-xs text-white/90 bg-black/40 backdrop-blur px-3 py-1.5 rounded-full">
@@ -69,12 +77,13 @@ export default function OrganisationDetail() {
             <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 -mt-20 relative">
                 <div className="rounded-3xl bg-surface border border-border p-6 sm:p-8 shadow-sm">
                     <div className="flex flex-col sm:flex-row sm:items-end gap-5">
-                        <div
-                            className="h-24 w-24 rounded-3xl grid place-items-center text-5xl border-4 border-background shadow-lg"
+                        <OrgAvatar
+                            org={org}
+                            size={96}
+                            rounded="rounded-3xl"
+                            className="border-4 border-background shadow-lg"
                             style={{ background: `${brand}15` }}
-                        >
-                            <span aria-hidden>{org.logo}</span>
-                        </div>
+                        />
                         <div className="flex-1">
                             <span className="text-[10px] font-bold tracking-wider uppercase text-muted-foreground">
                                 {org.category}
@@ -159,6 +168,7 @@ export default function OrganisationDetail() {
                                             orgName={org.name}
                                             orgLogo={org.logo}
                                             orgSlug={org.slug}
+                                            org={org}
                                         />
                                     ))}
                                 </div>

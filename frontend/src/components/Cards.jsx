@@ -12,6 +12,8 @@ import {
     Heart,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import OrgAvatar from "@/components/OrgAvatar";
+import { api } from "@/lib/api";
 
 // Category → colour key (pill backgrounds)
 const CAT_STYLE = {
@@ -124,15 +126,21 @@ export const OrgCard = ({ org }) => (
                 background: `linear-gradient(135deg, ${org.brandColor}AA, ${org.brandColor}55)`,
             }}
         >
-            {org.cover && (
+            {org.cover_path ? (
+                <img
+                    src={api.orgCoverUrl(org.slug, org.updated_at || "")}
+                    alt=""
+                    className="absolute inset-0 h-full w-full object-cover opacity-80 group-hover:scale-105 transition-transform duration-700"
+                />
+            ) : org.cover ? (
                 <img
                     src={org.cover}
                     alt=""
                     className="absolute inset-0 h-full w-full object-cover opacity-40 group-hover:scale-105 transition-transform duration-700"
                 />
-            )}
-            <div className="absolute -bottom-6 left-5 h-14 w-14 rounded-2xl bg-background border border-border grid place-items-center text-2xl shadow-md">
-                <span aria-hidden>{org.logo}</span>
+            ) : null}
+            <div className="absolute -bottom-6 left-5">
+                <OrgAvatar org={org} size={56} thumb rounded="rounded-2xl" className="shadow-md" />
             </div>
         </div>
         <div className="px-5 pt-9 pb-5 flex flex-col gap-2 flex-1">
@@ -193,8 +201,10 @@ export const VolunteerCard = ({ opp, orgName }) => (
     </div>
 );
 
-export const FeedCard = ({ post, orgName, orgLogo, orgSlug }) => {
+export const FeedCard = ({ post, orgName, orgLogo, orgSlug, org }) => {
     const when = new Date(post.time);
+    // Prefer full org object if provided so we can use uploaded logo.
+    const orgLike = org || { slug: orgSlug, logo: orgLogo, name: orgName };
     return (
         <article
             data-testid={`feed-card-${post.id}`}
@@ -203,9 +213,9 @@ export const FeedCard = ({ post, orgName, orgLogo, orgSlug }) => {
             <div className="flex items-center gap-3">
                 <Link
                     to={`/organisations/${orgSlug}`}
-                    className="h-11 w-11 rounded-2xl bg-muted grid place-items-center text-xl"
+                    className="shrink-0"
                 >
-                    {orgLogo}
+                    <OrgAvatar org={orgLike} size={44} thumb rounded="rounded-2xl" />
                 </Link>
                 <div className="flex-1">
                     <Link to={`/organisations/${orgSlug}`} className="font-semibold text-sm hover:text-primary">
