@@ -23,9 +23,20 @@ export default function ShareButtons({
     const shareUrl = url || (typeof window !== "undefined" ? window.location.href : "");
     const enc = (s) => encodeURIComponent(s || "");
 
+    /**
+     * Open in a new tab. We avoid width/height + noopener,noreferrer in the
+     * features string because that combination is silently blocked by many
+     * browsers (esp. Chrome mobile and popup-blocked contexts). A plain
+     * `_blank` opens a normal new tab which every social sharer supports.
+     */
     const open = (u) => {
-        if (typeof window !== "undefined") {
-            window.open(u, "_blank", "width=680,height=560,noopener,noreferrer");
+        if (typeof window === "undefined") return;
+        const win = window.open(u, "_blank");
+        if (win) {
+            try { win.opener = null; } catch (_) { /* ignore */ }
+        } else {
+            // Popup blocked — fall back to same-tab navigation.
+            window.location.href = u;
         }
     };
 
@@ -34,7 +45,10 @@ export default function ShareButtons({
             label: "Facebook",
             icon: Facebook,
             className: "bg-[#1877F2] text-white hover:brightness-110",
-            onClick: () => open(`https://www.facebook.com/sharer/sharer.php?u=${enc(shareUrl)}&quote=${enc(text)}`),
+            // NOTE: the `quote` param was deprecated by Facebook in 2017 and now
+            // triggers "must use a domain you own" errors — the sharer only
+            // reads OG tags from the URL, which we set in index.html.
+            onClick: () => open(`https://www.facebook.com/sharer/sharer.php?u=${enc(shareUrl)}`),
         },
         linkedin: {
             label: "LinkedIn",
