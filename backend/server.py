@@ -744,7 +744,7 @@ def _validate_image_upload(file: UploadFile, data: bytes) -> None:
 
 @api.post("/organisations/{slug}/logo")
 async def upload_org_logo(slug: str, file: UploadFile = File(...)):
-    await _find_org(slug)
+    org = await _find_org(slug)
     data = await file.read()
     _validate_image_upload(file, data)
     try:
@@ -753,6 +753,13 @@ async def upload_org_logo(slug: str, file: UploadFile = File(...)):
         raise
     except Exception as e:
         raise HTTPException(500, f"Upload failed: {e}")
+    # Best-effort cleanup of previous objects
+    for old in (org.get("logo_path"), org.get("logo_thumb_path")):
+        if old:
+            try:
+                requests.delete(f"{STORAGE_URL}/objects/{old}", headers={"X-Storage-Key": init_storage() or ""}, timeout=15)
+            except Exception:
+                pass
     await db.orgs.update_one(
         {"slug": slug},
         {"$set": {"logo_path": avatar_path, "logo_thumb_path": thumb_path, "updated_at": now_iso()}},
@@ -762,7 +769,7 @@ async def upload_org_logo(slug: str, file: UploadFile = File(...)):
 
 @api.post("/organisations/{slug}/cover")
 async def upload_org_cover(slug: str, file: UploadFile = File(...)):
-    await _find_org(slug)
+    org = await _find_org(slug)
     data = await file.read()
     _validate_image_upload(file, data)
     try:
@@ -771,6 +778,12 @@ async def upload_org_cover(slug: str, file: UploadFile = File(...)):
         raise
     except Exception as e:
         raise HTTPException(500, f"Upload failed: {e}")
+    old = org.get("cover_path")
+    if old:
+        try:
+            requests.delete(f"{STORAGE_URL}/objects/{old}", headers={"X-Storage-Key": init_storage() or ""}, timeout=15)
+        except Exception:
+            pass
     await db.orgs.update_one(
         {"slug": slug},
         {"$set": {"cover_path": cover_path, "updated_at": now_iso()}},

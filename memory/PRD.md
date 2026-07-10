@@ -1,54 +1,64 @@
-# BlackrodLife — PRD
+# Blackrod Now — PRD
 
 ## Original Problem Statement
-A modern, youth-friendly community website for Blackrod, Bolton — events, clubs, organisations, schools, local businesses, community projects, volunteer opportunities and local news. Tagline: *"Everything happening in Blackrod — events, groups, clubs, causes and local life."* It should feel like a local social/event discovery platform, NOT a council site or directory.
+A modern community website for Blackrod, Bolton showcasing local events, clubs, organisations and news. Anonymous browsing for residents (no accounts). Organisations get a dashboard with an AI "Upload Once, Publish Everywhere" tool that parses pasted flyers/newsletters into structured event/update drafts, 1-way Facebook publishing, personalised newsletters, and public document uploads.
 
 ## Architecture
-- **Frontend**: React 19 + React Router 7 + Tailwind 3 + shadcn-ui + sonner toasts. SPA prototype with all CRUD state held in `AppContext` (in-memory) seeded from `/app/frontend/src/data/mockData.js`.
-- **Backend**: FastAPI; only real endpoint backing the app is `/api/parse-content` for the "Upload Once, Publish Everywhere" AI feature (Claude Sonnet 4.5 via `emergentintegrations` + Emergent universal key, with a regex fallback). MongoDB used for `/api/status` only.
-- **Theme**: Electric blue (#0052FF) + lime green (#D4FF00) accents, navy/charcoal headings, Outfit display + Plus Jakarta Sans body, light/dark toggle.
+- **Frontend**: React 19 + React Router 7 + Tailwind 3 + shadcn-ui + sonner. All app state hydrated from FastAPI. Anonymous follows via `bn-device-id` localStorage UUID.
+- **Backend**: FastAPI + MongoDB (Motor). All routes under `/api`. Pillow for logo/cover image processing. Emergent Object Storage for org documents + logos/covers. Emergent LLM key (Claude Sonnet 4.5) for AI parsing. Resend for newsletters (mocked until key set). Facebook Graph API (mocked until credentials set).
+- **Branding**: Electric blue (#0052FF) + lime accents, "Blackrod Now" logo in headers.
 
 ## User Personas
-- **Resident** — discovers events, follows orgs, signs up to the weekly digest.
-- **Young person / DofE participant** — finds clubs and volunteer opportunities.
-- **Organisation admin** — manages their profile, publishes events & updates via the AI tool.
-- **Site admin** — approves submissions, features content, manages everything.
-
-## Core Requirements (Static)
-- Homepage with hero, what's-on-this-week, featured events, AI feature, featured orgs, community/business spotlights, volunteer opps, newsletter.
-- Events calendar with month + list view, search & filters, individual event pages, calendar export buttons.
-- Organisation directory with filters; branded profile pages with about/events/updates/volunteer/contact/social.
-- Submit-event + add-organisation forms (pending approval).
-- Admin dashboard (stats, approve/reject, feature, delete).
-- Organisation dashboard with the **"Upload Once, Publish Everywhere"** AI tool.
-- Local feed (community posts), venues directory, volunteer opportunities, notification preferences.
-- Light/dark toggle, mock role switcher (guest/admin/org/contributor).
+- **Resident** — anonymous browsing, follows orgs/categories, subscribes to weekly digest.
+- **Organisation admin** — manages own profile, uploads logo/cover, publishes events + updates via AI tool, posts to Facebook.
+- **Super admin** — approves/edits any org, broadcasts newsletters, sends admin notifications to orgs.
 
 ## Implemented (Feb 2026)
-- All 13 pages built and routed.
-- Bento-grid hero, distinctive lime + blue + coral palette, NOT-AI-slop visual identity (per design_guidelines.json).
-- AI parser endpoint `POST /api/parse-content` working with Claude Sonnet 4.5 (verified — returns full ParsedSuggestion JSON in ~8s) + regex fallback if LLM fails.
-- Event/Org submission flows write to in-memory state and appear in admin pending queues.
-- Add to Google Calendar (real TEMPLATE URL) + Outlook (real deeplink) + Apple Calendar (placeholder) + native Share.
-- Follow organisation, notification preferences, newsletter capture (counter).
-- 100% testing-agent pass (5/5 backend pytest, all frontend flows).
+- 20+ pages: Home, Events, Organisations, OrgDetail, LocalFeed, Venues, Volunteering, OrgDashboard, OrgProfileEdit, Admin, SubmitEvent, AddOrganisation, Preferences, Unsubscribe, EventDetail, FAQ, Contact, Notifications, Categories.
+- 29 real Blackrod orgs + 33 events seeded from user-provided Word doc.
+- AI parser `POST /api/parse-content` — multi-item event/update extraction (Claude Sonnet 4.5).
+- Anonymous device-based follows (orgs + categories).
+- Personalised newsletter renderer + Resend integration (mocked until key).
+- Super-admin: org status/edit, event feature/delete, dashboard notifications, broadcasts.
+- Emergent Object Storage: org documents (PDF/doc/xls/etc up to 10MB).
+- Mobile-responsive calendar with `.ics` download.
+- 1-way Facebook publish endpoint (mocked pending Meta credentials).
+- **[NEW — Feb 10 2026] Organisation logo + cover image uploads.** Pillow processes uploads server-side:
+  - Logo → 512×512 PNG (center-crop) + 128×128 PNG thumbnail
+  - Cover → 1600×500 JPEG (fit-crop)
+  - Accepted: PNG / JPG / WebP, 5 MB max
+  - Endpoints: `POST/GET/DELETE /api/organisations/{slug}/logo`, `.../logo/thumb`, `.../cover`
+  - Cache-busted via `?v=updated_at`
+  - Displayed via new `OrgAvatar` React component (uses `object-contain` to preserve aspect ratio, falls back to emoji when no image uploaded)
+  - Old objects deleted from object storage on replace
+  - Available in Org Dashboard → Profile & branding AND Super Admin → edit any org
+  - Verified: 14/14 backend pytest + full frontend E2E (testing agent iteration_3)
 
 ## Tests
-- Backend: `/app/backend/tests/backend_test.py` (5 pytest cases — health, status CRUD, parse-content empty/event/update).
-- Manual UI: `data-testid` coverage across every interactive element.
+- `/app/backend/tests/test_org_images.py` — new (14 cases: multipart upload, exact size validation via Pillow, WebP handling, replace, 400/413 rejections, delete flow).
+- `/app/backend/tests/backend_test.py` — 17/17 regression pass.
 
 ## Prioritised Backlog
-**P1**
-- Persist AppContext to localStorage so reloads don't reset pending submissions, follows, notification prefs.
-- Real auth (JWT or Emergent Google Auth) replacing role switcher.
-- Real file upload for logos/covers (object storage).
-**P2**
-- Implement real `.ics` download for Apple Calendar.
-- Real social posting (Meta Graph API for FB/IG).
-- Convert mock data → persistent MongoDB collections with REST endpoints.
-- Search across the whole site (orgs + events + feed) from the navbar.
+### P0 (blocked on user)
+- **Resend API key** — activate real newsletters/broadcasts.
+- **Meta Facebook credentials** — activate real 1-way FB publishing (App ID, Secret, Page Access Token with `pages_manage_posts`).
+
+### P1
+- Real JWT / Emergent Google Auth replacing simulated role switcher.
+- Auth guard on the new image upload endpoints (currently public — flagged in iteration_3 code review).
+- Live `webcal://` endpoint `GET /api/calendar.ics` for calendar subscriptions.
+
+### P2
+- Ownership check on `PATCH /api/organisations/{slug}` and `POST /admin/broadcast` (flagged in iteration_2).
+- Refactor `server.py` (~1000 lines) into APIRouter modules by domain.
+- Site-wide search (orgs + events + feed) from navbar.
+
+### P3
+- Admin analytics (real metrics beyond placeholder tiles).
 - Browser push notifications (real service worker).
-**P3**
-- Localisation of dates/times for hard accessibility readers.
-- Admin analytics (real metrics, not placeholder tiles).
-- Multi-org switcher tied to user account.
+- Localisation of dates/times.
+
+## Notes / Mocked Integrations
+- **Resend** — mocked (`[MOCK EMAIL]` in logs) until `RESEND_API_KEY` is set in `/app/backend/.env`.
+- **Facebook Graph API** — mocked (`[MOCK FB]` in logs) until Meta credentials provided.
+- **Auth** — simulated role switcher in navbar (guest / org / admin). No real login.
