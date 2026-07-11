@@ -67,5 +67,5 @@ A modern community website for Blackrod, Bolton showcasing local events, clubs, 
 - Localisation of dates/times.
 
 ## Notes / Mocked Integrations
-- **Resend** — mocked (`[MOCK EMAIL]` in logs) until `RESEND_API_KEY` is set in `/app/backend/.env`.
+- **Resend** — LIVE as of Feb 10 2026. API key configured. Currently in Resend **sandbox mode** (`SENDER_EMAIL=onboarding@resend.dev`) which only allows sending to the account owner's email (`trainingteam@traindriverfoundation.com`). Verified real delivery via `POST /organisations/{slug}/share-pack/email` (Resend id returned, `mocked=false`). To send to arbitrary residents, verify a domain at resend.com/domains and update `SENDER_EMAIL` in `/app/backend/.env`.
 - **Auth** — simulated role switcher in navbar (guest / org / admin). No real login.
