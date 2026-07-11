@@ -158,7 +158,7 @@ const copyToClipboard = async (text, successMessage) => {
 
 export default function EventDetail() {
     const { id } = useParams();
-    const { events, orgs } = useApp();
+    const { events, orgs, role } = useApp();
     const event = events.find((e) => e.id === id);
 
     if (!event) {
@@ -493,6 +493,16 @@ export default function EventDetail() {
                 </div>
 
                 <div className="mt-6 flex flex-wrap gap-2">
+                    {(role === "admin" || role === "org") && (
+                        <Link
+                            to={`/edit-event/${event.id}`}
+                            data-testid="edit-event-cta"
+                            className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-full text-sm font-semibold bg-primary text-primary-foreground hover:brightness-110 transition"
+                        >
+                            <Edit3 className="h-4 w-4" />
+                            Edit event
+                        </Link>
+                    )}
                     <Link
                         to={`/events/${event.id}/suggest-update`}
                         className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-full text-sm font-semibold border border-border hover:border-primary/40 hover:text-primary transition"

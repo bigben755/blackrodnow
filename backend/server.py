@@ -468,6 +468,16 @@ async def event_og_page(event_id: str, request: _Req):
     img_url = esc(img)
     canonical_esc = esc(canonical)
 
+    # Sensible image dimensions for Facebook/LinkedIn/Twitter cards. If the
+    # image is one of our org logos we already know it's 512×512; otherwise
+    # assume the standard event flyer ratio 1200×630.
+    if img.endswith("/logo") or img.endswith("/logo.png"):
+        img_w, img_h = 512, 512
+    elif "/organisations/" in img and img.endswith("/cover"):
+        img_w, img_h = 1600, 500
+    else:
+        img_w, img_h = 1200, 630
+
     body = f"""<!doctype html>
 <html lang="en">
 <head>
@@ -476,12 +486,15 @@ async def event_og_page(event_id: str, request: _Req):
 <meta name="description" content="{desc}" />
 <link rel="canonical" href="{canonical_esc}" />
 
-<meta property="og:type" content="event" />
+<meta property="og:type" content="article" />
 <meta property="og:site_name" content="{site_name}" />
 <meta property="og:title" content="{title}" />
 <meta property="og:description" content="{desc}" />
 <meta property="og:url" content="{canonical_esc}" />
 <meta property="og:image" content="{img_url}" />
+<meta property="og:image:secure_url" content="{img_url}" />
+<meta property="og:image:width" content="{img_w}" />
+<meta property="og:image:height" content="{img_h}" />
 <meta property="og:image:alt" content="{title}" />
 
 <meta name="twitter:card" content="summary_large_image" />
@@ -489,12 +502,17 @@ async def event_og_page(event_id: str, request: _Req):
 <meta name="twitter:description" content="{desc}" />
 <meta name="twitter:image" content="{img_url}" />
 
-<meta http-equiv="refresh" content="0; url={canonical_esc}" />
+<!-- IMPORTANT: no <meta http-equiv="refresh"> — Facebook's crawler follows
+     meta-refresh and would then read the SPA's generic OG tags instead of
+     these per-event tags. We rely on JS redirect for humans (crawlers do
+     not execute JavaScript). -->
 <script>window.location.replace({canonical_esc!r});</script>
-<style>body{{font-family:system-ui,sans-serif;padding:2rem;color:#333;max-width:640px;margin:0 auto}}a{{color:#0052FF}}</style>
+<style>body{{font-family:system-ui,sans-serif;padding:2rem;color:#333;max-width:640px;margin:0 auto;text-align:center}}a{{color:#0052FF;text-decoration:none;font-weight:600}}</style>
 </head>
 <body>
-<p>Redirecting to <a href="{canonical_esc}">{title}</a>…</p>
+<h1 style="font-size:20px">{title}</h1>
+<p>Opening on Blackrod Now…</p>
+<p><a href="{canonical_esc}">Continue &rarr;</a></p>
 </body>
 </html>"""
 
@@ -772,6 +790,43 @@ async def create_event(evt: Event):
         evt.status = "pending"
     await db.events.insert_one(evt.model_dump())
     return evt
+
+
+class EventPatch(BaseModel):
+    """Partial event update. Any subset of fields may be supplied."""
+    model_config = ConfigDict(extra="ignore")
+    title: Optional[str] = None
+    orgSlug: Optional[str] = None
+    category: Optional[str] = None
+    start: Optional[str] = None
+    end: Optional[str] = None
+    venue: Optional[str] = None
+    address: Optional[str] = None
+    description: Optional[str] = None
+    cost: Optional[str] = None
+    age: Optional[str] = None
+    accessibility: Optional[str] = None
+    booking: Optional[str] = None
+    contactEmail: Optional[str] = None
+    contactPhone: Optional[str] = None
+    image: Optional[str] = None
+    featured: Optional[bool] = None
+    status: Optional[Literal["approved", "pending", "rejected"]] = None
+
+
+@api.patch("/events/{event_id}")
+async def update_event(event_id: str, patch: EventPatch):
+    existing = await db.events.find_one({"id": event_id})
+    if not existing:
+        raise HTTPException(404, "Event not found")
+    updates = patch.model_dump(exclude_none=True)
+    if not updates:
+        return await get_event(event_id)
+    if updates.get("orgSlug"):
+        # Ensure the target org exists
+        await _find_org(updates["orgSlug"])
+    await db.events.update_one({"id": event_id}, {"$set": updates})
+    return await get_event(event_id)
 
 
 @api.post("/admin/events/{event_id}/status")

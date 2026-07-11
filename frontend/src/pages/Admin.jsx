@@ -5,7 +5,7 @@ import { api } from "@/lib/api";
 import { Stat, CategoryBadge, formatDate, formatTime } from "@/components/Cards";
 import {
     CalendarDays, Building2, Inbox, Users, Star, Check, X, Trash2, BarChart3, Mail,
-    Send, Edit3, Eye, MessageSquare, Bell,
+    Send, Edit3, Eye, MessageSquare, Bell, Pencil,
 } from "lucide-react";
 import { toast } from "sonner";
 import {
@@ -85,6 +85,13 @@ export default function Admin() {
                                     </p>
                                 </div>
                                 <div className="flex gap-2">
+                                    <Link
+                                        to={`/edit-event/${e.id}`}
+                                        data-testid={`admin-edit-event-${e.id}`}
+                                        className="inline-flex items-center gap-1 px-4 py-2 rounded-full border border-border font-semibold text-xs hover:bg-muted"
+                                    >
+                                        <Pencil className="h-3.5 w-3.5" /> Edit
+                                    </Link>
                                     <button data-testid={`approve-event-${e.id}`}
                                         onClick={async () => { await setEventStatus(e.id, "approved"); toast.success("Event approved"); }}
                                         className="inline-flex items-center gap-1 px-4 py-2 rounded-full bg-secondary text-secondary-foreground font-semibold text-xs">
@@ -125,6 +132,14 @@ export default function Admin() {
                                     <td className="px-4 py-3 hidden md:table-cell"><CategoryBadge category={e.category} /></td>
                                     <td className="px-4 py-3">
                                         <div className="flex gap-1 justify-end">
+                                            <Link
+                                                to={`/edit-event/${e.id}`}
+                                                data-testid={`admin-edit-approved-${e.id}`}
+                                                className="h-8 w-8 grid place-items-center rounded-full bg-muted hover:bg-primary hover:text-primary-foreground"
+                                                title="Edit event"
+                                            >
+                                                <Pencil className="h-3.5 w-3.5" />
+                                            </Link>
                                             <button data-testid={`feature-event-${e.id}`}
                                                 onClick={async () => { await toggleEventFeatured(e.id); toast.success(e.featured ? "Unfeatured" : "Featured"); }}
                                                 className={`h-8 w-8 grid place-items-center rounded-full ${e.featured ? "bg-secondary text-secondary-foreground" : "bg-muted"}`}

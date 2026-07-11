@@ -1,0 +1,60 @@
+{
+  "summary": "Verified two items: (1) FB share OG-page fix — the /api/events/{id}/og endpoint has NO active <meta http-equiv=\"refresh\"> tag, og:type is 'article' (not 'event'), og:image:width/height/secure_url are all present and internally consistent, canonical link tag present, og:url is canonical /events/{id}, and window.location.replace() still redirects humans; and (2) Event edit feature — PATCH /api/events/{id} works with partial updates + 404s correctly, and the full React edit flow (role gating on guest/org/admin, prefill of all 18 testids, save-then-see-changes, admin-only status picker, and edit CTAs on EventDetail + OrgDashboard + Admin pending/approved queues) all pass. Backend pytest suite (backend/tests/) — 56/56 passed after tightening TestEventOgPage assertions (stripping HTML comments before checking meta-refresh) and adding regex-based checks for og:image dimensions, og:image:secure_url match, canonical link tag, og:url canonical, and explicit assertion that og:type != 'event'. FB share button correctly points to https://www.facebook.com/sharer/sharer.php?u=<encoded /api/events/{id}/og> — hasn't regressed. No TEST_/TMP_ data left behind (Festival venue was restored to 'Blackrod Cricket Club (TBC)'; backend tests self-clean via DELETE).",
+  "backend_issues": { "critical": [], "minor": [] },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "Regarding the user's residual FB share complaint: our OG endpoint output is correct and crawler-friendly, but Facebook aggressively caches OG scrapes for ~24h. If a preview still looks generic in FB, force a re-scrape at https://developers.facebook.com/tools/debug/ using the OG URL (https://<host>/api/events/<id>/og). This is a FB-side cache, not an app-side bug."
+  ],
+  "critical_code_review_comments": [
+    "EventEdit.jsx uses browser prompt (window.confirm) for delete confirmation — consider a shadcn AlertDialog for consistency with the rest of the app (low priority).",
+    "The status picker in EventEdit only saves when role='admin' via the ternary at line 93 — this is correct role gating on the client side, but the backend PATCH endpoint currently accepts a `status` field from any caller. When real auth lands, backend must reject status changes from non-admin callers (noted before; still relevant).",
+    "EventEdit derives date/time from Date.toISOString() which uses UTC. If the user's local timezone differs from UTC, the pre-filled time may drift by up to ~24h from what they see on the event detail page. Recommend using local-time formatting (e.g. date-fns format(date, 'yyyy-MM-dd')) to preserve human intent. Not causing failures with current UK-based seed data but will bite users elsewhere.",
+    "OrgDashboard filters events by selectedOrgSlug=activeOrgSlug — the default active org is 'blackrod-town-council', so festival-2026 (owned by horwich-blackrod-community-events-cic) does not surface in that org's dashboard. This is correct behaviour and testids for the 4 blackrod-town-council events (light-switchon-2026, remembrance-2025, armistice-2025, light-switchon-2025) all have working dash-event-edit-<id> buttons. Verified navigation.",
+    "server.py event_og_page (~90 LOC) is a good candidate to extract into a small helper (og_html_for_event) — makes the surrounding module cleaner and easier to unit-test dimensions logic."
+  ],
+  "updated_files": [
+    "/app/backend/tests/backend_test.py"
+  ],
+  "success_rate": { "backend": "100% (56/56 across backend_test.py + test_calendar_share_edge.py + test_org_images.py)", "frontend": "100%" },
+  "test_credentials": "No auth. Role switcher: [data-testid=role-switcher] → [data-testid=role-guest|role-org|role-admin]. Event id: evt-festival-2026 (owned by horwich-blackrod-community-events-cic). Org dashboard default org: blackrod-town-council. Its events with edit buttons: evt-light-switchon-2026, evt-remembrance-2025, evt-armistice-2025, evt-light-switchon-2025.",
+  "seed_data_creation": "None left behind. TestEventPatch creates/deletes TEST_ events inside each test via DELETE /admin/events/{id}. Frontend flows created no persistent data; venue was restored to 'Blackrod Cricket Club (TBC)'.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "OG page assertions upgraded — must strip HTML comments BEFORE regex-checking meta http-equiv=refresh because server.py includes an explanatory HTML comment mentioning `<meta http-equiv=\"refresh\">` in the response. Event PATCH lifecycle: POST /api/events → PATCH /api/events/{id} → DELETE /api/admin/events/{id}. Edit-flow testids: edit-event-cta (visible for role='org'|'admin'), ee-title/ee-org/ee-category/ee-date/ee-start/ee-end/ee-venue/ee-address/ee-desc/ee-cost/ee-age/ee-access/ee-booking/ee-email/ee-phone/ee-image/ee-save/ee-delete, ee-status-approved|pending|rejected (admin-only), dash-event-edit-<id> in OrgDashboard, admin-edit-event-<id> (pending queue) + admin-edit-approved-<id> (approved table) in Admin panel. FB share button data-testid='share-facebook' opens sharer.php?u=<encoded>/api/events/<id>/og — via ShareButtons.jsx socialUrl = ogUrl || canonicalUrl, and EventDetail.jsx passes ogUrl=`${API}/events/${id}/og`.",
+  "detailed_pass_matrix": {
+    "backend_pytest_56_of_56": true,
+    "backend_og_no_active_meta_refresh": true,
+    "backend_og_type_is_article_not_event": true,
+    "backend_og_image_width_height_present_and_sensible": true,
+    "backend_og_image_secure_url_matches_og_image": true,
+    "backend_og_canonical_link_tag_present": true,
+    "backend_og_url_is_canonical_events_id": true,
+    "backend_og_js_redirect_still_present": true,
+    "backend_og_404_for_missing_event": true,
+    "backend_TestEventPatch_partial_update_persists": true,
+    "backend_TestEventPatch_404_missing_event": true,
+    "backend_TestEventPatch_404_invalid_org_slug": true,
+    "backend_regression_all_other_suites": true,
+    "frontend_guest_no_edit_cta": true,
+    "frontend_org_has_edit_cta": true,
+    "frontend_admin_has_edit_cta": true,
+    "frontend_edit_page_all_18_testids_present": true,
+    "frontend_prefill_values_correct": true,
+    "frontend_org_no_status_picker": true,
+    "frontend_admin_has_status_picker": true,
+    "frontend_save_returns_200_and_toast_and_redirects": true,
+    "frontend_new_venue_reflected_on_detail_page": true,
+    "frontend_dash_event_edit_buttons_navigate_correctly": true,
+    "frontend_admin_pending_edit_button_present": true,
+    "frontend_admin_approved_edit_button_present_and_navigates": true,
+    "frontend_fb_share_url_targets_api_events_id_og": true
+  }
+}

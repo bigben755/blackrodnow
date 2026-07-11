@@ -271,7 +271,7 @@ export default function OrgDashboard() {
                 ) : (
                     <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
                         {myEvents.map((e) => (
-                            <div key={e.id} className="rounded-3xl border border-border bg-surface p-5" data-testid={`dash-event-${e.id}`}>
+                            <div key={e.id} className="rounded-3xl border border-border bg-surface p-5 flex flex-col" data-testid={`dash-event-${e.id}`}>
                                 <div className="flex items-center gap-2">
                                     <CategoryBadge category={e.category} />
                                     <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold tracking-wider uppercase ${
@@ -281,6 +281,21 @@ export default function OrgDashboard() {
                                 </div>
                                 <h3 className="font-display font-bold mt-2">{e.title}</h3>
                                 <p className="text-xs text-muted-foreground mt-1">{formatDate(e.start)} · {formatTime(e.start)}</p>
+                                <div className="mt-3 pt-3 border-t border-border flex items-center gap-2 mt-auto">
+                                    <Link
+                                        to={`/events/${e.id}`}
+                                        className="text-xs font-semibold text-muted-foreground hover:text-foreground"
+                                    >
+                                        View
+                                    </Link>
+                                    <Link
+                                        to={`/edit-event/${e.id}`}
+                                        data-testid={`dash-event-edit-${e.id}`}
+                                        className="ml-auto inline-flex items-center gap-1 px-3 py-1.5 rounded-full bg-primary text-primary-foreground text-[11px] font-semibold hover:brightness-110"
+                                    >
+                                        <Edit3 className="h-3 w-3" /> Edit
+                                    </Link>
+                                </div>
                             </div>
                         ))}
                     </div>

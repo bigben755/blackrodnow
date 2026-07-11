@@ -246,15 +246,17 @@ class TestEventOgPage:
         assert r.status_code == 200
         events = r.json()
         assert events, "seed events missing"
-        event_id = events[0]["id"]
-        expected_title = events[0]["title"]
+        # Prefer the well-known festival id if present.
+        event = next((x for x in events if x["id"] == "evt-festival-2026"), events[0])
+        event_id = event["id"]
+        expected_title = event["title"]
 
         og = api.get(f"{API}/events/{event_id}/og", timeout=15)
         assert og.status_code == 200
         assert "text/html" in og.headers.get("content-type", "").lower()
         body = og.text
 
-        assert 'property="og:type"' in body
+        # Base OG tags
         assert 'property="og:site_name" content="Blackrod Now"' in body
         assert 'property="og:title"' in body
         assert 'property="og:description"' in body
@@ -264,7 +266,39 @@ class TestEventOgPage:
         import html as _h
         assert _h.escape(expected_title) in body or expected_title in body
         assert f"/events/{event_id}" in body
-        assert 'http-equiv="refresh"' in body
+
+        # (a) NO active <meta http-equiv="refresh"> tag (comment referencing it is OK)
+        import re as _re
+        body_no_comments = _re.sub(r"<!--.*?-->", "", body, flags=_re.S)
+        assert not _re.search(r"<meta\s+[^>]*http-equiv\s*=\s*[\"']refresh[\"']", body_no_comments, _re.I), \
+            "Active meta-refresh tag found — FB crawler would follow it"
+
+        # (b) og:type must be article, NOT event
+        assert 'property="og:type" content="article"' in body
+        assert 'property="og:type" content="event"' not in body
+
+        # (c) og:image dimensions present and sensible
+        assert 'property="og:image:width"' in body
+        assert 'property="og:image:height"' in body
+        w = int(_re.search(r'og:image:width" content="(\d+)"', body).group(1))
+        h = int(_re.search(r'og:image:height" content="(\d+)"', body).group(1))
+        assert (w, h) in [(1200, 630), (512, 512), (1600, 500)], f"unexpected image dims {w}x{h}"
+
+        # (d) og:image:secure_url present and matches og:image
+        m_img = _re.search(r'property="og:image" content="([^"]+)"', body)
+        m_sec = _re.search(r'property="og:image:secure_url" content="([^"]+)"', body)
+        assert m_img and m_sec
+        assert m_img.group(1) == m_sec.group(1)
+
+        # (e) og:url is canonical /events/{id}
+        m_url = _re.search(r'property="og:url" content="([^"]+)"', body)
+        assert m_url and m_url.group(1).endswith(f"/events/{event_id}")
+
+        # (f) canonical link tag present
+        assert _re.search(r'<link rel="canonical" href="[^"]+' + _re.escape(f"/events/{event_id}") + r'"', body)
+
+        # (g) JS redirect present for humans
+        assert "window.location.replace" in body
 
     def test_og_404_for_missing_event(self, api):
         r = api.get(f"{API}/events/does-not-exist/og", timeout=15)
@@ -343,6 +377,65 @@ class TestSharePack:
             timeout=15,
         )
         assert r.status_code == 400
+
+
+class TestEventPatch:
+    """PATCH /api/events/{id} accepts partial updates."""
+
+    def test_patch_updates_fields(self, api):
+        # Create a test event
+        payload = {
+            "title": "TEST_patch_event",
+            "orgSlug": "blackrod-town-council",
+            "category": "Community",
+            "start": "2027-01-01T10:00:00Z",
+            "end": "2027-01-01T11:00:00Z",
+            "venue": "TBC",
+            "description": "orig",
+        }
+        r = api.post(f"{API}/events", json=payload, timeout=15)
+        assert r.status_code == 200
+        eid = r.json()["id"]
+
+        # Patch a subset
+        r2 = api.patch(
+            f"{API}/events/{eid}",
+            json={"title": "TEST_patch_event_updated", "venue": "Blackrod Library", "status": "approved"},
+            timeout=15,
+        )
+        assert r2.status_code == 200
+        e = r2.json()
+        assert e["title"] == "TEST_patch_event_updated"
+        assert e["venue"] == "Blackrod Library"
+        assert e["status"] == "approved"
+        # Unchanged fields survived
+        assert e["orgSlug"] == "blackrod-town-council"
+        assert e["description"] == "orig"
+
+        # Cleanup
+        api.delete(f"{API}/admin/events/{eid}", timeout=15)
+
+    def test_patch_404_missing_event(self, api):
+        r = api.patch(f"{API}/events/does-not-exist", json={"title": "x"}, timeout=15)
+        assert r.status_code == 404
+
+    def test_patch_invalid_org_slug(self, api):
+        # Create then attempt to move to nonexistent org
+        r = api.post(
+            f"{API}/events",
+            json={
+                "title": "TEST_patch_org_fail",
+                "orgSlug": "blackrod-town-council",
+                "category": "Community",
+                "start": "2027-02-01T10:00:00Z",
+                "end": "2027-02-01T11:00:00Z",
+            },
+            timeout=15,
+        )
+        eid = r.json()["id"]
+        r2 = api.patch(f"{API}/events/{eid}", json={"orgSlug": "does-not-exist"}, timeout=15)
+        assert r2.status_code == 404
+        api.delete(f"{API}/admin/events/{eid}", timeout=15)
 
 
 class TestNotificationThread:

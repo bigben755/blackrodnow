@@ -24,6 +24,7 @@ import Contact from "@/pages/Contact";
 import Preferences from "@/pages/Preferences";
 import Unsubscribe from "@/pages/Unsubscribe";
 import OrgProfileEdit from "@/pages/OrgProfileEdit";
+import EventEdit from "@/pages/EventEdit";
 
 export default function App() {
     return (
@@ -42,6 +43,7 @@ export default function App() {
                         />
 
                         <Route path="/submit-event" element={<SubmitEvent />} />
+                        <Route path="/edit-event/:id" element={<EventEdit />} />
                         <Route path="/add-organisation" element={<AddOrganisation />} />
                         <Route path="/local-feed" element={<LocalFeed />} />
                         <Route path="/venues" element={<Venues />} />

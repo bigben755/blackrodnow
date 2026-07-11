@@ -27,6 +27,7 @@ export const api = {
     events: (opts = {}) => client.get("/events", { params: opts }).then((r) => r.data),
     event: (id) => client.get(`/events/${id}`).then((r) => r.data),
     createEvent: (data) => client.post("/events", data).then((r) => r.data),
+    updateEvent: (id, patch) => client.patch(`/events/${id}`, patch).then((r) => r.data),
     setEventStatus: (id, status) =>
         client.post(`/admin/events/${id}/status`, { status }).then((r) => r.data),
     featureEvent: (id) => client.post(`/admin/events/${id}/feature`).then((r) => r.data),

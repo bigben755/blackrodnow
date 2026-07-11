@@ -112,6 +112,11 @@ export function AppProvider({ children }) {
         setEvents((prev) => [created, ...prev]);
         return created;
     };
+    const updateEvent = async (id, patch) => {
+        const updated = await api.updateEvent(id, patch);
+        setEvents((prev) => prev.map((e) => (e.id === id ? updated : e)));
+        return updated;
+    };
     const setEventStatus = async (id, status) => {
         const updated = await api.setEventStatus(id, status);
         setEvents((prev) => prev.map((e) => (e.id === id ? updated : e)));
@@ -158,7 +163,7 @@ export function AppProvider({ children }) {
             stats, refresh,
             notifPrefs, setNotifPrefs,
             activeOrgSlug, setActiveOrgSlug,
-            addEvent, setEventStatus, toggleEventFeatured, deleteEvent,
+            addEvent, updateEvent, setEventStatus, toggleEventFeatured, deleteEvent,
             addOrg, patchOrg, setOrgStatus, deleteOrg,
             addFeedPost,
             deviceId: getDeviceId(),
