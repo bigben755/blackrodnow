@@ -67,5 +67,5 @@ A modern community website for Blackrod, Bolton showcasing local events, clubs, 
 - Localisation of dates/times.
 
 ## Notes / Mocked Integrations
-- **Resend** — LIVE as of Feb 10 2026. API key configured. Currently in Resend **sandbox mode** (`SENDER_EMAIL=onboarding@resend.dev`) which only allows sending to the account owner's email (`trainingteam@traindriverfoundation.com`). Verified real delivery via `POST /organisations/{slug}/share-pack/email` (Resend id returned, `mocked=false`). To send to arbitrary residents, verify a domain at resend.com/domains and update `SENDER_EMAIL` in `/app/backend/.env`.
+- **Resend** — FULLY LIVE as of Feb 10 2026. Domain `communityalliances.co.uk` verified. Sender: `"Blackrod Now" <blackrodnow@communityalliances.co.uk>`. Verified real delivery to arbitrary addresses via share pack + welcome email + broadcast pathways — no sandbox restriction. Multi-alliance sender naming pattern already in place (add `bradshawnow@communityalliances.co.uk`, `halliwellnow@…` etc. when those alliances go live — just update `SENDER_EMAIL` per deployment).
 - **Auth** — simulated role switcher in navbar (guest / org / admin). No real login.

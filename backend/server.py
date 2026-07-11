@@ -26,6 +26,7 @@ DB_NAME = os.environ["DB_NAME"]
 EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY")
 RESEND_API_KEY = os.environ.get("RESEND_API_KEY")
 SENDER_EMAIL = os.environ.get("SENDER_EMAIL", "onboarding@resend.dev")
+SENDER_NAME = os.environ.get("SENDER_NAME", "Blackrod Now")
 APP_NAME = os.environ.get("APP_NAME", "blackrodnow")
 STORAGE_URL = "https://integrations.emergentagent.com/objstore/api/v1/storage"
 PUBLIC_URL = os.environ.get("PUBLIC_URL", "https://blackrodnow.local")
@@ -87,8 +88,11 @@ def resend_send(to_email: str, subject: str, html: str) -> Dict[str, Any]:
     try:
         import resend  # lazy
         resend.api_key = RESEND_API_KEY
+        # RFC 5322 style: `"Blackrod Now" <blackrodnow@…>` — most clients show
+        # the display name instead of the raw address.
+        from_field = f'"{SENDER_NAME}" <{SENDER_EMAIL}>' if SENDER_NAME else SENDER_EMAIL
         result = resend.Emails.send(
-            {"from": SENDER_EMAIL, "to": [to_email], "subject": subject, "html": html}
+            {"from": from_field, "to": [to_email], "subject": subject, "html": html}
         )
         return {"ok": True, "mocked": False, "id": result.get("id"), "to": to_email}
     except Exception as e:
