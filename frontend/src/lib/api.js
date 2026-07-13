@@ -118,6 +118,11 @@ export const api = {
     sendNewsletter: (data) => client.post("/admin/newsletter/send", data).then((r) => r.data),
     broadcast: (data) => client.post("/admin/broadcast", data).then((r) => r.data),
 
+    // Admin free-form email compose
+    adminEmailSenders: () => client.get("/admin/email/senders").then((r) => r.data),
+    adminEmailPreview: (data) => client.post("/admin/email/preview", data).then((r) => r.data),
+    adminEmailSend: (data) => client.post("/admin/email/send", data).then((r) => r.data),
+
     // Share pack
     getSharePack: (slug) => client.get(`/organisations/${slug}/share-pack`).then((r) => r.data),
     emailSharePack: (slug, to) =>

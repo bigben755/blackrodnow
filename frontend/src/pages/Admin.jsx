@@ -11,6 +11,7 @@ import { toast } from "sonner";
 import {
     Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter,
 } from "@/components/ui/dialog";
+import AdminEmailCompose from "@/components/AdminEmailCompose";
 
 export default function Admin() {
     const {
@@ -57,6 +58,11 @@ export default function Admin() {
             <section className="mt-10 grid lg:grid-cols-2 gap-4">
                 <BroadcastCard onSent={refresh} />
                 <NewsletterCard />
+            </section>
+
+            {/* Free-form admin email compose */}
+            <section className="mt-10">
+                <AdminEmailCompose />
             </section>
 
             {/* Contact admin inbox + Notify orgs */}

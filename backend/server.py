@@ -27,6 +27,9 @@ EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY")
 RESEND_API_KEY = os.environ.get("RESEND_API_KEY")
 SENDER_EMAIL = os.environ.get("SENDER_EMAIL", "onboarding@resend.dev")
 SENDER_NAME = os.environ.get("SENDER_NAME", "Blackrod Now")
+ADMIN_SENDER_EMAILS = [
+    s.strip() for s in os.environ.get("ADMIN_SENDER_EMAILS", SENDER_EMAIL).split(",") if s.strip()
+]
 APP_NAME = os.environ.get("APP_NAME", "blackrodnow")
 STORAGE_URL = "https://integrations.emergentagent.com/objstore/api/v1/storage"
 PUBLIC_URL = os.environ.get("PUBLIC_URL", "https://blackrodnow.local")
@@ -80,17 +83,23 @@ def get_object(path: str):
     return r.content, r.headers.get("Content-Type", "application/octet-stream")
 
 
-def resend_send(to_email: str, subject: str, html: str) -> Dict[str, Any]:
-    """Send via Resend. Returns dict with ok flag + provider id or mock note."""
+def resend_send(to_email: str, subject: str, html: str, from_email: Optional[str] = None, from_name: Optional[str] = None) -> Dict[str, Any]:
+    """Send via Resend. Returns dict with ok flag + provider id or mock note.
+
+    Optional `from_email` overrides the default sender (must be a
+    domain-verified address, e.g. an entry in ADMIN_SENDER_EMAILS).
+    """
     if not RESEND_API_KEY:
         logger.info("[MOCK EMAIL] to=%s subject=%s (RESEND_API_KEY not set)", to_email, subject)
         return {"ok": True, "mocked": True, "to": to_email, "subject": subject}
     try:
         import resend  # lazy
         resend.api_key = RESEND_API_KEY
+        sender_addr = from_email or SENDER_EMAIL
+        sender_name = from_name if from_name is not None else SENDER_NAME
         # RFC 5322 style: `"Blackrod Now" <blackrodnow@…>` — most clients show
         # the display name instead of the raw address.
-        from_field = f'"{SENDER_NAME}" <{SENDER_EMAIL}>' if SENDER_NAME else SENDER_EMAIL
+        from_field = f'"{sender_name}" <{sender_addr}>' if sender_name else sender_addr
         result = resend.Emails.send(
             {"from": from_field, "to": [to_email], "subject": subject, "html": html}
         )
@@ -1512,6 +1521,132 @@ async def broadcast(req: BroadcastReq):
         else:
             failed += 1
     return {"ok": True, "sent": sent, "failed": failed, "mocked": not RESEND_API_KEY}
+
+
+# ─────────── Admin free-form email compose ───────────
+import re as _re
+
+
+EMAIL_RE = _re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
+
+
+class AdminEmailReq(BaseModel):
+    """Free-form email compose. Recipients accepted as a list or a
+    comma/newline-separated string. `from_email` is validated against
+    ADMIN_SENDER_EMAILS whitelist. `body` is treated as plain text with
+    minimal auto-formatting (newlines → paragraphs, URLs auto-linked)."""
+    to: str  # comma/newline-separated
+    subject: str
+    body: str
+    from_email: Optional[str] = None
+    from_name: Optional[str] = None
+    reply_to: Optional[str] = None
+
+
+def _parse_recipients(raw: str) -> tuple[list[str], list[str]]:
+    seen: set[str] = set()
+    valid: list[str] = []
+    invalid: list[str] = []
+    for chunk in _re.split(r"[,;\n]+", raw or ""):
+        addr = chunk.strip()
+        if not addr:
+            continue
+        low = addr.lower()
+        if low in seen:
+            continue
+        seen.add(low)
+        (valid if EMAIL_RE.match(addr) else invalid).append(addr)
+    return valid, invalid
+
+
+def _auto_link(text: str) -> str:
+    """Escape HTML, convert URLs to <a> links, preserve newlines/paragraphs."""
+    escaped = _html_lib.escape(text or "")
+    url_re = _re.compile(r"(https?://[^\s<]+)")
+    linked = url_re.sub(r'<a href="\1" style="color:#0052FF">\1</a>', escaped)
+    # split into paragraphs on blank line, single newlines become <br>
+    paragraphs = [p.strip() for p in _re.split(r"\n\s*\n", linked) if p.strip()]
+    return "\n".join(f"<p>{p.replace(chr(10), '<br />')}</p>" for p in paragraphs) or "<p></p>"
+
+
+def _render_admin_email_html(subject: str, body_text: str, from_email: str) -> str:
+    body_html = _auto_link(body_text)
+    return f"""<!doctype html>
+<html><body style="margin:0;padding:0;background:#F9FAFB;font-family:system-ui,-apple-system,Segoe UI,sans-serif;color:#111827">
+<table role="presentation" cellspacing="0" cellpadding="0" width="100%" bgcolor="#F9FAFB">
+<tr><td align="center">
+<table role="presentation" cellspacing="0" cellpadding="0" width="600" style="max-width:600px;padding:32px 24px">
+  <tr><td style="padding-bottom:16px">
+    <div style="font-size:11px;letter-spacing:0.2em;text-transform:uppercase;color:#0052FF;font-weight:800">Blackrod Now</div>
+    <h1 style="font-size:24px;line-height:1.25;color:#111827;margin:8px 0 0 0">{_html_lib.escape(subject)}</h1>
+  </td></tr>
+  <tr><td style="font-size:15px;line-height:1.6;color:#111827;padding-bottom:24px">
+    {body_html}
+  </td></tr>
+  <tr><td style="border-top:1px solid #E5E7EB;padding-top:16px;color:#9CA3AF;font-size:12px">
+    Sent by Blackrod Now via <a href="mailto:{_html_lib.escape(from_email)}" style="color:#9CA3AF">{_html_lib.escape(from_email)}</a>. This is a one-off message from the Blackrod Now admin team.
+  </td></tr>
+</table>
+</td></tr>
+</table>
+</body></html>"""
+
+
+@api.get("/admin/email/senders")
+async def admin_email_senders():
+    """Return the whitelisted sender addresses for the admin compose UI."""
+    return {"senders": ADMIN_SENDER_EMAILS, "default": SENDER_EMAIL}
+
+
+@api.post("/admin/email/preview")
+async def admin_email_preview(req: AdminEmailReq):
+    from_addr = (req.from_email or SENDER_EMAIL).strip().lower()
+    if from_addr not in [s.lower() for s in ADMIN_SENDER_EMAILS]:
+        raise HTTPException(400, f"Sender must be one of: {', '.join(ADMIN_SENDER_EMAILS)}")
+    valid, invalid = _parse_recipients(req.to)
+    html = _render_admin_email_html(req.subject, req.body, from_addr)
+    return {
+        "html": html,
+        "subject": req.subject,
+        "from": f'"{req.from_name or SENDER_NAME}" <{from_addr}>',
+        "recipients": valid,
+        "invalid_recipients": invalid,
+        "count": len(valid),
+    }
+
+
+@api.post("/admin/email/send")
+async def admin_email_send(req: AdminEmailReq):
+    from_addr = (req.from_email or SENDER_EMAIL).strip().lower()
+    if from_addr not in [s.lower() for s in ADMIN_SENDER_EMAILS]:
+        raise HTTPException(400, f"Sender must be one of: {', '.join(ADMIN_SENDER_EMAILS)}")
+    valid, invalid = _parse_recipients(req.to)
+    if not valid:
+        raise HTTPException(400, "No valid recipients")
+    if not req.subject.strip():
+        raise HTTPException(400, "Subject is required")
+    if not req.body.strip():
+        raise HTTPException(400, "Body is required")
+
+    html = _render_admin_email_html(req.subject, req.body, from_addr)
+    sent, failed, results = 0, 0, []
+    for addr in valid:
+        r = await asyncio.to_thread(
+            resend_send, addr, req.subject, html, from_addr, req.from_name or SENDER_NAME
+        )
+        if r.get("ok"):
+            sent += 1
+        else:
+            failed += 1
+        results.append({"to": addr, **{k: r.get(k) for k in ("ok", "id", "error", "mocked")}})
+    return {
+        "ok": failed == 0,
+        "sent": sent,
+        "failed": failed,
+        "invalid_recipients": invalid,
+        "results": results,
+        "mocked": not RESEND_API_KEY,
+    }
 
 
 # ─────────── Startup ───────────

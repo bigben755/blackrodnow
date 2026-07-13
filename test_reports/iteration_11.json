@@ -1,0 +1,52 @@
+{
+  "summary": "Verified Admin free-form email compose feature end-to-end. Backend (all 56 pytest passed = 48 regression + 8 new extras): GET /admin/email/senders returns both `blackrodnow@communityalliances.co.uk` and `now@communityalliances.co.uk` with correct default. POST /admin/email/preview correctly parses recipients (splits on comma/semicolon/newline, case-insensitive dedup, separates invalid). URLs auto-linked via <a href>. Blank lines become <p> paragraphs. XSS/HTML-escape safety CONFIRMED — body '<script>alert(1)</script>' is rendered as escaped '&lt;script&gt;alert(1)&lt;/script&gt;' in html; onerror in subject '<img src=x onerror=alert(2)>' is also escaped as text. Attacker sender (from_email='attacker@evil.com') → 400 on both preview and send. POST /admin/email/send with delivered@resend.dev delivers LIVE via Resend (mocked=false, Resend id returned) for BOTH senders A and B. Validation errors: empty subject/body → 400, no valid recipients → 400. Frontend: /admin shows compose section (data-testid='admin-email-compose'); 'From' dropdown lists both whitelisted addresses; live counter updates to 2 for 'a@b.co, bad-email, c@d.co' with 'bad-email' shown in invalid warning; Preview dialog opens; iframe (sandbox='') srcDoc contains escaped script and auto-linked URL; sidebar shows Subject/From/To/Skipped-invalid; 'Send to N' inside dialog fires window.confirm('Send email to 2 recipients?'), dialog closes and form clears after success; outer 'Send to N' also works, fires confirm and shows compose-last-result panel 'Sent: 1 · Failed: 0'.",
+  "backend_issues": { "critical": [], "minor": [] },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/backend_test.py",
+    "/app/backend/tests/test_admin_email_extras.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py has grown past 1680 lines and is doing too many concerns (orgs, events, subscribers, newsletter, admin compose, storage, notifications, OG page, share pack). Recommend splitting: routes/admin_email.py (compose endpoints + _parse_recipients/_auto_link/_render_admin_email_html helpers), routes/newsletter.py, routes/events.py. This will make the codebase much easier to unit-test and maintain.",
+    "_auto_link URL regex `(https?://[^\\s<]+)` will greedily consume trailing punctuation like '.' or ')' — e.g. 'visit https://blackrodnow.com.' will include the trailing '.' inside the <a href>. Consider trimming common trailing punctuation `[.,;:!?)\\]]` before wrapping. Low priority — Resend recipients unlikely to care.",
+    "The /admin route in the React app is NOT role-gated: guest/org roles can navigate to /admin and see the full dashboard incl. the compose section. Review request explicitly says this is out of scope for this iteration ('no change from this iteration'), but flagging so the main agent doesn't forget. A real deployment MUST protect /admin via server-side auth before shipping — the current in-memory role switch is fine for staging.",
+    "AdminEmailCompose.jsx uses window.confirm() — for consistency with the rest of the app that uses shadcn dialogs, consider replacing with an AlertDialog. Low priority.",
+    "No rate-limiting on POST /admin/email/send — a determined admin could hit Resend's per-second cap. Consider a simple in-process rate limiter or Resend batch API for large recipient lists (currently loops one at a time via asyncio.to_thread, which is slow for >20 recipients).",
+    "The Send loop in admin_email_send fires N sequential resend_send calls. For 50 recipients that's 50 sequential HTTP calls. Consider using asyncio.gather with a semaphore(5), or Resend's batch endpoint. Not blocking for MVP."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_admin_email_extras.py"
+  ],
+  "success_rate": {
+    "backend": "100% (56/56 across backend_test.py + test_org_images.py + test_admin_email_extras.py)",
+    "frontend": "100% (compose section, sender dropdown, live counter, invalid warning, preview dialog, iframe srcdoc/sandbox, sidebar metadata, preview-send with window.confirm, outer send, form clear, last-result panel)"
+  },
+  "test_credentials": "No auth. Role switcher: [data-testid=role-switcher] → [data-testid=role-admin|role-org|role-guest]. Test recipient: delivered@resend.dev (Resend always-accept). Both senders whitelisted: blackrodnow@communityalliances.co.uk (default), now@communityalliances.co.uk.",
+  "seed_data_creation": "None persistent. Sent 3 live emails to delivered@resend.dev during testing (TEST_from_A, TEST_from_B, TEST_e2e_subject, TEST_outer_send, TEST_admin_compose) — Resend always-accept absorbs these silently; no real inbox impact.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Admin compose testids: admin-email-compose (section), compose-from (select), compose-reply-to (input), compose-to (textarea), compose-recipient-count (span, live valid count), compose-subject, compose-body, compose-preview (button), compose-send (button, outer), compose-last-result (result panel), compose-preview-dialog (Dialog content), compose-preview-iframe (sandboxed iframe with srcdoc containing rendered branded HTML), compose-preview-send (send button inside dialog). Send flow: both compose-send and compose-preview-send trigger window.confirm — attach page.on('dialog', lambda d: d.accept()) BEFORE clicking. Backend routes: GET /api/admin/email/senders, POST /api/admin/email/preview, POST /api/admin/email/send — all read whitelist from ADMIN_SENDER_EMAILS env. XSS-safe: server HTML-escapes body/subject via html.escape() before injecting into the branded HTML shell; frontend iframe uses sandbox='' (empty string = fully sandboxed, no js/forms/popups) as extra defence.",
+  "xss_test_evidence": {
+    "input_body": "hello <script>alert(1)</script> world",
+    "input_subject": "<img src=x onerror=alert(2)>",
+    "output_body_contains_escaped": "&lt;script&gt;alert(1)&lt;/script&gt;",
+    "output_subject_contains_escaped": "&lt;img src=x onerror=alert(2)&gt;",
+    "raw_unescaped_script_present_in_output": false,
+    "raw_img_onerror_tag_present_in_output": false,
+    "iframe_sandbox_attribute": "\"\" (empty string, fully sandboxed)"
+  },
+  "resend_live_evidence": {
+    "sender_A_blackrodnow_delivered": true,
+    "sender_A_returned_resend_id": true,
+    "sender_A_mocked": false,
+    "sender_B_now_delivered": true,
+    "sender_B_returned_resend_id": true,
+    "sender_B_mocked": false
+  }
+}

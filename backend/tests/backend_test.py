@@ -130,9 +130,9 @@ class TestSubscriberFlow:
         assert r2.json().get("unsubscribed") is True
 
 
-# ─────────── Broadcast (mocked email path) ───────────
+# ─────────── Broadcast (works in mock OR live Resend mode) ───────────
 class TestBroadcast:
-    def test_broadcast_mocked(self, api):
+    def test_broadcast_works(self, api):
         r = api.post(
             f"{API}/admin/broadcast",
             json={"subject": "TEST broadcast", "html": "<p>Hi</p>"},
@@ -141,8 +141,8 @@ class TestBroadcast:
         assert r.status_code == 200, r.text
         d = r.json()
         assert d.get("ok") is True
-        # RESEND_API_KEY intentionally unset → mocked:true
-        assert d.get("mocked") is True
+        # `mocked` is True only when RESEND_API_KEY is not set. Either way is fine.
+        assert "mocked" in d
 
 
 # ─────────── AI parse-content (multi-event) ───────────
@@ -352,17 +352,20 @@ class TestSharePack:
             assert "twitter" in e["share_links"]
             assert "whatsapp" in e["share_links"]
 
-    def test_email_share_pack_mocked(self, api):
+    def test_email_share_pack_delivers(self, api):
+        # Use Resend's always-accept test address so this works in both
+        # mocked and live modes without cross-contaminating real inboxes.
         r = api.post(
             f"{API}/organisations/blackrod-town-council/share-pack/email",
-            json={"to": "regression@example.com"},
+            json={"to": "delivered@resend.dev"},
             timeout=30,
         )
         assert r.status_code == 200, r.text
         d = r.json()
         assert d["ok"] is True
-        assert d["to"] == "regression@example.com"
-        assert d["email"]["mocked"] is True
+        assert d["to"] == "delivered@resend.dev"
+        assert d["email"]["ok"] is True
+        assert "mocked" in d["email"]  # either True (no key) or False (live)
 
     def test_email_share_pack_requires_recipient(self, api):
         # A fake org with no email would 400, but existing seed orgs may have email set.
@@ -374,6 +377,80 @@ class TestSharePack:
         r = api.post(
             f"{API}/organisations/blackrod-town-council/share-pack/email",
             json={},
+            timeout=15,
+        )
+        assert r.status_code == 400
+
+
+class TestAdminEmailCompose:
+    """GET /admin/email/senders, POST /admin/email/preview, POST /admin/email/send."""
+
+    def test_senders_returned(self, api):
+        r = api.get(f"{API}/admin/email/senders", timeout=15)
+        assert r.status_code == 200
+        d = r.json()
+        assert isinstance(d["senders"], list) and len(d["senders"]) >= 1
+        assert d.get("default")
+
+    def test_preview_renders_html_and_parses_recipients(self, api):
+        r = api.post(
+            f"{API}/admin/email/preview",
+            json={
+                "to": "delivered@resend.dev, bad-email, another@example.com\ndup@example.com,dup@example.com",
+                "subject": "TEST_preview subject",
+                "body": "Line 1\n\nLine 2 with a link https://blackrodnow.com — done.",
+            },
+            timeout=15,
+        )
+        assert r.status_code == 200
+        d = r.json()
+        # HTML contains the branded shell + auto-linked URL
+        assert "<html" in d["html"].lower()
+        assert 'href="https://blackrodnow.com"' in d["html"]
+        assert d["subject"] == "TEST_preview subject"
+        # 3 unique valid, 1 invalid ("bad-email"), dup removed
+        assert set(d["recipients"]) == {"delivered@resend.dev", "another@example.com", "dup@example.com"}
+        assert d["invalid_recipients"] == ["bad-email"]
+
+    def test_preview_rejects_bad_sender(self, api):
+        r = api.post(
+            f"{API}/admin/email/preview",
+            json={"to": "a@b.co", "subject": "s", "body": "b", "from_email": "attacker@evil.com"},
+            timeout=15,
+        )
+        assert r.status_code == 400
+
+    def test_send_delivers_to_test_address(self, api):
+        r = api.post(
+            f"{API}/admin/email/send",
+            json={
+                "to": "delivered@resend.dev",
+                "subject": "TEST_admin_compose",
+                "body": "Hello from the admin compose box.",
+            },
+            timeout=30,
+        )
+        assert r.status_code == 200, r.text
+        d = r.json()
+        assert d["sent"] == 1
+        assert d["failed"] == 0
+        assert d["results"][0]["to"] == "delivered@resend.dev"
+        # If Resend key present, id should be present and mocked False.
+        if not d.get("mocked"):
+            assert d["results"][0].get("id")
+
+    def test_send_400_no_valid_recipients(self, api):
+        r = api.post(
+            f"{API}/admin/email/send",
+            json={"to": "not-an-email", "subject": "s", "body": "b"},
+            timeout=15,
+        )
+        assert r.status_code == 400
+
+    def test_send_400_missing_subject(self, api):
+        r = api.post(
+            f"{API}/admin/email/send",
+            json={"to": "a@b.co", "subject": "", "body": "b"},
             timeout=15,
         )
         assert r.status_code == 400
