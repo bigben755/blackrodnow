@@ -1562,8 +1562,11 @@ def _parse_recipients(raw: str) -> tuple[list[str], list[str]]:
 def _auto_link(text: str) -> str:
     """Escape HTML, convert URLs to <a> links, preserve newlines/paragraphs."""
     escaped = _html_lib.escape(text or "")
-    url_re = _re.compile(r"(https?://[^\s<]+)")
-    linked = url_re.sub(r'<a href="\1" style="color:#0052FF">\1</a>', escaped)
+    # Don't include common sentence-ending punctuation in the linked URL —
+    # e.g. `visit https://blackrodnow.com.` should link "https://blackrodnow.com"
+    # and leave the trailing period as prose.
+    url_re = _re.compile(r"(https?://[^\s<]+?)([.,;:!?)\]]*)(?=\s|$|<)")
+    linked = url_re.sub(r'<a href="\1" style="color:#0052FF">\1</a>\2', escaped)
     # split into paragraphs on blank line, single newlines become <br>
     paragraphs = [p.strip() for p in _re.split(r"\n\s*\n", linked) if p.strip()]
     return "\n".join(f"<p>{p.replace(chr(10), '<br />')}</p>" for p in paragraphs) or "<p></p>"
