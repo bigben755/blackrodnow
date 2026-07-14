@@ -205,8 +205,8 @@ export default function Admin() {
                 <h2 className="font-display font-bold text-xl mb-3">Manage organisations</h2>
                 <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
                     {orgs.filter((o) => o.status !== "pending").slice(0, 30).map((o) => (
-                        <div key={o.slug} className="rounded-3xl border border-border bg-surface p-4 flex items-center gap-3">
-                            <div className="h-10 w-10 rounded-2xl bg-muted grid place-items-center text-xl">{o.logo}</div>
+                        <div key={o.slug} className="min-w-0 rounded-3xl border border-border bg-surface p-4 flex items-center gap-3">
+                            <div className="h-10 w-10 rounded-2xl bg-muted grid place-items-center text-xl shrink-0">{o.logo}</div>
                             <div className="flex-1 min-w-0">
                                 <div className="font-semibold text-sm truncate">{o.name}</div>
                                 <div className="text-xs text-muted-foreground truncate">{o.category}</div>
@@ -214,7 +214,7 @@ export default function Admin() {
                             <Link
                                 to={`/edit-organisation/${o.slug}`}
                                 data-testid={`edit-org-${o.slug}`}
-                                className="inline-flex items-center gap-1 px-3 py-1.5 rounded-full bg-primary text-primary-foreground text-[11px] font-semibold uppercase tracking-wider"
+                                className="shrink-0 inline-flex items-center gap-1 px-3 py-1.5 rounded-full bg-primary text-primary-foreground text-[11px] font-semibold uppercase tracking-wider"
                             >
                                 <Edit3 className="h-3 w-3" /> Edit
                             </Link>

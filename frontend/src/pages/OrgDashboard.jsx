@@ -157,7 +157,7 @@ export default function OrgDashboard() {
                         </p>
                     </div>
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
                     <NotificationBell
                         count={unreadCount}
                         notifications={notifications}
@@ -175,7 +175,7 @@ export default function OrgDashboard() {
                         <Send className="h-3.5 w-3.5" /> Contact admin
                     </button>
                     <select data-testid="org-switcher" value={selectedOrgSlug} onChange={(e) => setSelectedOrgSlug(e.target.value)}
-                        className="px-4 py-2 rounded-full border border-border bg-surface text-sm">
+                        className="flex-1 sm:flex-none min-w-0 max-w-full truncate px-4 py-2 rounded-full border border-border bg-surface text-sm">
                         {orgs.map((o) => (<option key={o.slug} value={o.slug}>{o.name}</option>))}
                     </select>
                 </div>

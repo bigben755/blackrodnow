@@ -57,11 +57,16 @@
     }
     html {
         font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+        /* Prevent stray wide elements (long org names, dialogs, blurred bg blobs)
+           from creating a horizontal scrollbar on small viewports. Every legit
+           scrollable region declares its own overflow. */
+        overflow-x: hidden;
     }
     body {
         @apply bg-background text-foreground antialiased;
         font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
         font-feature-settings: 'ss01', 'cv11';
+        overflow-x: hidden;
     }
     h1, h2, h3, h4, h5, h6,
     .font-display {

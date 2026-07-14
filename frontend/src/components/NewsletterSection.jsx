@@ -37,8 +37,8 @@ export default function NewsletterSection() {
 
     return (
         <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-16 sm:py-20">
-            <div className="rounded-[2rem] bg-secondary text-secondary-foreground p-8 sm:p-12 grid lg:grid-cols-2 gap-8 items-center">
-                <div>
+            <div className="rounded-[2rem] bg-secondary text-secondary-foreground p-6 sm:p-12 grid lg:grid-cols-2 gap-8 items-center">
+                <div className="min-w-0">
                     <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-secondary-foreground/10 text-secondary-foreground text-[11px] font-bold tracking-wider uppercase">
                         <Megaphone className="h-3.5 w-3.5" /> Weekly Digest
                     </div>
@@ -58,7 +58,7 @@ export default function NewsletterSection() {
                     )}
                 </div>
 
-                <div className="space-y-3">
+                <div className="min-w-0 space-y-3">
                     {!done ? (
                         <form
                             onSubmit={subscribe}
@@ -72,13 +72,13 @@ export default function NewsletterSection() {
                                 value={email}
                                 onChange={(e) => setEmail(e.target.value)}
                                 placeholder="your@email.com"
-                                className="flex-1 px-4 py-2 bg-transparent text-secondary-foreground placeholder:text-secondary-foreground/60 outline-none text-sm font-medium"
+                                className="flex-1 min-w-0 px-4 py-2 bg-transparent text-secondary-foreground placeholder:text-secondary-foreground/60 outline-none text-sm font-medium"
                             />
                             <button
                                 type="submit"
                                 data-testid="newsletter-submit"
                                 disabled={busy}
-                                className="px-5 py-2 rounded-full bg-foreground text-background text-sm font-semibold disabled:opacity-60"
+                                className="shrink-0 px-5 py-2 rounded-full bg-foreground text-background text-sm font-semibold disabled:opacity-60"
                             >
                                 {busy ? "…" : "Subscribe"}
                             </button>
