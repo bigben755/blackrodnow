@@ -133,7 +133,7 @@ export default function Events() {
 
             {/* Filters */}
             <div className="grid md:grid-cols-12 gap-3 mb-8">
-                <div className="md:col-span-5 relative">
+                <div className="min-w-0 md:col-span-5 relative">
                     <Search className="absolute left-4 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                     <input
                         data-testid="events-search"
@@ -147,7 +147,7 @@ export default function Events() {
                     data-testid="events-category"
                     value={cat}
                     onChange={(e) => setCat(e.target.value)}
-                    className="md:col-span-3 px-4 py-3 rounded-full border border-border bg-surface text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+                    className="min-w-0 md:col-span-3 px-4 py-3 rounded-full border border-border bg-surface text-sm focus:outline-none focus:ring-2 focus:ring-primary"
                 >
                     <option value="All">All categories</option>
                     {CATEGORIES.map((c) => (
@@ -158,7 +158,7 @@ export default function Events() {
                     data-testid="events-org-filter"
                     value={orgFilter}
                     onChange={(e) => setOrgFilter(e.target.value)}
-                    className="md:col-span-2 px-4 py-3 rounded-full border border-border bg-surface text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+                    className="min-w-0 md:col-span-2 px-4 py-3 rounded-full border border-border bg-surface text-sm focus:outline-none focus:ring-2 focus:ring-primary"
                 >
                     <option value="All">All orgs</option>
                     {orgs.map((o) => (
@@ -171,7 +171,7 @@ export default function Events() {
                     data-testid="events-tag-filter"
                     value={tag}
                     onChange={(e) => setTag(e.target.value)}
-                    className="md:col-span-2 px-4 py-3 rounded-full border border-border bg-surface text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+                    className="min-w-0 md:col-span-2 px-4 py-3 rounded-full border border-border bg-surface text-sm focus:outline-none focus:ring-2 focus:ring-primary"
                 >
                     <option value="All">Any tag</option>
                     <option value="Free">Free</option>

@@ -340,7 +340,7 @@ function NotificationBell({ count, notifications, onRead, org }) {
                 )}
             </button>
             {open && (
-                <div className="absolute right-0 mt-2 w-80 rounded-2xl border border-border bg-surface shadow-xl z-50 max-h-96 overflow-y-auto">
+                <div className="fixed left-4 right-4 top-auto mt-2 sm:absolute sm:left-auto sm:right-0 sm:w-80 rounded-2xl border border-border bg-surface shadow-xl z-50 max-h-[70vh] sm:max-h-96 overflow-y-auto">
                     <div className="p-3 border-b border-border font-semibold text-sm flex items-center gap-2">
                         <Bell className="h-3.5 w-3.5" /> Notifications from admin
                     </div>

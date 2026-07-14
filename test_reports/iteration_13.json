@@ -1,0 +1,25 @@
+{
+  "summary": "Re-verified iteration_12's two mobile responsive fixes on OrgDashboard notification bell dropdown and /events filter grid. Both HIGH and MEDIUM bugs are now GREEN. Full 16-route regression at 390x844 still 100% pass. Desktop 1440 regression confirms dropdown reverts to 320px absolute anchored to bell (not stretched to viewport). Bonus 320x568 dropdown fits.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": ["/app/test_reports/iteration_13.json"],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "iteration_12 open recommendation still stands: consider migrating raw absolute dropdowns (e.g., NotificationBell) to Radix Popover with collisionPadding for auto-flip/shift — the current fix works but requires manual per-viewport CSS and is brittle to future layout changes.",
+    "Global overflow-x:hidden on html/body continues to mask any latent overflow bugs. Consider adopting the boundingClientRect-per-element assertion pattern used in this test as a CI regression gate."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "N/A (not tested)", "frontend": "100% (all 5 test scenarios pass: notif dropdown @390 fits (L=16,R=374,W=358,position=fixed); /events @360 sw==cw==360 zero overflow, 3 filter selects functional (14/31/4 options each, selection changes value); 16/16 routes pass @390x844; notif dropdown @320 fits (L=16,R=304,W=288,position=fixed); notif dropdown @1440 reverts to 320px absolute anchored to bell (dropdown_right=842.4 == bell_right=842.4))"},
+  "test_credentials": "No auth. Role switcher via localStorage.setItem('rn-role', 'admin'|'org'|'guest').",
+  "seed_data_creation": "None.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Iteration_12 & _13 covered mobile responsive regression comprehensively. Notification dropdown uses `fixed left-4 right-4 top-auto mt-2 sm:absolute sm:left-auto sm:right-0 sm:w-80` — verified across 320/390/1440. /events filter selects have `min-w-0` on all 4 grid children (search wrapper + 3 selects). Route sweep testids/paths documented in iteration_11 and iteration_12. Baseline 16 routes for 390x844 sweep: /, /events, /organisations, /submit-event, /local-feed, /venues, /volunteering, /notifications, /faq, /contact, /admin, /organisation-dashboard, /add-organisation, /events/evt-market-sat, /organisations/blackrod-town-council, /edit-organisation/blackrod-town-council.",
+  "rca_of_the_issue": {
+    "verification": "Iteration_12 root causes are fully mitigated by fixes in OrgDashboard.jsx line 343 (dropdown className) and Events.jsx (min-w-0 on 4 grid children). No further action required. NotificationBell dropdown at mobile now uses fixed positioning anchored to viewport (left-4 right-4) instead of absolute right-0 anchored to bell — sidesteps the wrapped-header-row edge overflow entirely. At sm:640+, reverts to absolute right-0 w-80 for desktop UX. /events filter selects can now shrink below their intrinsic option-text width thanks to min-w-0 on grid tracks."
+  }
+}
