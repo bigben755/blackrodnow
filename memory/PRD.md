@@ -33,6 +33,20 @@ A modern community website for Blackrod, Bolton showcasing local events, clubs, 
 - **[NEW — Feb 26 2026] Charla chatbot widget** embedded in `/app/frontend/public/index.html`. Loads on `window.load`, mounts `<charla-widget p="a677bc38-...">` and pulls `https://app.charla.com/widget/widget.js`. Chat bubble appears bottom-right on every page.
 - **[NEW — Feb 26 2026] Super Admin "Log in as Organisation" (impersonation).** New `POST /api/admin/organisations/{slug}/impersonate` returns an org access token when body contains the correct `admin_code`. `AppContext` gains `impersonateOrg(slug)` + `stopImpersonation()` + `impersonatingOrgSlug` state. Per-org "Log in as" button in Admin → Manage organisations (`data-testid="impersonate-org-<slug>"`). OrgDashboard renders a top banner (`data-testid="impersonation-banner"`) while impersonating, with a "Return to admin" button (`data-testid="stop-impersonation-btn"`) that reverts role + clears the impersonation token. Navigation-before-state ordering avoids the `RequireRole` redirect race. Backend endpoint 200/403/404 verified via curl; frontend flow verified end-to-end (impersonate → banner → return).
 - **[NEW — Feb 26 2026] Super Admin "Quick Create" dashboard.** `QuickAddContentCard` on `/admin` now includes **five in-place dialogs** — Event, Local feed update, Volunteering opportunity, Organisation, and Venue — each with fields matching the corresponding public page's layout (event: title/org/category/date/time/venue/address/description/cost/age/accessibility/booking/contacts/image/status; org: name/category/short/about/logo/cover/brand colour/email/phone/website/socials/address/meeting; venue: name/address/facilities/capacity/accessibility/booking/image; volunteer: title/org/description/time/age/skills; feed: org/type/title/body/image). Organisations created this way are auto-approved. `Venues.jsx` now reads from `context.venues` (was hardcoded mock) so new venues appear immediately.
+- **[NEW — Feb 26 2026] Chatbot context feed (public).** New endpoints for external chatbots (Charla, etc.):
+  - `GET /api/chat/context?days=30` — compact JSON snapshot: `{site, events, organisations, venues, volunteering, faqs}`. Events are the next `days` days (max 180) of approved events, each with `{id,title,date,time,venue,address,url,description,organiser}`. Orgs include public contact info + socials. FAQs mirrored from `/app/backend/data/faqs.py` (was frontend-only inline before).
+  - `GET /api/chat/context.md?days=30` — same data rendered as Markdown so knowledge-base ingestion (which usually prefers a URL of Markdown) can pull it directly.
+  - Site URL uses `PUBLIC_URL` env → `APP_URL` fallback → placeholder.
+- **[NEW — Feb 26 2026] Real JWT admin authentication** replacing the launch-code stub.
+  - `POST /api/auth/admin/login` (email + password) → bcrypt-verified → returns `{token, user}`. Token is a 12h HS256 JWT.
+  - `GET /api/auth/me` — verifies `Authorization: Bearer <jwt>` and returns the user.
+  - Brute force protection: 5 failed attempts per `{ip}:{email}` = 15 min lockout via `login_attempts` collection.
+  - Idempotent admin seeding on startup from `ADMIN_EMAIL` + `ADMIN_PASSWORD` env (rotates hash if password env changed).
+  - Impersonation endpoint `/api/admin/organisations/{slug}/impersonate` now accepts either an admin JWT (`Authorization: Bearer …`, preferred) OR the legacy `admin_code` body (backward compat).
+  - Frontend: Admin login modal is now email + password (data-testid `admin-email-input` / `admin-password-input` / `admin-login-submit`); JWT stored in `localStorage['rn-admin-jwt']`; `AppContext` re-hydrates admin session on page reload by decoding & expiry-checking the stored JWT — role, adminUnlocked, adminCodeSession all survive refresh (fixes long-standing "have to re-enter code on every reload" complaint). Axios request interceptor auto-attaches `Authorization: Bearer <jwt>` to all API calls.
+  - `_require_org_write_access` now recognises admin JWTs sent via `X-Org-Auth: Bearer …` alongside existing `X-Admin-Code` header + org tokens.
+  - Testing: iteration_15 — 11/11 new pytest + 2 previously-failing parser tests now PASS; end-to-end frontend flow (login → reload → impersonate → return) verified green.
+- **[FIX — Feb 26 2026] Pre-existing pytest failures resolved.** `TestAdminImageParse::test_image_upload_is_ocrd` and `TestAdminBulkDocumentParse::test_parse_multiple_documents` were failing with `422 list_type` because `files: Optional[List[UploadFile]] = File(None)` didn't wrap a single file in a list under Pydantic v2. Fixed by changing to `files: List[UploadFile] = File(default=[])`.
 - **[FIX — Feb 26 2026] Production deployment `NameError: new_id` blocker resolved.** `AnalyticsEvent` class at line 181 of `server.py` referenced `new_id` as `default_factory`, but the function wasn't defined until line 508 — Python's class-definition-time evaluation failed on import. Preview kept running from an older process, but any restart or fresh deploy would fail. Moved `new_id`/`new_token`/`now_iso` above the model definitions and removed the later duplicates. Also added the missing `_require_org_write_access` stub that was called throughout but never defined (pre-existing latent bug). Backend now imports cleanly; 48/50 pytest pass (2 unrelated pre-existing failures in `/admin/documents/parse` due to Pydantic `List[UploadFile]` handling — flagged as P2 backlog).
 - **[FIX — Feb 14 2026] Mobile responsive scaling.** User reported the site didn't scale to device. Root causes (all now fixed + regression-tested at 320/360/390/1440px):
   - Admin org-list grid rows overflowed 88px on mobile — CSS Grid children default to `min-width: auto` which prevented `truncate` from working on long org names. Fixed with `min-w-0` on grid items + `shrink-0` on avatar/Edit button.
@@ -61,10 +75,9 @@ A modern community website for Blackrod, Bolton showcasing local events, clubs, 
 - **Resend API key** — activate real newsletters/broadcasts.
 
 ### P1
-- Connect Charla chatbot to backend so it can answer with live events/orgs/FAQ.
-- Real JWT / Emergent Google Auth replacing simulated role switcher.
+- Connect Charla widget to `/api/chat/context.md` in its dashboard (backend feed is now live — just needs to be wired in the Charla admin UI).
+- Real JWT admin auth is now live for the Super Admin role. Extend the same pattern to organisations (per-org account login) as a follow-up.
 - Auth guard on the new image upload endpoints (currently public — flagged in iteration_3 code review).
-- Fix pre-existing pytest failures in `TestAdminBulkDocumentParse` (Pydantic `List[UploadFile]` handling).
 
 ### P2
 - Ownership check on `PATCH /api/organisations/{slug}` and `POST /admin/broadcast` (flagged in iteration_2).
