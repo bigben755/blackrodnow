@@ -208,18 +208,21 @@ def resend_send(
 
 
 # ─────────── Models ───────────
+AnalyticsKind = Literal[
+    "org_view",
+    "event_view",
+    "share_click",
+    "share_pack_email",
+    "newsletter_send",
+    "broadcast_send",
+    "admin_email_send",
+    "volunteer_contact",
+]
+
+
 class AnalyticsEvent(BaseModel):
     id: str = Field(default_factory=new_id)
-    kind: Literal[
-        "org_view",
-        "event_view",
-        "share_click",
-        "share_pack_email",
-        "newsletter_send",
-        "broadcast_send",
-        "admin_email_send",
-        "volunteer_contact",
-    ]
+    kind: AnalyticsKind
     entity_type: Optional[Literal["org", "event", "site"]] = None
     entity_id: Optional[str] = None
     org_slug: Optional[str] = None
@@ -230,7 +233,7 @@ class AnalyticsEvent(BaseModel):
 
 
 class AnalyticsTrackReq(BaseModel):
-    kind: Literal["org_view", "event_view", "share_click", "volunteer_contact"]
+    kind: AnalyticsKind
     entity_type: Optional[Literal["org", "event"]] = None
     entity_id: Optional[str] = None
     org_slug: Optional[str] = None
