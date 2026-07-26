@@ -364,6 +364,11 @@ export default function Admin() {
             </section>
 
             <section className="mt-10 grid lg:grid-cols-2 gap-4">
+                <ScheduledBroadcastsCard />
+                <ModerationQueueCard />
+            </section>
+
+            <section className="mt-10 grid lg:grid-cols-2 gap-4">
                 <AdminInbox onChange={refresh} />
                 <NotifyOrgCard orgs={orgs} />
             </section>
@@ -2333,3 +2338,163 @@ function NotifyOrgCard({ orgs }) {
         </div>
     );
 }
+
+function ScheduledBroadcastsCard() {
+    const [items, setItems] = useState([]);
+    const [busy, setBusy] = useState(false);
+    const [form, setForm] = useState({ to: "", subject: "", body: "", scheduled_for: "" });
+
+    const load = async () => {
+        try {
+            setItems(await api.listScheduledBroadcasts());
+        } catch { /* noop */ }
+    };
+
+    useEffect(() => { load(); }, []);
+
+    const submit = async () => {
+        if (!form.to || !form.subject || !form.body || !form.scheduled_for) {
+            return toast.error("Recipients, subject, body and send time are required");
+        }
+        setBusy(true);
+        try {
+            // Convert `datetime-local` (naive) → ISO UTC (backend expects timezone-aware ISO)
+            const isoLocal = form.scheduled_for.length === 16 ? `${form.scheduled_for}:00` : form.scheduled_for;
+            const iso = new Date(isoLocal).toISOString();
+            await api.scheduleBroadcast({ ...form, scheduled_for: iso });
+            toast.success("Broadcast scheduled");
+            setForm({ to: "", subject: "", body: "", scheduled_for: "" });
+            await load();
+        } catch (error) {
+            toast.error(error?.response?.data?.detail || "Could not schedule broadcast");
+        } finally {
+            setBusy(false);
+        }
+    };
+
+    const cancel = async (id) => {
+        try {
+            await api.cancelScheduledBroadcast(id);
+            toast.success("Cancelled");
+            await load();
+        } catch (error) {
+            toast.error("Could not cancel");
+        }
+    };
+
+    return (
+        <div data-testid="scheduled-broadcasts-card" className="rounded-3xl border border-border bg-surface p-6">
+            <div className="flex items-start justify-between gap-3 flex-wrap">
+                <div>
+                    <h2 className="font-display font-black text-xl">Scheduled broadcasts</h2>
+                    <p className="text-sm text-muted-foreground mt-1">Write on Tuesday, send Friday 8am. Time is local.</p>
+                </div>
+                <span className="px-3 py-1 rounded-full bg-primary/10 text-primary text-[11px] font-bold uppercase tracking-wider">{items.filter((i) => i.status === "scheduled").length} pending</span>
+            </div>
+
+            <div className="mt-4 grid gap-2">
+                <input data-testid="sched-to" value={form.to} onChange={(e) => setForm((p) => ({ ...p, to: e.target.value }))} placeholder="Recipients (comma-separated emails)" className="px-3 py-2 rounded-2xl border border-border bg-background text-sm" />
+                <input data-testid="sched-subject" value={form.subject} onChange={(e) => setForm((p) => ({ ...p, subject: e.target.value }))} placeholder="Subject" className="px-3 py-2 rounded-2xl border border-border bg-background text-sm" />
+                <textarea data-testid="sched-body" rows={3} value={form.body} onChange={(e) => setForm((p) => ({ ...p, body: e.target.value }))} placeholder="Message body" className="px-3 py-2 rounded-2xl border border-border bg-background text-sm" />
+                <div className="flex gap-2">
+                    <input data-testid="sched-when" type="datetime-local" value={form.scheduled_for} onChange={(e) => setForm((p) => ({ ...p, scheduled_for: e.target.value }))} className="flex-1 px-3 py-2 rounded-2xl border border-border bg-background text-sm" />
+                    <button type="button" data-testid="sched-submit" disabled={busy} onClick={submit} className="px-4 py-2 rounded-full bg-primary text-primary-foreground text-xs font-black uppercase tracking-wider disabled:opacity-60">
+                        Schedule
+                    </button>
+                </div>
+            </div>
+
+            <div className="mt-5 space-y-2">
+                {items.length === 0 && <p className="text-xs text-muted-foreground">No broadcasts scheduled.</p>}
+                {items.map((b) => (
+                    <div key={b.id} data-testid={`sched-item-${b.id}`} className="rounded-2xl border border-border bg-background p-3">
+                        <div className="flex items-start justify-between gap-3">
+                            <div className="min-w-0">
+                                <div className="text-sm font-semibold truncate">{b.subject}</div>
+                                <div className="text-xs text-muted-foreground truncate">To: {b.to}</div>
+                                <div className="text-[11px] uppercase tracking-wider mt-1">
+                                    <span className={`px-2 py-0.5 rounded-full ${b.status === "scheduled" ? "bg-blue-500/10 text-blue-600" : b.status === "sent" ? "bg-emerald-500/10 text-emerald-600" : b.status === "cancelled" ? "bg-slate-500/10 text-slate-600" : "bg-red-500/10 text-red-600"}`}>{b.status}</span>
+                                    <span className="ml-2 text-muted-foreground">{new Date(b.scheduled_for).toLocaleString("en-GB")}</span>
+                                </div>
+                            </div>
+                            {b.status === "scheduled" && (
+                                <button type="button" data-testid={`sched-cancel-${b.id}`} onClick={() => cancel(b.id)} className="text-[11px] uppercase tracking-wider font-semibold text-red-600 hover:underline">
+                                    Cancel
+                                </button>
+                            )}
+                        </div>
+                    </div>
+                ))}
+            </div>
+        </div>
+    );
+}
+
+function ModerationQueueCard() {
+    const [items, setItems] = useState([]);
+    const [statusFilter, setStatusFilter] = useState("open");
+    const [loading, setLoading] = useState(false);
+
+    const load = React.useCallback(async () => {
+        setLoading(true);
+        try {
+            setItems(await api.listReports(statusFilter));
+        } catch { /* noop */ } finally { setLoading(false); }
+    }, [statusFilter]);
+
+    useEffect(() => { load(); }, [load]);
+
+    const resolve = async (id, action) => {
+        try {
+            await api.resolveReport(id, { status: action, resolution: null });
+            toast.success(action === "actioned" ? "Marked as actioned" : "Report dismissed");
+            await load();
+        } catch (error) {
+            toast.error("Could not resolve report");
+        }
+    };
+
+    return (
+        <div data-testid="moderation-card" className="rounded-3xl border border-border bg-surface p-6">
+            <div className="flex items-start justify-between gap-3 flex-wrap">
+                <div>
+                    <h2 className="font-display font-black text-xl">Moderation queue</h2>
+                    <p className="text-sm text-muted-foreground mt-1">Reports from residents about listings that need attention.</p>
+                </div>
+                <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="px-3 py-1.5 rounded-full border border-border bg-background text-xs">
+                    <option value="open">Open ({items.filter((i) => i.status === "open").length})</option>
+                    <option value="dismissed">Dismissed</option>
+                    <option value="actioned">Actioned</option>
+                    <option value="all">All</option>
+                </select>
+            </div>
+
+            <div className="mt-4 space-y-2">
+                {loading && <p className="text-xs text-muted-foreground">Loading…</p>}
+                {!loading && items.length === 0 && <p className="text-xs text-muted-foreground">No reports.</p>}
+                {items.map((r) => (
+                    <div key={r.id} data-testid={`moderation-item-${r.id}`} className="rounded-2xl border border-border bg-background p-3">
+                        <div className="flex items-start justify-between gap-3">
+                            <div className="min-w-0 flex-1">
+                                <div className="flex items-center gap-2 text-xs">
+                                    <span className="px-2 py-0.5 rounded-full bg-primary/10 text-primary uppercase tracking-wider font-black text-[10px]">{r.kind}</span>
+                                    <span className="text-muted-foreground truncate">{r.target_id}</span>
+                                </div>
+                                <div className="text-sm font-semibold mt-1">Reason: {r.reason}</div>
+                                {r.notes && <div className="text-xs text-muted-foreground mt-1 line-clamp-2">{r.notes}</div>}
+                                <div className="text-[10px] text-muted-foreground mt-1">{new Date(r.created_at).toLocaleString("en-GB")}</div>
+                            </div>
+                            {r.status === "open" && (
+                                <div className="flex flex-col gap-1 shrink-0">
+                                    <button type="button" data-testid={`moderation-actioned-${r.id}`} onClick={() => resolve(r.id, "actioned")} className="px-3 py-1 rounded-full bg-primary text-primary-foreground text-[11px] font-semibold">Actioned</button>
+                                    <button type="button" data-testid={`moderation-dismiss-${r.id}`} onClick={() => resolve(r.id, "dismissed")} className="px-3 py-1 rounded-full border border-border text-[11px] font-semibold">Dismiss</button>
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                ))}
+            </div>
+        </div>
+    );
+}
+

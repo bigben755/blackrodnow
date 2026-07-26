@@ -4765,6 +4765,240 @@ async def admin_reminders_run_now(
 
 
 
+
+# ─────────── Batch D: Scheduled broadcasts + moderation ───────────
+class ScheduledBroadcastCreate(BaseModel):
+    to: str
+    subject: str
+    body: str
+    from_email: Optional[str] = None
+    from_name: Optional[str] = None
+    scheduled_for: str  # ISO datetime, UTC preferred
+
+
+@api.post("/admin/broadcasts/schedule")
+async def schedule_broadcast(
+    req: ScheduledBroadcastCreate,
+    request: Request,
+    authorization: Optional[str] = Header(None),
+    admin_code: Optional[str] = Header(None, alias="X-Admin-Code"),
+):
+    ok = read_admin_from_request(request, authorization) is not None or (
+        admin_code and hmac.compare_digest(admin_code, ADMIN_LAUNCH_CODE)
+    )
+    if not ok:
+        raise HTTPException(403, "Admin authentication required")
+    if not req.subject.strip() or not req.body.strip() or not req.to.strip():
+        raise HTTPException(400, "to, subject and body are required")
+    try:
+        when = datetime.fromisoformat(req.scheduled_for.replace("Z", "+00:00"))
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=timezone.utc)
+    except Exception:
+        raise HTTPException(400, "scheduled_for must be an ISO datetime")
+    if when < datetime.now(timezone.utc) - timedelta(minutes=1):
+        raise HTTPException(400, "scheduled_for must be in the future")
+    doc = {
+        "id": new_id(),
+        "to": req.to,
+        "subject": req.subject.strip(),
+        "body": req.body,
+        "from_email": req.from_email or SENDER_EMAIL,
+        "from_name": req.from_name or SENDER_NAME,
+        "scheduled_for": when.isoformat(),
+        "status": "scheduled",
+        "created_at": now_iso(),
+        "sent_at": None,
+        "result": None,
+    }
+    await db.scheduled_broadcasts.insert_one(doc)
+    return {k: v for k, v in doc.items() if k != "_id"}
+
+
+@api.get("/admin/broadcasts/scheduled")
+async def list_scheduled_broadcasts(
+    request: Request,
+    authorization: Optional[str] = Header(None),
+    admin_code: Optional[str] = Header(None, alias="X-Admin-Code"),
+):
+    ok = read_admin_from_request(request, authorization) is not None or (
+        admin_code and hmac.compare_digest(admin_code, ADMIN_LAUNCH_CODE)
+    )
+    if not ok:
+        raise HTTPException(403, "Admin authentication required")
+    docs = await db.scheduled_broadcasts.find({}, {"_id": 0}).sort("scheduled_for", 1).to_list(200)
+    return docs
+
+
+@api.delete("/admin/broadcasts/scheduled/{broadcast_id}")
+async def cancel_scheduled_broadcast(
+    broadcast_id: str,
+    request: Request,
+    authorization: Optional[str] = Header(None),
+    admin_code: Optional[str] = Header(None, alias="X-Admin-Code"),
+):
+    ok = read_admin_from_request(request, authorization) is not None or (
+        admin_code and hmac.compare_digest(admin_code, ADMIN_LAUNCH_CODE)
+    )
+    if not ok:
+        raise HTTPException(403, "Admin authentication required")
+    res = await db.scheduled_broadcasts.update_one(
+        {"id": broadcast_id, "status": "scheduled"},
+        {"$set": {"status": "cancelled"}},
+    )
+    return {"ok": True, "cancelled": res.modified_count}
+
+
+async def _process_scheduled_broadcasts() -> int:
+    now = datetime.now(timezone.utc).isoformat()
+    cursor = db.scheduled_broadcasts.find({"status": "scheduled", "scheduled_for": {"$lte": now}}, {"_id": 0})
+    sent = 0
+    async for doc in cursor:
+        try:
+            valid, invalid = _parse_recipients(doc.get("to", ""))
+            html = _render_admin_email_html(doc.get("subject", ""), doc.get("body", ""), doc.get("from_email"))
+            results = []
+            for addr in valid:
+                r = await asyncio.to_thread(
+                    resend_send, addr, doc.get("subject", ""), html,
+                    doc.get("from_email"), doc.get("from_name") or SENDER_NAME, None, None,
+                )
+                results.append({"to": addr, "ok": r.get("ok"), "id": r.get("id")})
+            await db.scheduled_broadcasts.update_one(
+                {"id": doc["id"]},
+                {"$set": {
+                    "status": "sent",
+                    "sent_at": now_iso(),
+                    "result": {"sent": sum(1 for x in results if x["ok"]), "failed": sum(1 for x in results if not x["ok"]), "invalid": invalid},
+                }},
+            )
+            await _record_analytics_event("admin_email_send", entity_type="site", count=sum(1 for x in results if x["ok"]))
+            sent += 1
+        except Exception as e:
+            logger.exception("Scheduled broadcast failed: %s", e)
+            await db.scheduled_broadcasts.update_one({"id": doc["id"]}, {"$set": {"status": "failed", "result": {"error": str(e)}}})
+    return sent
+
+
+async def _scheduled_broadcast_loop() -> None:
+    if not RESEND_API_KEY:
+        logger.info("Scheduled broadcast loop skipped: RESEND_API_KEY not set.")
+        return
+    logger.info("Scheduled broadcast loop started")
+    while True:
+        try:
+            await _process_scheduled_broadcasts()
+        except Exception as e:
+            logger.exception("scheduled broadcast loop iteration failed: %s", e)
+        await asyncio.sleep(int(os.environ.get("SCHEDULED_BROADCAST_INTERVAL", "300")))
+
+
+@api.post("/admin/broadcasts/scheduled/run-now")
+async def run_scheduled_broadcasts_now(
+    request: Request,
+    authorization: Optional[str] = Header(None),
+    admin_code: Optional[str] = Header(None, alias="X-Admin-Code"),
+):
+    ok = read_admin_from_request(request, authorization) is not None or (
+        admin_code and hmac.compare_digest(admin_code, ADMIN_LAUNCH_CODE)
+    )
+    if not ok:
+        raise HTTPException(403, "Admin authentication required")
+    sent = await _process_scheduled_broadcasts()
+    return {"ok": True, "sent": sent}
+
+
+# ── Content moderation reports ──
+_REPORT_RATE_LIMIT_MINUTES = 10
+
+
+class ModerationReportReq(BaseModel):
+    kind: Literal["event", "org", "feed", "venue", "volunteer"]
+    target_id: str
+    reason: Literal["spam", "inappropriate", "inaccurate", "outdated", "duplicate", "other"]
+    notes: Optional[str] = None
+    reporter_email: Optional[EmailStr] = None
+    reporter_device: Optional[str] = None
+
+
+@api.post("/reports")
+async def submit_moderation_report(req: ModerationReportReq, request: Request):
+    if not req.reporter_device and not req.reporter_email:
+        raise HTTPException(400, "reporter_device or reporter_email required")
+    # Basic rate limit — same reporter can't file more than 5 reports per 10 min.
+    since = (datetime.now(timezone.utc) - timedelta(minutes=_REPORT_RATE_LIMIT_MINUTES)).isoformat()
+    key: Dict[str, Any] = {"created_at": {"$gte": since}}
+    if req.reporter_device:
+        key["reporter_device"] = req.reporter_device
+    else:
+        key["reporter_email"] = req.reporter_email.lower() if req.reporter_email else None
+    recent = await db.moderation_reports.count_documents(key)
+    if recent >= 5:
+        raise HTTPException(429, "Too many reports — please wait a few minutes")
+    doc = {
+        "id": new_id(),
+        "kind": req.kind,
+        "target_id": req.target_id,
+        "reason": req.reason,
+        "notes": (req.notes or "")[:1000],
+        "reporter_email": req.reporter_email.lower() if req.reporter_email else None,
+        "reporter_device": req.reporter_device,
+        "status": "open",
+        "created_at": now_iso(),
+        "resolved_at": None,
+        "resolution": None,
+    }
+    await db.moderation_reports.insert_one(doc)
+    return {"ok": True, "id": doc["id"]}
+
+
+@api.get("/admin/reports")
+async def list_moderation_reports(
+    request: Request,
+    status: Optional[str] = "open",
+    authorization: Optional[str] = Header(None),
+    admin_code: Optional[str] = Header(None, alias="X-Admin-Code"),
+):
+    ok = read_admin_from_request(request, authorization) is not None or (
+        admin_code and hmac.compare_digest(admin_code, ADMIN_LAUNCH_CODE)
+    )
+    if not ok:
+        raise HTTPException(403, "Admin authentication required")
+    q: Dict[str, Any] = {}
+    if status and status != "all":
+        q["status"] = status
+    reports = await db.moderation_reports.find(q, {"_id": 0}).sort("created_at", -1).to_list(300)
+    return reports
+
+
+class ModerationResolveReq(BaseModel):
+    status: Literal["dismissed", "actioned"]
+    resolution: Optional[str] = None
+
+
+@api.post("/admin/reports/{report_id}/resolve")
+async def resolve_moderation_report(
+    report_id: str,
+    req: ModerationResolveReq,
+    request: Request,
+    authorization: Optional[str] = Header(None),
+    admin_code: Optional[str] = Header(None, alias="X-Admin-Code"),
+):
+    ok = read_admin_from_request(request, authorization) is not None or (
+        admin_code and hmac.compare_digest(admin_code, ADMIN_LAUNCH_CODE)
+    )
+    if not ok:
+        raise HTTPException(403, "Admin authentication required")
+    res = await db.moderation_reports.update_one(
+        {"id": report_id},
+        {"$set": {"status": req.status, "resolution": req.resolution, "resolved_at": now_iso()}},
+    )
+    if not res.matched_count:
+        raise HTTPException(404, "Report not found")
+    return {"ok": True}
+
+
+
 @app.on_event("startup")
 async def startup():
     init_storage()
@@ -4790,6 +5024,8 @@ async def startup():
     await _seed_admin_user()
     # Background reminder loop for saved events (24h + 2h heads-up).
     asyncio.create_task(_event_reminder_loop())
+    # Background scheduled-broadcast loop.
+    asyncio.create_task(_scheduled_broadcast_loop())
 
 
 @app.on_event("shutdown")

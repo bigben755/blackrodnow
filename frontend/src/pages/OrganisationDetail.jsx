@@ -4,6 +4,7 @@ import { Link, useParams } from "react-router-dom";
 import { useApp, eventsByOrg } from "@/context/AppContext";
 import { CategoryBadge, formatDate, formatTime, VolunteerCard, FeedCard } from "@/components/Cards";
 import OrgAvatar from "@/components/OrgAvatar";
+import { ReportButton } from "@/components/ReportButton";
 import { api } from "@/lib/api";
 import {
     MapPin,
@@ -212,6 +213,7 @@ export default function OrganisationDetail() {
                                 </>
                             )}
                         </button>
+                        <ReportButton kind="org" targetId={org.slug} className="ml-2" />
                         <div className="flex flex-wrap gap-2">
                             <button
                                 type="button"

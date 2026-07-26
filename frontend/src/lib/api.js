@@ -83,6 +83,20 @@ export const api = {
     orgAnalyticsSeries: (slug, days = 30) =>
         client.get(`/orgs/${slug}/analytics`, { params: { days } }).then((r) => r.data),
 
+    // Batch D: Scheduled broadcasts + moderation
+    scheduleBroadcast: (payload) =>
+        client.post("/admin/broadcasts/schedule", payload).then((r) => r.data),
+    listScheduledBroadcasts: () =>
+        client.get("/admin/broadcasts/scheduled").then((r) => r.data),
+    cancelScheduledBroadcast: (id) =>
+        client.delete(`/admin/broadcasts/scheduled/${id}`).then((r) => r.data),
+    submitReport: (payload) =>
+        client.post("/reports", payload).then((r) => r.data),
+    listReports: (status = "open") =>
+        client.get("/admin/reports", { params: { status } }).then((r) => r.data),
+    resolveReport: (id, payload) =>
+        client.post(`/admin/reports/${id}/resolve`, payload).then((r) => r.data),
+
     // Meta
     stats: () => client.get("/admin/stats").then((r) => r.data),
     isSeeded: () => client.get("/admin/seeded").then((r) => r.data),

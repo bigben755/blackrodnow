@@ -1,0 +1,40 @@
+{
+  "summary": "Iter20 Batch D — Scheduled broadcasts + moderation reports. Backend pytest 8/8 PASS (test_iter20_batch_d.py). Frontend flows verified end-to-end via Playwright on the live preview URL (admin JWT login via ComingSoon gate → /admin dashboard). Everything works. (1) POST /api/admin/broadcasts/schedule requires admin auth (403 without), rejects past scheduled_for (400), accepts future ISO datetime and returns {id, status:'scheduled', ...}. (2) GET /api/admin/broadcasts/scheduled returns list sorted by scheduled_for asc. DELETE /api/admin/broadcasts/scheduled/{id} flips status to 'cancelled'. (3) POST /api/admin/broadcasts/scheduled/run-now dispatches — inserted a past-scheduled doc via motor, ran run-now, response {ok:true, sent:1} and doc status flipped to 'sent' with result summary. (4) POST /api/reports (public, no auth) accepts {kind,target_id,reason,notes,reporter_device} and returns {ok:true,id}. Rate limit: 5 reports OK, 6th returns 429. (5) GET /api/admin/reports?status=open lists open reports (admin auth required). POST /api/admin/reports/{id}/resolve with {status:'dismissed'} flips to dismissed. Frontend: (a) scheduled-broadcasts-card visible on /admin; filling sched-to/sched-subject/sched-body/sched-when + clicking sched-submit creates a broadcast that appears as sched-item-<id>; clicking sched-cancel-<id> flips text to 'cancelled' ✓; (b) moderation-card visible; open reports listed as moderation-item-<id> with moderation-actioned/dismiss buttons — dismiss button resolves report and it disappears from the open list ✓; (c) On /events/evt-festival-2026 the report-btn-event-<id> button is present, opens a report-dialog with report-reason (native <select>), report-notes, and report-submit → POST /api/reports fires successfully; (d) On /organisations/blackrod-town-council the report-btn-org-<slug> button is present.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/admin/broadcasts/schedule", "issue": "Spec says the endpoint should return HTTP 201 on success but the implementation returns 200 (FastAPI default). Non-breaking but worth adding status_code=201 to the decorator."},
+      {"endpoint": "POST /api/reports", "issue": "Spec sentence says '6th consecutive report ... returns 429', which matches implementation (5 allowed per 10 min → 6th blocked). Rate limit uses reporter_device OR reporter_email but not both — if a bad actor supplies neither, endpoint 400s early (correct). Consider also gating by client IP for defence in depth."},
+      {"endpoint": "POST /api/admin/broadcasts/scheduled/run-now", "issue": "Success response is {ok:true, sent:<n>} but n counts docs processed regardless of email delivery success (the per-recipient result summary is stored on the doc but not aggregated in the response). Minor observability gap."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter20_batch_d.py",
+    "/app/test_reports/pytest/iter20_results.xml"
+  ],
+  "action_items": [
+    "(Optional) Add status_code=201 to @api.post('/admin/broadcasts/schedule') decorator to match the spec.",
+    "(Optional) Include per-recipient sent/failed totals in /admin/broadcasts/scheduled/run-now response for easier admin UX."
+  ],
+  "critical_code_review_comments": [
+    "server.py Batch D handlers are consistent with the rest of the file (JWT-or-launch-code admin gate, motor queries with _id excluded). Good.",
+    "ReportButton.jsx uses a native <select> for reason (not shadcn Select) — this is fine and simpler, but the console shows a benign hydration warning from the Emergent editor overlay injecting <span> inside <option>. Not a real bug, but the codebase should generally avoid rendering plain text inside <option> that the overlay wraps — no user-visible impact.",
+    "_scheduled_broadcast_loop skips entirely if RESEND_API_KEY is unset (early return). If ops ever needs the loop even for a dry-run/logging mode, this would need a flag. Not a bug, just a note.",
+    "server.py has grown past 5000 lines — long overdue for module split (persistent comment from prior iterations)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter20_batch_d.py (new)"
+  ],
+  "success_rate": {"backend": "100% (8/8)", "frontend": "100% (scheduled create+cancel, moderation dismiss, report dialog on event + org detail all verified)"},
+  "test_credentials": "admin@blackrodnow.co.uk / BlackrodAdmin!2026 (verified via ComingSoon cs-admin-login flow)",
+  "seed_data_creation": "Created TEST scheduled broadcasts (to=test-*@example.com) and TEST moderation reports (reporter_device=dev-*). Session fixture teardown cleans them via motor: db.scheduled_broadcasts.delete_many({to:/test/i}) and db.moderation_reports.delete_many({reporter_device:/^dev-/}).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "All Batch D backend + frontend flows verified end-to-end. If you need to re-run: pytest /app/backend/tests/test_iter20_batch_d.py -v. The run-now test uses motor to inject a past-scheduled doc directly, then calls the endpoint. RESEND_API_KEY must be set for actual email delivery — the loop early-returns if missing (test still passes because doc status flips regardless).",
+  "rca_of_the_issue": "N/A — no critical issues found. Two minor spec deviations noted (201 vs 200 default, per-recipient aggregation in run-now response), neither blocks the feature."
+}

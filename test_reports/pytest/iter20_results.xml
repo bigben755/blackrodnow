@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="1" skipped="0" tests="8" time="2.800" timestamp="2026-07-26T23:01:21.629174+00:00" hostname="agent-env-45801910-2964-4e5f-8d40-de0f29358f76"><testcase classname="backend.tests.test_iter20_batch_d.TestScheduledBroadcasts" name="test_schedule_requires_auth" time="0.270" /><testcase classname="backend.tests.test_iter20_batch_d.TestScheduledBroadcasts" name="test_schedule_past_rejected" time="0.457" /><testcase classname="backend.tests.test_iter20_batch_d.TestScheduledBroadcasts" name="test_schedule_future_ok" time="0.510" /><testcase classname="backend.tests.test_iter20_batch_d.TestScheduledBroadcasts" name="test_run_now_dispatches" time="0.003"><failure message="TypeError: name must be an instance of str">backend/tests/test_iter20_batch_d.py:127: in test_run_now_dispatches
+    bid = asyncio.run(_insert())
+          ^^^^^^^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.11/asyncio/runners.py:190: in run
+    return runner.run(main)
+           ^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.11/asyncio/runners.py:118: in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.11/asyncio/base_events.py:654: in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+backend/tests/test_iter20_batch_d.py:110: in _insert
+    d = client[dbname]
+        ^^^^^^^^^^^^^^
+/root/.venv/lib/python3.11/site-packages/motor/core.py:272: in __getitem__
+    return db_class(self, name)
+           ^^^^^^^^^^^^^^^^^^^^
+/root/.venv/lib/python3.11/site-packages/motor/core.py:557: in __init__
+    delegate = _delegate if _delegate is not None else Database(client.delegate, name, **kwargs)
+                                                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.venv/lib/python3.11/site-packages/pymongo/database.py:142: in __init__
+    raise TypeError("name must be an instance of str")
+E   TypeError: name must be an instance of str</failure></testcase><testcase classname="backend.tests.test_iter20_batch_d.TestModerationReports" name="test_public_report_ok" time="0.102" /><testcase classname="backend.tests.test_iter20_batch_d.TestModerationReports" name="test_rate_limit_429" time="0.723" /><testcase classname="backend.tests.test_iter20_batch_d.TestModerationReports" name="test_admin_list_and_resolve" time="0.441" /><testcase classname="backend.tests.test_iter20_batch_d.TestModerationReports" name="test_admin_reports_requires_auth" time="0.093" /></testsuite></testsuites>

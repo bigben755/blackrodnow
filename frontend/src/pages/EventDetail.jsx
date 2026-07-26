@@ -4,6 +4,7 @@ import { useApp, eventsByOrg } from "@/context/AppContext";
 import { CategoryBadge, formatDate, formatTime } from "@/components/Cards";
 import NewsletterSection from "@/components/NewsletterSection";
 import ShareButtons from "@/components/ShareButtons";
+import { ReportButton } from "@/components/ReportButton";
 import { API, api } from "@/lib/api";
 import {
     CalendarDays,
@@ -489,6 +490,9 @@ export default function EventDetail() {
                             title={event.title}
                             analytics={{ entityType: "event", entityId: event.id, orgSlug: event.orgSlug }}
                         />
+                    </div>
+                    <div className="mt-4 flex justify-end">
+                        <ReportButton kind="event" targetId={event.id} />
                     </div>
                 </div>
 
