@@ -4,6 +4,7 @@ import { useApp, eventsByOrg } from "@/context/AppContext";
 import { CategoryBadge, formatDate, formatTime } from "@/components/Cards";
 import NewsletterSection from "@/components/NewsletterSection";
 import ShareButtons from "@/components/ShareButtons";
+import PostNowDialog from "@/components/PostNowDialog";
 import { ReportButton } from "@/components/ReportButton";
 import { API, api } from "@/lib/api";
 import {
@@ -22,6 +23,7 @@ import {
     Edit3,
     ShieldCheck,
     Heart,
+    Rocket,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -161,6 +163,7 @@ const copyToClipboard = async (text, successMessage) => {
 export default function EventDetail() {
     const { id } = useParams();
     const { events, orgs, role, isEventSaved, toggleSaveEvent } = useApp();
+    const [postNowOpen, setPostNowOpen] = React.useState(false);
     const event = events.find((e) => e.id === id);
     const org = orgs.find((o) => o.slug === event?.orgSlug);
 
@@ -482,6 +485,20 @@ export default function EventDetail() {
                     </p>
 
                     <div className="mt-5">
+                        <button
+                            type="button"
+                            data-testid="event-post-now-btn"
+                            onClick={() => setPostNowOpen(true)}
+                            className="inline-flex items-center gap-2 px-5 py-3 rounded-full bg-primary text-primary-foreground text-sm font-bold hover:brightness-110 shadow-sm"
+                        >
+                            <Rocket className="h-4 w-4" /> Post Now — poster + caption + share
+                        </button>
+                        <p className="mt-2 text-xs text-muted-foreground">
+                            One-click social bundle. Grab the poster, tweak the caption, and post to any channel.
+                        </p>
+                    </div>
+
+                    <div className="mt-5">
                         <div className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground mb-2">One-tap share</div>
                         <ShareButtons
                             text={`${event.title} — ${formatDate(event.start)} at ${event.venue || "Blackrod"}`}
@@ -604,6 +621,12 @@ export default function EventDetail() {
             )}
             {/* NEWSLETTER */}
             <NewsletterSection />
+
+            <PostNowDialog
+                event={event}
+                open={postNowOpen}
+                onOpenChange={setPostNowOpen}
+            />
         </div>
     );
 }

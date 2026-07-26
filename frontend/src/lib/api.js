@@ -80,6 +80,10 @@ export const api = {
         client.post(`/events/${eventId}/duplicate`).then((r) => r.data),
     eventPosterPngUrl: (eventId) => `${API}/events/${eventId}/poster.png`,
     eventPosterPdfUrl: (eventId) => `${API}/events/${eventId}/poster.pdf`,
+    eventSocialBundle: (eventId, { tone = "friendly", ai = false } = {}) =>
+        client
+            .get(`/events/${eventId}/social-bundle`, { params: { tone, ai } })
+            .then((r) => r.data),
     orgAnalyticsSeries: (slug, days = 30) =>
         client.get(`/orgs/${slug}/analytics`, { params: { days } }).then((r) => r.data),
 

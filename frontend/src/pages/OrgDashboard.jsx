@@ -8,13 +8,14 @@ import {
     Wand2, Copy, Calendar, Megaphone, Bell, Sparkles, Loader2,
     Image as ImageIcon, FileText, UploadCloud,
     Send, Edit3, Trash2, Mail, ChevronRight,
-    Eye, Users, BarChart3,
+    Eye, Users, BarChart3, Rocket,
 } from "lucide-react";
 import { toast } from "sonner";
 import {
     Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription,
 } from "@/components/ui/dialog";
 import ShareButtons from "@/components/ShareButtons";
+import PostNowDialog from "@/components/PostNowDialog";
 
 const EXAMPLE = `Summer Fair! Saturday 14 June, 11am-4pm at Blackrod Community Centre. Stalls, bouncy castles, raffle, hot food and live music. Free entry.
 
@@ -49,6 +50,7 @@ export default function OrgDashboard() {
     const [unlockBusy, setUnlockBusy] = useState(false);
     const [passwordBusy, setPasswordBusy] = useState(false);
     const [passwordForm, setPasswordForm] = useState({ current: "", next: "" });
+    const [postNowEvent, setPostNowEvent] = useState(null);
 
     useEffect(() => {
         if (!selectedOrgSlug && orgs.length) setSelectedOrgSlug(orgs[0].slug);
@@ -540,6 +542,15 @@ export default function OrgDashboard() {
                                     </a>
                                     <button
                                         type="button"
+                                        data-testid={`dash-event-post-now-${e.id}`}
+                                        onClick={() => setPostNowEvent(e)}
+                                        className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-primary text-primary-foreground text-[11px] font-semibold hover:brightness-110"
+                                        title="One-click social bundle — poster + caption + share"
+                                    >
+                                        <Rocket className="h-3 w-3" /> Post Now
+                                    </button>
+                                    <button
+                                        type="button"
                                         data-testid={`dash-event-duplicate-${e.id}`}
                                         onClick={async () => {
                                             try {
@@ -575,6 +586,12 @@ export default function OrgDashboard() {
                 fromOrgSlug={selectedOrgSlug}
                 fromEmail={org?.email}
                 fromName={org?.name}
+            />
+
+            <PostNowDialog
+                event={postNowEvent}
+                open={!!postNowEvent}
+                onOpenChange={(v) => { if (!v) setPostNowEvent(null); }}
             />
         </div>
     );

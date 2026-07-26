@@ -14,6 +14,8 @@ A modern community website for Blackrod, Bolton showcasing local events, clubs, 
 - **Super admin** — approves/edits any org, broadcasts newsletters, sends admin notifications to orgs.
 
 ## Implemented (Feb 2026)
+- **[NEW — Feb 26 2026] "Post Now" one-click social bundle.** New org-facing shortcut on every event card (OrgDashboard: `data-testid="dash-event-post-now-<id>"`) and on `/events/:id` (`data-testid="event-post-now-btn"`) that opens a `PostNowDialog` combining: 1080×1080 poster preview + PNG/A4 PDF downloads (real `fetch` blob download, not just a new tab), editable caption pre-generated from event fields with 3 tone presets (Friendly / Punchy / Formal), "Rewrite with AI" button (Claude Sonnet 4.5 via Emergent LLM key, template fallback if unavailable), Copy caption / Copy + link, Reset, and the full one-tap ShareButtons row (Facebook / LinkedIn / X / WhatsApp / Instagram / Copy link) wired to the per-event OG endpoint so link previews render rich cards. New backend endpoint `GET /api/events/{id}/social-bundle?tone=&ai=` returns `{caption, caption_with_link, hashtags, link, og_url, poster_png, poster_pdf}`. Hashtags dedupe case-insensitively. 7/7 pytest pass in `/app/backend/tests/test_post_now_bundle.py`; frontend E2E green on both locations.
+
 - 20+ pages: Home, Events, Organisations, OrgDetail, LocalFeed, Venues, Volunteering, OrgDashboard, OrgProfileEdit, Admin, SubmitEvent, AddOrganisation, Preferences, Unsubscribe, EventDetail, FAQ, Contact, Notifications, Categories.
 - 29 real Blackrod orgs + 33 events seeded from user-provided Word doc.
 - AI parser `POST /api/parse-content` — multi-item event/update extraction (Claude Sonnet 4.5).

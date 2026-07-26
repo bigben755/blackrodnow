@@ -2568,6 +2568,208 @@ async def event_poster_pdf(event_id: str):
     )
 
 
+# ─────────── "Post Now" social bundle (caption + hashtags) ───────────
+_TONE_CHOICES = ("friendly", "punchy", "formal")
+
+
+def _humanize_event_when(ev: dict) -> str:
+    """Human-friendly date/time line for an event. Uses UK-style formatting."""
+    start = ev.get("start") or ev.get("date")
+    if not start:
+        return ""
+    try:
+        # Support ISO strings with or without timezone
+        s = start.replace("Z", "+00:00") if isinstance(start, str) else str(start)
+        dt = datetime.fromisoformat(s)
+    except Exception:
+        return str(start)
+    # UK style, e.g. "Sat 14 Jun · 11:00"
+    return dt.strftime("%a %d %b · %H:%M").lstrip("0")
+
+
+def _event_public_link(ev: dict) -> str:
+    return f"{PUBLIC_URL.rstrip('/')}/events/{ev.get('id')}"
+
+
+def _event_hashtags(ev: dict) -> List[str]:
+    tags = ["#Blackrod", "#BlackrodNow"]
+    cat = (ev.get("category") or "").strip()
+    if cat:
+        cat_tag = "#" + re.sub(r"[^A-Za-z0-9]+", "", cat.title())
+        if cat_tag != "#":
+            tags.append(cat_tag)
+    venue = (ev.get("venue") or "").strip()
+    if venue and len(venue) < 30:
+        v_tag = "#" + re.sub(r"[^A-Za-z0-9]+", "", venue.title())
+        if v_tag != "#" and v_tag.lower() not in [t.lower() for t in tags]:
+            tags.append(v_tag)
+    tags.append("#Community")
+    # Dedupe (case-insensitive) while preserving order
+    seen, out = set(), []
+    for t in tags:
+        k = t.lower()
+        if k in seen:
+            continue
+        seen.add(k)
+        out.append(t)
+    return out[:6]
+
+
+def _template_caption(ev: dict, tone: str = "friendly") -> str:
+    """Deterministic, no-LLM caption generator using event fields."""
+    title = (ev.get("title") or "Our next event").strip()
+    when = _humanize_event_when(ev)
+    venue = (ev.get("venue") or "").strip()
+    address = (ev.get("address") or "").strip()
+    where = venue or address
+    cost = (ev.get("cost") or "").strip()
+    desc = (ev.get("description") or "").strip()
+    # Short blurb: first sentence up to 180 chars
+    blurb = re.split(r"(?<=[.!?])\s+", desc, 1)[0].strip() if desc else ""
+    if len(blurb) > 180:
+        blurb = blurb[:177].rstrip() + "…"
+    link = _event_public_link(ev)
+    hashtags = " ".join(_event_hashtags(ev))
+
+    if tone == "punchy":
+        lines = [f"🎉 {title}"]
+        if when:
+            lines.append(f"📅 {when}")
+        if where:
+            lines.append(f"📍 {where}")
+        if cost:
+            lines.append(f"💷 {cost}")
+        if blurb:
+            lines.append("")
+            lines.append(blurb)
+        lines.append("")
+        lines.append(f"👉 Full details: {link}")
+        lines.append("")
+        lines.append(hashtags)
+        return "\n".join(lines)
+
+    if tone == "formal":
+        parts = [f"You are warmly invited to {title}."]
+        if when and where:
+            parts.append(f"Taking place on {when} at {where}.")
+        elif when:
+            parts.append(f"Taking place on {when}.")
+        elif where:
+            parts.append(f"Held at {where}.")
+        if cost:
+            parts.append(f"Cost: {cost}.")
+        if blurb:
+            parts.append(blurb)
+        parts.append(f"Full details and booking: {link}")
+        parts.append("")
+        parts.append(hashtags)
+        return "\n\n".join(parts).strip()
+
+    # friendly (default)
+    header = f"✨ {title}"
+    meta_bits = []
+    if when:
+        meta_bits.append(f"🗓 {when}")
+    if where:
+        meta_bits.append(f"📍 {where}")
+    if cost:
+        meta_bits.append(f"💷 {cost}")
+    meta = "  ".join(meta_bits)
+    body = blurb or "Come along and be part of it — everyone welcome."
+    footer = f"🔗 {link}\n\n{hashtags}"
+    return "\n\n".join(x for x in [header, meta, body, footer] if x)
+
+
+async def _ai_caption(ev: dict, org: Optional[dict], tone: str) -> str:
+    """Optional AI polish using Emergent LLM Key (Claude). Falls back to
+    template if key missing or the call fails."""
+    if not EMERGENT_LLM_KEY:
+        return _template_caption(ev, tone)
+    try:
+        from emergentintegrations.llm.chat import LlmChat, UserMessage
+        tone_hint = {
+            "friendly": "warm, welcoming, community-first — like a friend inviting neighbours along",
+            "punchy": "short, energetic, high-impact with emojis and line breaks",
+            "formal": "polite, respectful, no emojis, suitable for a church or civic group",
+        }.get(tone, "warm and community-first")
+        system = (
+            "You write short social media captions for community events in Blackrod, Bolton. "
+            f"Tone: {tone_hint}. "
+            "Rules: 400 characters MAX for body, include the event link at the end, "
+            "add 3-5 UK-focused hashtags on their own line, no hard-sell language, "
+            "use British English spelling. Output the caption text ONLY — no preamble, no quotes."
+        )
+        facts = {
+            "title": ev.get("title"),
+            "when": _humanize_event_when(ev),
+            "venue": ev.get("venue"),
+            "address": ev.get("address"),
+            "cost": ev.get("cost"),
+            "age": ev.get("age"),
+            "accessibility": ev.get("accessibility"),
+            "description": (ev.get("description") or "")[:600],
+            "organiser": (org or {}).get("name"),
+            "category": ev.get("category"),
+            "link": _event_public_link(ev),
+            "hashtags_suggested": _event_hashtags(ev),
+        }
+        chat = LlmChat(
+            api_key=EMERGENT_LLM_KEY,
+            session_id=f"caption-{ev.get('id')}-{tone}",
+            system_message=system,
+        ).with_model("anthropic", "claude-sonnet-4-5-20250929")
+        prompt = "Write the caption using these event facts (JSON):\n\n" + json.dumps(facts, ensure_ascii=False)
+        raw = await chat.send_message(UserMessage(text=prompt))
+        text = (raw or "").strip()
+        if text.startswith("```"):
+            text = re.sub(r"^```(?:\w+)?", "", text).strip()
+            text = re.sub(r"```$", "", text).strip()
+        # Sanity check — ensure link is present, otherwise re-append
+        link = _event_public_link(ev)
+        if link not in text:
+            text = text.rstrip() + f"\n\n🔗 {link}"
+        return text
+    except Exception as exc:
+        logger.warning(f"AI caption fallback (template) — {exc}")
+        return _template_caption(ev, tone)
+
+
+@api.get("/events/{event_id}/social-bundle")
+async def event_social_bundle(
+    event_id: str,
+    tone: str = "friendly",
+    ai: bool = False,
+):
+    """One-shot 'Post Now' bundle: caption + hashtags + poster/link URLs +
+    ready-to-copy variants. Called by the Post Now dialog on the org
+    dashboard and event detail pages.
+    """
+    tone = tone if tone in _TONE_CHOICES else "friendly"
+    ev = await _fetch_event_for_poster(event_id)
+    org = None
+    if ev.get("orgSlug"):
+        org = await db.orgs.find_one({"slug": ev["orgSlug"]}, {"_id": 0})
+    if ai:
+        caption = await _ai_caption(ev, org, tone)
+    else:
+        caption = _template_caption(ev, tone)
+    hashtags = _event_hashtags(ev)
+    link = _event_public_link(ev)
+    return {
+        "event_id": ev.get("id"),
+        "title": ev.get("title"),
+        "tone": tone,
+        "ai": bool(ai and EMERGENT_LLM_KEY),
+        "caption": caption,
+        "caption_with_link": caption if link in caption else f"{caption}\n\n{link}",
+        "hashtags": hashtags,
+        "link": link,
+        "og_url": f"{PUBLIC_URL.rstrip('/')}/api/events/{ev.get('id')}/og",
+        "poster_png": f"{PUBLIC_URL.rstrip('/')}/api/events/{ev.get('id')}/poster.png",
+        "poster_pdf": f"{PUBLIC_URL.rstrip('/')}/api/events/{ev.get('id')}/poster.pdf",
+    }
+
+
 # ─────────── Org dashboard analytics uplift ───────────
 @api.get("/orgs/{slug}/analytics")
 async def org_analytics_v2(slug: str, days: int = 30):
