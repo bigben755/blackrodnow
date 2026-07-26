@@ -1728,6 +1728,7 @@ class EventPatch(BaseModel):
     image: Optional[str] = None
     featured: Optional[bool] = None
     status: Optional[Literal["approved", "pending", "rejected"]] = None
+    recurrence: Optional[EventRecurrence] = None
 
 
 @api.patch("/events/{event_id}")
