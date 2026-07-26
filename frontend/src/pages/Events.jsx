@@ -20,8 +20,8 @@ export default function Events() {
     const [query, setQuery] = useState("");
     const [cat, setCat] = useState("All");
     const [orgFilter, setOrgFilter] = useState("All");
-    const [tag, setTag] = useState("All"); // Free | Family | Accessible | All
-    const [dateWindow, setDateWindow] = useState("all"); // all | today | tomorrow | weekend
+    const [tags, setTags] = useState([]); // multi: Free | Kids | Wheelchair | Hearing | Quiet | StepFree
+    const [dateWindow, setDateWindow] = useState("all"); // all | today | tomorrow | weekend | evening
     const [savedOnly, setSavedOnly] = useState(false);
     const [subOpen, setSubOpen] = useState(false);
     const [cursor, setCursor] = useState(new Date());
@@ -37,7 +37,7 @@ export default function Events() {
             if (saved?.query) setQuery(saved.query);
             if (saved?.cat) setCat(saved.cat);
             if (saved?.orgFilter) setOrgFilter(saved.orgFilter);
-            if (saved?.tag) setTag(saved.tag);
+            if (Array.isArray(saved?.tags)) setTags(saved.tags);
             if (saved?.view) setView(saved.view);
             if (saved?.dateWindow) setDateWindow(saved.dateWindow);
             if (typeof saved?.savedOnly === "boolean") setSavedOnly(saved.savedOnly);
@@ -49,9 +49,12 @@ export default function Events() {
     useEffect(() => {
         localStorage.setItem(
             "rn-events-filters",
-            JSON.stringify({ query, cat, orgFilter, tag, view, dateWindow, savedOnly }),
+            JSON.stringify({ query, cat, orgFilter, tags, view, dateWindow, savedOnly }),
         );
-    }, [query, cat, orgFilter, tag, view, dateWindow, savedOnly]);
+    }, [query, cat, orgFilter, tags, view, dateWindow, savedOnly]);
+
+    const toggleTag = (t) =>
+        setTags((current) => (current.includes(t) ? current.filter((v) => v !== t) : [...current, t]));
 
     const inDateWindow = (eventStart, mode) => {
         if (mode === "all") return true;
@@ -71,11 +74,48 @@ export default function Events() {
         }
 
         if (mode === "weekend") {
+            // "This weekend" = the coming Saturday + Sunday (rolling window).
             const day = start.getDay();
-            return day === 0 || day === 6;
+            const isWeekend = day === 0 || day === 6;
+            if (!isWeekend) return false;
+            const nextSunday = new Date(dayStart);
+            nextSunday.setDate(nextSunday.getDate() + ((7 - nextSunday.getDay()) % 7));
+            nextSunday.setHours(23, 59, 59, 999);
+            const nextSaturday = new Date(nextSunday);
+            nextSaturday.setDate(nextSaturday.getDate() - 1);
+            nextSaturday.setHours(0, 0, 0, 0);
+            return start >= nextSaturday && start <= nextSunday;
+        }
+
+        if (mode === "evening") {
+            return start.getHours() >= 18;
         }
 
         return true;
+    };
+
+    const matchesTags = (e) => {
+        if (!tags.length) return true;
+        const cost = (e.cost || "").toLowerCase();
+        const age = (e.age || "").toLowerCase();
+        const acc = (e.accessibility || "").toLowerCase();
+        const cat = (e.category || "").toLowerCase();
+        return tags.every((t) => {
+            if (t === "Free") return cost.includes("free") || cost === "" || cost.includes("£0");
+            if (t === "Kids") return (
+                age.includes("kids") ||
+                age.includes("child") ||
+                age.includes("family") ||
+                age.includes("all") ||
+                cat.includes("family") ||
+                cat.includes("kids")
+            );
+            if (t === "Wheelchair") return acc.includes("wheelchair") || acc.includes("accessible");
+            if (t === "Hearing") return acc.includes("hearing loop") || acc.includes("hearing-loop") || acc.includes("hearing");
+            if (t === "Quiet") return acc.includes("quiet") || acc.includes("sensory") || acc.includes("low-sensory");
+            if (t === "StepFree") return acc.includes("step-free") || acc.includes("step free") || acc.includes("level access");
+            return true;
+        });
     };
 
     const filtered = useMemo(() => {
@@ -89,16 +129,11 @@ export default function Events() {
             )
             .filter((e) => (cat === "All" ? true : e.category === cat))
             .filter((e) => (orgFilter === "All" ? true : e.orgSlug === orgFilter))
-            .filter((e) => {
-                if (tag === "Free") return e.cost?.toLowerCase().includes("free");
-                if (tag === "Family") return e.age?.toLowerCase().includes("family") || e.age?.toLowerCase().includes("all");
-                if (tag === "Accessible") return e.accessibility?.toLowerCase().includes("step-free");
-                return true;
-            })
+            .filter(matchesTags)
                 .filter((e) => inDateWindow(e.start, dateWindow))
                 .filter((e) => (savedOnly ? savedEventIds.includes(e.id) : true))
             .sort((a, b) => new Date(a.start) - new Date(b.start));
-            }, [approved, query, cat, orgFilter, tag, dateWindow, savedOnly, savedEventIds]);
+            }, [approved, query, cat, orgFilter, tags, dateWindow, savedOnly, savedEventIds]);
 
     // Month grid
     const monthDays = useMemo(() => {
@@ -122,13 +157,8 @@ export default function Events() {
             )
             .filter((e) => (cat === "All" ? true : e.category === cat))
             .filter((e) => (orgFilter === "All" ? true : e.orgSlug === orgFilter))
-            .filter((e) => {
-                if (tag === "Free") return e.cost?.toLowerCase().includes("free");
-                if (tag === "Family") return e.age?.toLowerCase().includes("family") || e.age?.toLowerCase().includes("all");
-                if (tag === "Accessible") return e.accessibility?.toLowerCase().includes("step-free");
-                return true;
-            });
-    }, [approved, query, cat, orgFilter, tag]);
+            .filter(matchesTags);
+    }, [approved, query, cat, orgFilter, tags]);
 
     const eventsByDay = useMemo(() => {
         const map = {};
@@ -141,13 +171,13 @@ export default function Events() {
         return map;
     }, [filteredAll]);
 
-    const hasActiveFilters = Boolean(query.trim()) || cat !== "All" || orgFilter !== "All" || tag !== "All" || dateWindow !== "all" || savedOnly;
+    const hasActiveFilters = Boolean(query.trim()) || cat !== "All" || orgFilter !== "All" || tags.length > 0 || dateWindow !== "all" || savedOnly;
 
     const clearFilters = () => {
         setQuery("");
         setCat("All");
         setOrgFilter("All");
-        setTag("All");
+        setTags([]);
         setDateWindow("all");
         setSavedOnly(false);
         toast.success("Filters cleared");
@@ -223,7 +253,7 @@ export default function Events() {
                     data-testid="events-org-filter"
                     value={orgFilter}
                     onChange={(e) => setOrgFilter(e.target.value)}
-                    className="min-w-0 md:col-span-2 px-4 py-3 rounded-full border border-border bg-surface text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+                    className="min-w-0 md:col-span-4 px-4 py-3 rounded-full border border-border bg-surface text-sm focus:outline-none focus:ring-2 focus:ring-primary"
                 >
                     <option value="All">All orgs</option>
                     {orgs.map((o) => (
@@ -232,60 +262,77 @@ export default function Events() {
                         </option>
                     ))}
                 </select>
-                <select
-                    data-testid="events-tag-filter"
-                    value={tag}
-                    onChange={(e) => setTag(e.target.value)}
-                    className="min-w-0 md:col-span-2 px-4 py-3 rounded-full border border-border bg-surface text-sm focus:outline-none focus:ring-2 focus:ring-primary"
-                >
-                    <option value="All">Any tag</option>
-                    <option value="Free">Free</option>
-                    <option value="Family">Family</option>
-                    <option value="Accessible">Accessible</option>
-                </select>
             </div>
 
-            <div className="mb-6 flex flex-wrap items-center gap-2">
+            {/* Date chips */}
+            <div className="mb-3 flex flex-wrap items-center gap-2" data-testid="date-chip-row">
+                {[
+                    { key: "all", label: "Any date" },
+                    { key: "today", label: "Today" },
+                    { key: "tomorrow", label: "Tomorrow" },
+                    { key: "weekend", label: "This weekend" },
+                    { key: "evening", label: "Evening (after 6pm)" },
+                ].map((opt) => (
+                    <button
+                        key={opt.key}
+                        type="button"
+                        data-testid={`chip-date-${opt.key}`}
+                        onClick={() => setDateWindow(opt.key)}
+                        className={`px-3 py-1.5 rounded-full text-xs font-semibold border transition ${dateWindow === opt.key ? "border-foreground bg-foreground text-background" : "border-border bg-surface hover:bg-muted"}`}
+                    >
+                        {opt.label}
+                    </button>
+                ))}
                 <button
                     type="button"
-                    onClick={() => setDateWindow("all")}
-                    className={`px-3 py-1.5 rounded-full text-xs font-semibold border transition ${dateWindow === "all" ? "border-foreground bg-foreground text-background" : "border-border bg-surface"}`}
-                >
-                    Any date
-                </button>
-                <button
-                    type="button"
-                    onClick={() => setDateWindow("today")}
-                    className={`px-3 py-1.5 rounded-full text-xs font-semibold border transition ${dateWindow === "today" ? "border-foreground bg-foreground text-background" : "border-border bg-surface"}`}
-                >
-                    Today
-                </button>
-                <button
-                    type="button"
-                    onClick={() => setDateWindow("tomorrow")}
-                    className={`px-3 py-1.5 rounded-full text-xs font-semibold border transition ${dateWindow === "tomorrow" ? "border-foreground bg-foreground text-background" : "border-border bg-surface"}`}
-                >
-                    Tomorrow
-                </button>
-                <button
-                    type="button"
-                    onClick={() => setDateWindow("weekend")}
-                    className={`px-3 py-1.5 rounded-full text-xs font-semibold border transition ${dateWindow === "weekend" ? "border-foreground bg-foreground text-background" : "border-border bg-surface"}`}
-                >
-                    This weekend
-                </button>
-                <button
-                    type="button"
+                    data-testid="chip-saved-only"
                     onClick={() => setSavedOnly((v) => !v)}
-                    className={`px-3 py-1.5 rounded-full text-xs font-semibold border transition ${savedOnly ? "border-foreground bg-foreground text-background" : "border-border bg-surface"}`}
+                    className={`px-3 py-1.5 rounded-full text-xs font-semibold border transition ${savedOnly ? "border-foreground bg-foreground text-background" : "border-border bg-surface hover:bg-muted"}`}
                 >
                     Saved only ({savedEventIds.length})
                 </button>
+            </div>
+
+            {/* Tag + Accessibility chips */}
+            <div className="mb-6 flex flex-wrap items-center gap-2" data-testid="tag-chip-row">
+                <span className="text-[11px] uppercase tracking-wider text-muted-foreground mr-1">Suitable for</span>
+                {[
+                    { key: "Free", label: "Free" },
+                    { key: "Kids", label: "Kids-friendly" },
+                ].map((opt) => (
+                    <button
+                        key={opt.key}
+                        type="button"
+                        data-testid={`chip-tag-${opt.key.toLowerCase()}`}
+                        onClick={() => toggleTag(opt.key)}
+                        className={`px-3 py-1.5 rounded-full text-xs font-semibold border transition ${tags.includes(opt.key) ? "border-primary bg-primary text-primary-foreground" : "border-border bg-surface hover:bg-muted"}`}
+                    >
+                        {opt.label}
+                    </button>
+                ))}
+                <span className="text-[11px] uppercase tracking-wider text-muted-foreground mx-1">Accessibility</span>
+                {[
+                    { key: "StepFree", label: "Step-free" },
+                    { key: "Wheelchair", label: "Wheelchair" },
+                    { key: "Hearing", label: "Hearing loop" },
+                    { key: "Quiet", label: "Quiet / sensory" },
+                ].map((opt) => (
+                    <button
+                        key={opt.key}
+                        type="button"
+                        data-testid={`chip-tag-${opt.key.toLowerCase()}`}
+                        onClick={() => toggleTag(opt.key)}
+                        className={`px-3 py-1.5 rounded-full text-xs font-semibold border transition ${tags.includes(opt.key) ? "border-primary bg-primary text-primary-foreground" : "border-border bg-surface hover:bg-muted"}`}
+                    >
+                        {opt.label}
+                    </button>
+                ))}
                 {hasActiveFilters && (
                     <button
                         type="button"
                         onClick={clearFilters}
-                        className="ml-auto px-3 py-1.5 rounded-full text-xs font-semibold border border-border bg-background"
+                        data-testid="clear-filters"
+                        className="ml-auto px-3 py-1.5 rounded-full text-xs font-semibold border border-border bg-background hover:bg-muted"
                     >
                         Clear filters
                     </button>

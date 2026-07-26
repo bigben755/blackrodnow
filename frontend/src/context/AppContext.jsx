@@ -121,6 +121,14 @@ export function AppProvider({ children }) {
 
     useEffect(() => {
         localStorage.setItem("rn-saved-events", JSON.stringify(savedEventIds));
+        // Sync to backend so we can send 24h/2h reminder emails via Resend.
+        try {
+            const email = localStorage.getItem("rn-subscriber-email") || "";
+            const deviceId = localStorage.getItem("rn-device-id") || "";
+            if (email || deviceId) {
+                api.syncSavedEvents({ email: email || undefined, device_id: deviceId || undefined, saved_events: savedEventIds }).catch(() => {});
+            }
+        } catch { /* ignore */ }
     }, [savedEventIds]);
 
     const toggleTheme = () => setTheme((t) => (t === "dark" ? "light" : "dark"));

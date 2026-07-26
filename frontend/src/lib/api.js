@@ -133,8 +133,20 @@ export const api = {
         client.post("/follows", { device_id: getDeviceId(), kind, value, action }).then((r) => r.data),
 
     // Subscribers
-    subscribe: (email, prefs = {}) =>
-        client.post("/subscribe", { email, device_id: getDeviceId(), ...prefs }).then((r) => r.data),
+    subscribe: (email, prefs = {}) => {
+        // Auto-attach locally-saved event ids so reminder emails "just work"
+        // once the visitor gives us an email.
+        let saved_events;
+        try {
+            const raw = typeof window !== "undefined" ? localStorage.getItem("rn-saved-events") : null;
+            saved_events = raw ? JSON.parse(raw) : undefined;
+            if (!Array.isArray(saved_events)) saved_events = undefined;
+        } catch { saved_events = undefined; }
+        if (typeof window !== "undefined") localStorage.setItem("rn-subscriber-email", email);
+        return client.post("/subscribe", { email, device_id: getDeviceId(), saved_events, ...prefs }).then((r) => r.data);
+    },
+    syncSavedEvents: (payload) =>
+        client.post("/subscribers/saved-events", payload).then((r) => r.data),
     unsubscribe: (token) => client.post(`/unsubscribe/${token}`).then((r) => r.data),
     preferences: (token) => client.get(`/preferences/${token}`).then((r) => r.data),
     updatePreferences: (token, patch) =>

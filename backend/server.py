@@ -615,6 +615,7 @@ class Subscriber(BaseModel):
     pref_token: str = Field(default_factory=new_token)
     followed_orgs: List[str] = []
     followed_categories: List[str] = []
+    saved_events: List[str] = []
     digest: bool = True
     unsubscribed: bool = False
     created_at: str = Field(default_factory=now_iso)
@@ -2563,6 +2564,7 @@ class SubscribeReq(BaseModel):
     device_id: Optional[str] = None
     followed_orgs: Optional[List[str]] = None
     followed_categories: Optional[List[str]] = None
+    saved_events: Optional[List[str]] = None
 
 
 @api.post("/subscribe")
@@ -2572,11 +2574,13 @@ async def subscribe(req: SubscribeReq):
         # merge follows + always reactivate (never insert a duplicate)
         followed_orgs = list(set((existing.get("followed_orgs") or []) + (req.followed_orgs or [])))
         followed_categories = list(set((existing.get("followed_categories") or []) + (req.followed_categories or [])))
+        saved_events = list(set((existing.get("saved_events") or []) + (req.saved_events or [])))
         await db.subscribers.update_one(
             {"email": req.email.lower()},
             {"$set": {
                 "followed_orgs": followed_orgs,
                 "followed_categories": followed_categories,
+                "saved_events": saved_events,
                 "unsubscribed": False,
                 "digest": True,
             }},
@@ -2593,6 +2597,7 @@ async def subscribe(req: SubscribeReq):
         device_id=req.device_id,
         followed_orgs=req.followed_orgs or [],
         followed_categories=req.followed_categories or [],
+        saved_events=req.saved_events or [],
     )
     await db.subscribers.insert_one(sub.model_dump())
     # welcome email
@@ -2601,6 +2606,30 @@ async def subscribe(req: SubscribeReq):
     html = _render_welcome(sub.email, unsub_link, pref_link)
     asyncio.create_task(asyncio.to_thread(resend_send, sub.email, "Welcome to Blackrod Now 👋", html))
     return {"ok": True, "already_subscribed": False, "unsub_token": sub.unsub_token, "pref_token": sub.pref_token}
+
+
+class SavedEventsSyncReq(BaseModel):
+    email: Optional[EmailStr] = None
+    device_id: Optional[str] = None
+    saved_events: List[str] = []
+
+
+@api.post("/subscribers/saved-events")
+async def sync_saved_events(req: SavedEventsSyncReq):
+    """Client pushes their locally-saved event ids to the backend so we can
+    send reminder emails 24h + 2h before each event starts. Matches by email
+    first, then device_id. No-ops for unsubscribed users."""
+    query = None
+    if req.email:
+        query = {"email": req.email.lower(), "unsubscribed": {"$ne": True}}
+    elif req.device_id:
+        query = {"device_id": req.device_id, "unsubscribed": {"$ne": True}}
+    if not query:
+        return {"ok": False, "reason": "no email or device_id"}
+    result = await db.subscribers.update_one(
+        query, {"$set": {"saved_events": list(dict.fromkeys(req.saved_events or []))}}
+    )
+    return {"ok": True, "matched": result.matched_count, "count": len(req.saved_events or [])}
 
 
 @api.post("/unsubscribe/{token}")
@@ -3883,6 +3912,45 @@ def _render_welcome(email: str, unsub_link: str, pref_link: str) -> str:
 """
 
 
+def _gcal_url(event: dict) -> str:
+    """Google Calendar 'add event' URL — works from any email client."""
+    try:
+        start = datetime.fromisoformat((event.get("start") or "").replace("Z", "+00:00"))
+        end = datetime.fromisoformat((event.get("end") or event.get("start") or "").replace("Z", "+00:00"))
+    except Exception:
+        return ""
+    def _fmt(dt: datetime) -> str:
+        return dt.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    params = {
+        "action": "TEMPLATE",
+        "text": event.get("title", "Blackrod Now event"),
+        "dates": f"{_fmt(start)}/{_fmt(end)}",
+        "details": (event.get("description") or "")[:1500],
+        "location": " ".join([s for s in [event.get("venue"), event.get("address")] if s]),
+    }
+    from urllib.parse import urlencode
+    return "https://calendar.google.com/calendar/render?" + urlencode(params, safe=":/")
+
+
+def _outlook_url(event: dict) -> str:
+    try:
+        start = datetime.fromisoformat((event.get("start") or "").replace("Z", "+00:00"))
+        end = datetime.fromisoformat((event.get("end") or event.get("start") or "").replace("Z", "+00:00"))
+    except Exception:
+        return ""
+    from urllib.parse import urlencode
+    params = {
+        "path": "/calendar/action/compose",
+        "rru": "addevent",
+        "subject": event.get("title", "Blackrod Now event"),
+        "startdt": start.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "enddt": end.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "body": (event.get("description") or "")[:1500],
+        "location": " ".join([s for s in [event.get("venue"), event.get("address")] if s]),
+    }
+    return "https://outlook.live.com/calendar/0/deeplink/compose?" + urlencode(params, safe=":/")
+
+
 def _render_digest(sub: dict, events: List[dict], updates: List[dict]) -> str:
     unsub = f"{PUBLIC_URL}/unsubscribe/{sub['unsub_token']}"
     pref = f"{PUBLIC_URL}/preferences/{sub['pref_token']}"
@@ -3891,14 +3959,22 @@ def _render_digest(sub: dict, events: List[dict], updates: List[dict]) -> str:
             return datetime.fromisoformat(iso.replace("Z", "+00:00")).strftime("%a %d %b · %H:%M")
         except Exception:
             return ""
-    ev_rows = "".join(
-        f"""<tr><td style="padding:12px 0;border-bottom:1px solid #E2E8F0">
-        <div style="font-weight:700;color:#0F172A">{e.get('title','')}</div>
-        <div style="color:#0052FF;font-size:13px">{fmt_time(e.get('start',''))}</div>
-        <div style="color:#475569;font-size:13px">{e.get('venue','')}</div>
+    def _event_row(e: dict) -> str:
+        gcal = _gcal_url(e)
+        outlook = _outlook_url(e)
+        ics = f"{PUBLIC_URL}/api/events/{e.get('id')}.ics" if e.get("id") else ""
+        cal_row = "".join([
+            f'<a href="{gcal}" style="display:inline-block;margin-right:8px;padding:6px 12px;border-radius:999px;background:#0052FF;color:#fff;font-size:12px;text-decoration:none;font-weight:700">Google</a>' if gcal else "",
+            f'<a href="{outlook}" style="display:inline-block;margin-right:8px;padding:6px 12px;border-radius:999px;background:#0F172A;color:#fff;font-size:12px;text-decoration:none;font-weight:700">Outlook</a>' if outlook else "",
+            f'<a href="{ics}" style="display:inline-block;padding:6px 12px;border-radius:999px;background:#475569;color:#fff;font-size:12px;text-decoration:none;font-weight:700">Apple / iCal</a>' if ics else "",
+        ])
+        return f"""<tr><td style="padding:14px 0;border-bottom:1px solid #E2E8F0">
+            <div style="font-weight:700;color:#0F172A;font-size:15px">{e.get('title','')}</div>
+            <div style="color:#0052FF;font-size:13px;margin-top:2px">{fmt_time(e.get('start',''))}</div>
+            <div style="color:#475569;font-size:13px">{e.get('venue','')}</div>
+            <div style="margin-top:8px">{cal_row}</div>
         </td></tr>"""
-        for e in events[:8]
-    ) or "<tr><td style='color:#94A3B8;padding:12px 0'>No events matching your preferences this week.</td></tr>"
+    ev_rows = "".join(_event_row(e) for e in events[:8]) or "<tr><td style='color:#94A3B8;padding:12px 0'>No events matching your preferences this week.</td></tr>"
     up_rows = "".join(
         f"<li style='margin:8px 0;color:#475569'><b style='color:#0F172A'>{u.get('title','')}</b> — {u.get('body','')[:120]}</li>"
         for u in updates[:5]
@@ -3912,6 +3988,7 @@ def _render_digest(sub: dict, events: List[dict], updates: List[dict]) -> str:
     </td></tr>
     <tr><td style="padding:8px 28px">
       <h2 style="margin:16px 0 4px;font-size:16px;color:#0F172A">What's on</h2>
+      <p style="margin:0 0 8px;font-size:12px;color:#94A3B8">Tap Google / Outlook / Apple to add straight to your calendar.</p>
       <table role="presentation" width="100%">{ev_rows}</table>
     </td></tr>
     {"<tr><td style='padding:8px 28px'><h2 style='margin:16px 0 4px;font-size:16px'>Local updates</h2><ul style='padding-left:16px'>" + up_rows + "</ul></td></tr>" if up_rows else ""}
@@ -4214,6 +4291,127 @@ async def admin_email_send(request: Request):
 
 
 # ─────────── Startup ───────────
+
+# ─────────── Reminder emails for saved events ───────────
+_REMINDER_LOOP_INTERVAL_SECONDS = int(os.environ.get("REMINDER_LOOP_INTERVAL", "900"))  # 15 min
+_REMINDER_WINDOW_MINUTES = int(os.environ.get("REMINDER_WINDOW_MINUTES", "20"))
+
+
+def _render_reminder_email(sub_email: str, event: dict, kind: str) -> tuple[str, str]:
+    """Return (subject, html) for a 24h or 2h reminder."""
+    when_iso = event.get("start") or ""
+    try:
+        start = datetime.fromisoformat(when_iso.replace("Z", "+00:00"))
+        when_pretty = start.strftime("%A %d %B · %H:%M")
+    except Exception:
+        when_pretty = when_iso
+    label = "starts tomorrow" if kind == "24h" else "starts in 2 hours"
+    subject = f"Reminder: {event.get('title','Your saved event')} {label}"
+    gcal = _gcal_url(event)
+    outlook = _outlook_url(event)
+    ics = f"{PUBLIC_URL}/api/events/{event.get('id')}.ics" if event.get("id") else ""
+    cal_row = "".join([
+        f'<a href="{gcal}" style="display:inline-block;margin-right:8px;padding:8px 14px;border-radius:999px;background:#0052FF;color:#fff;font-size:13px;text-decoration:none;font-weight:700">Google</a>' if gcal else "",
+        f'<a href="{outlook}" style="display:inline-block;margin-right:8px;padding:8px 14px;border-radius:999px;background:#0F172A;color:#fff;font-size:13px;text-decoration:none;font-weight:700">Outlook</a>' if outlook else "",
+        f'<a href="{ics}" style="display:inline-block;padding:8px 14px;border-radius:999px;background:#475569;color:#fff;font-size:13px;text-decoration:none;font-weight:700">Apple / iCal</a>' if ics else "",
+    ])
+    event_url = f"{PUBLIC_URL}/events/{event.get('id')}" if event.get("id") else PUBLIC_URL
+    html = f"""<!DOCTYPE html><html><body style="font-family:Helvetica,Arial,sans-serif;background:#F4F5F7;padding:24px;color:#0F172A">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:600px;margin:0 auto;background:#fff;border-radius:24px;overflow:hidden">
+  <tr><td style="padding:28px">
+    <div style="font-size:12px;color:#0052FF;letter-spacing:2px;text-transform:uppercase;font-weight:800">Reminder</div>
+    <h1 style="margin:8px 0 0;font-size:24px;color:#0F172A">{event.get('title','Your saved event')}</h1>
+    <p style="margin:16px 0 0;font-size:15px;color:#475569">You saved this event on Blackrod Now — it {label}.</p>
+    <div style="margin-top:20px;padding:16px;border-radius:16px;background:#F1F5F9">
+      <div style="font-size:14px;color:#0F172A"><b>When:</b> {when_pretty}</div>
+      <div style="font-size:14px;color:#0F172A;margin-top:4px"><b>Where:</b> {event.get('venue','')}{(", " + event.get('address','')) if event.get('address') else ""}</div>
+      {"<div style='margin-top:8px;font-size:13px;color:#475569'>" + (event.get('description') or "")[:280] + "</div>" if event.get('description') else ""}
+    </div>
+    <div style="margin-top:16px">{cal_row}</div>
+    <p style="margin:20px 0 0;font-size:13px"><a href="{event_url}" style="color:#0052FF;font-weight:600">View event page →</a></p>
+    <p style="margin-top:24px;font-size:11px;color:#94A3B8">You're receiving this because you saved this event. You can un-save it any time from the event page or your Blackrod Now saved list.</p>
+  </td></tr>
+</table></body></html>"""
+    return subject, html
+
+
+async def _find_events_in_window(minutes_from_now: int, window_minutes: int) -> List[dict]:
+    now = datetime.now(timezone.utc)
+    target = now + timedelta(minutes=minutes_from_now)
+    lo = (target - timedelta(minutes=window_minutes / 2)).isoformat()
+    hi = (target + timedelta(minutes=window_minutes / 2)).isoformat()
+    return await db.events.find(
+        {"status": "approved", "start": {"$gte": lo, "$lte": hi}}, {"_id": 0}
+    ).to_list(200)
+
+
+async def _process_reminders(kind: str, minutes_from_now: int) -> int:
+    events = await _find_events_in_window(minutes_from_now, _REMINDER_WINDOW_MINUTES)
+    if not events:
+        return 0
+    sent = 0
+    for event in events:
+        event_id = event.get("id")
+        if not event_id:
+            continue
+        # Every subscriber who saved this event and is still active.
+        cursor = db.subscribers.find(
+            {"saved_events": event_id, "unsubscribed": {"$ne": True}, "digest": {"$ne": False}},
+            {"_id": 0, "email": 1},
+        )
+        async for sub in cursor:
+            email = sub.get("email")
+            if not email:
+                continue
+            key = {"email": email, "event_id": event_id, "kind": kind}
+            already = await db.event_reminders_sent.find_one(key)
+            if already:
+                continue
+            subject, html = _render_reminder_email(email, event, kind)
+            try:
+                await asyncio.to_thread(resend_send, email, subject, html)
+                await db.event_reminders_sent.insert_one({**key, "sent_at": now_iso()})
+                sent += 1
+            except Exception as e:
+                logger.warning("reminder send failed for %s / %s: %s", email, event_id, e)
+    if sent:
+        logger.info("Sent %d %s reminders", sent, kind)
+    return sent
+
+
+async def _event_reminder_loop() -> None:
+    """Run forever — fires 24h + 2h reminders for saved events."""
+    if not RESEND_API_KEY:
+        logger.info("Reminder loop skipped: RESEND_API_KEY not set.")
+        return
+    logger.info("Event reminder loop started (interval=%ds, window=±%dmin)", _REMINDER_LOOP_INTERVAL_SECONDS, _REMINDER_WINDOW_MINUTES // 2)
+    while True:
+        try:
+            await _process_reminders("24h", 24 * 60)
+            await _process_reminders("2h", 120)
+        except Exception as e:
+            logger.exception("reminder loop iteration failed: %s", e)
+        await asyncio.sleep(_REMINDER_LOOP_INTERVAL_SECONDS)
+
+
+@api.post("/admin/reminders/run-now")
+async def admin_reminders_run_now(
+    request: Request,
+    authorization: Optional[str] = Header(None),
+    admin_code: Optional[str] = Header(None, alias="X-Admin-Code"),
+):
+    """Force the reminder loop to run once (for smoke testing)."""
+    ok = read_admin_from_request(request, authorization) is not None or (
+        admin_code and hmac.compare_digest(admin_code, ADMIN_LAUNCH_CODE)
+    )
+    if not ok:
+        raise HTTPException(403, "Admin authentication required")
+    sent_24 = await _process_reminders("24h", 24 * 60)
+    sent_2 = await _process_reminders("2h", 120)
+    return {"ok": True, "sent_24h": sent_24, "sent_2h": sent_2}
+
+
+
 @app.on_event("startup")
 async def startup():
     init_storage()
@@ -4233,9 +4431,12 @@ async def startup():
         await db.analytics_events.create_index([("entity_id", 1), ("created_at", -1)])
         await db.users.create_index("email", unique=True)
         await db.login_attempts.create_index("identifier")
+        await db.event_reminders_sent.create_index([("email", 1), ("event_id", 1), ("kind", 1)], unique=True)
     except Exception as e:
         logger.warning("Index setup: %s", e)
     await _seed_admin_user()
+    # Background reminder loop for saved events (24h + 2h heads-up).
+    asyncio.create_task(_event_reminder_loop())
 
 
 @app.on_event("shutdown")

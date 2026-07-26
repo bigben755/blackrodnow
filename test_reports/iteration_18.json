@@ -1,0 +1,35 @@
+{
+  "summary": "Iter18 — Batch B: Filter chips + Saved-events sync + Reminder emails + Add-to-Calendar. Backend: 7/7 pytest passed — POST /api/subscribers/saved-events (email path, device_id path, no-id returns ok:false), POST /api/subscribe accepts saved_events array, admin JWT gate on /api/admin/reminders/run-now (403 without auth), 24h reminder loop sent_24h>=1 and event_reminders_sent row persisted (idempotent — 2nd call didn't resend same (email,event,kind)), 2h reminder same, newsletter preview HTML contains calendar.google.com + outlook.live.com + .ics per event. Frontend: ComingSoon → cs-admin-login-open flow works, /events shows both data-testid='date-chip-row' and 'tag-chip-row', all 12 chip test IDs present (chip-date-all/today/tomorrow/weekend/evening, chip-saved-only, chip-tag-free/kids/stepfree/wheelchair/hearing/quiet), single-select date chips + multi-select tag chips work, Weekend+Kids+Step-free combo updates showing count to 0 (no matching seed data), 'Clear filters' button present + resets all chips + LS to defaults, saved-events sync fires POST /api/subscribers/saved-events with correct body {email,saved_events:[id]} when user toggles a save-event-* button after localStorage['rn-subscriber-email'] is set. BUG FOUND: localStorage['rn-events-filters'] persistence is broken across full page reloads — pre-seeded LS with dateWindow='today'/tags=['Free'] gets OVERWRITTEN back to defaults on mount because the useEffect that writes LS runs on the initial render (with default state) before the load useEffect's setState calls have committed (React 18 strict-mode double-mount amplifies this).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "Events.jsx", "issue": "localStorage['rn-events-filters'] persistence broken — chip selections do NOT survive a full page reload. The write-LS useEffect (line 49) fires with default state on initial render and overwrites LS *before* the load-LS useEffect (line 32) setState calls commit. Under React strict-mode double-mount the corrupted defaults are then read back on remount, so state stays at defaults.", "selector": "[data-testid^='chip-date-'] / [data-testid^='chip-tag-']", "priority": "HIGH"}
+    ],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter18_batch_b.py",
+    "/app/test_reports/pytest/iter18_results.xml"
+  ],
+  "action_items": [
+    "Fix Events.jsx filter persistence: use lazy initial state (useState(() => readLS()?.field ?? default)) instead of the load-then-setState useEffect pattern — this eliminates the race with the write-LS effect and works under React strict mode. Alternatively, gate the write-LS effect behind a 'hydrated' flag that flips true only after the load effect finishes."
+  ],
+  "critical_code_review_comments": [
+    "Events.jsx uses the classic anti-pattern of an empty-deps useEffect that reads localStorage and calls multiple setState, in the same component as a second useEffect that writes localStorage on every state change. The write effect fires first (in effect order they fire together, but the write's dependency-array first pass sees initial state) and overwrites the pre-load LS. Recommend refactor to lazy initial state.",
+    "server.py _process_reminders queries subscribers with digest:{$ne:False} — this is correct but means subscribers who explicitly opted out of digest also don't get reminders. Consider whether reminders should be a separate opt-out (e.g. subscriber.reminders !== false) from newsletter digest.",
+    "_render_reminder_email hard-codes brand colour #0052FF and uses inline styles — fine for email but consider extracting to a shared _cal_button() helper (also used in _render_digest) to keep them in sync.",
+    "No unit tests for _gcal_url/_outlook_url URL-encoding — a stray & or newline in event.title/description could produce malformed calendar URLs. Consider a quick edge-case test.",
+    "server.py has grown past 4450 lines — long overdue for a module split (carried from iter14–17)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter18_batch_b.py (new)"
+  ],
+  "success_rate": {"backend": "100% (7/7)", "frontend": "~90% — all chip/UI/save-sync flows green, only filter LS persistence across reload is broken"},
+  "test_credentials": "admin@blackrodnow.co.uk / BlackrodAdmin!2026 (verified)",
+  "seed_data_creation": "Created + deleted 2 test events (evt-reminder-test-24h-*, evt-reminder-test-2h-*), 6 test subscribers (test-batch-b-*@example.com incl. one via frontend save-toggle), reminder-sent rows for the 24h/2h runs. All cleaned in fixture teardown + final pymongo delete_many sweep.",
+  "retest_needed": true,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Batch B is functionally shipped: backend saved-events sync + 24h/2h reminders (real Resend send confirmed via row insert to event_reminders_sent) + calendar buttons in digest all working. Only outstanding issue is /events chip filter persistence across full reload — during a same-session navigation LS is fine (write effect fires with fresh state on every chip click). Fix is small (lazy useState init).",
+  "rca_of_the_issue": "Events.jsx line 32-47 defines a load-from-LS useEffect that dispatches multiple setState calls. Line 49-54 defines a write-to-LS useEffect with state deps that fires on every render, INCLUDING the initial render before load's setState has committed. On initial mount, both effects fire: load reads correct LS and schedules setState (async), write fires immediately with initial (default) state and overwrites LS to defaults. React 18 strict-mode double-mount then re-runs the load effect against the just-corrupted LS, so state stays at defaults. Repro: (1) localStorage.setItem('rn-events-filters', JSON.stringify({dateWindow:'today',tags:['Free']})); (2) navigate to /events; (3) observe chips render as unselected + LS clobbered back to defaults. Fix: convert the 7 filter useStates to lazy initializers that read LS once at construction, OR add a hydrated boolean guard on the write effect."
+}
