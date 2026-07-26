@@ -75,6 +75,14 @@ export const api = {
         return `${API}/admin/impact/pdf?days=${days}&variant=${variant}${jwt ? `&token=${encodeURIComponent(jwt)}` : ""}`;
     },
 
+    // Batch C: Org power tools
+    duplicateEvent: (eventId) =>
+        client.post(`/events/${eventId}/duplicate`).then((r) => r.data),
+    eventPosterPngUrl: (eventId) => `${API}/events/${eventId}/poster.png`,
+    eventPosterPdfUrl: (eventId) => `${API}/events/${eventId}/poster.pdf`,
+    orgAnalyticsSeries: (slug, days = 30) =>
+        client.get(`/orgs/${slug}/analytics`, { params: { days } }).then((r) => r.data),
+
     // Meta
     stats: () => client.get("/admin/stats").then((r) => r.data),
     isSeeded: () => client.get("/admin/seeded").then((r) => r.data),

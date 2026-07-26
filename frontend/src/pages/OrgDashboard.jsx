@@ -487,6 +487,10 @@ export default function OrgDashboard() {
                 </div>
             </section>
 
+            <section className="mt-10">
+                <OrgAnalyticsPanel slug={selectedOrgSlug} orgName={org?.name} />
+            </section>
+
             {/* My events */}
             <section className="mt-10">
                 <h2 className="font-display font-bold text-xl mb-3">Your events</h2>
@@ -507,13 +511,50 @@ export default function OrgDashboard() {
                                 </div>
                                 <h3 className="font-display font-bold mt-2">{e.title}</h3>
                                 <p className="text-xs text-muted-foreground mt-1">{formatDate(e.start)} · {formatTime(e.start)}</p>
-                                <div className="mt-3 pt-3 border-t border-border flex items-center gap-2 mt-auto">
+                                <div className="mt-3 pt-3 border-t border-border flex items-center gap-2 mt-auto flex-wrap">
                                     <Link
                                         to={`/events/${e.id}`}
                                         className="text-xs font-semibold text-muted-foreground hover:text-foreground"
                                     >
                                         View
                                     </Link>
+                                    <a
+                                        href={api.eventPosterPngUrl(e.id)}
+                                        data-testid={`dash-event-poster-png-${e.id}`}
+                                        target="_blank"
+                                        rel="noreferrer"
+                                        className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full border border-border text-[11px] font-semibold hover:bg-muted"
+                                        title="Download 1080×1080 PNG poster"
+                                    >
+                                        PNG
+                                    </a>
+                                    <a
+                                        href={api.eventPosterPdfUrl(e.id)}
+                                        data-testid={`dash-event-poster-pdf-${e.id}`}
+                                        target="_blank"
+                                        rel="noreferrer"
+                                        className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full border border-border text-[11px] font-semibold hover:bg-muted"
+                                        title="Download A4 PDF poster"
+                                    >
+                                        PDF
+                                    </a>
+                                    <button
+                                        type="button"
+                                        data-testid={`dash-event-duplicate-${e.id}`}
+                                        onClick={async () => {
+                                            try {
+                                                const dup = await api.duplicateEvent(e.id);
+                                                toast.success("Event duplicated — fill the new date and publish");
+                                                await refresh();
+                                                if (dup?.id) window.location.assign(`/edit-event/${dup.id}`);
+                                            } catch (err) {
+                                                toast.error(err?.response?.data?.detail || "Could not duplicate event");
+                                            }
+                                        }}
+                                        className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full border border-border text-[11px] font-semibold hover:bg-muted"
+                                    >
+                                        Duplicate
+                                    </button>
                                     <Link
                                         to={`/edit-event/${e.id}`}
                                         data-testid={`dash-event-edit-${e.id}`}
@@ -1058,6 +1099,115 @@ function ImpersonationBanner({ selectedOrgSlug, orgName }) {
             >
                 Return to admin
             </button>
+        </div>
+    );
+}
+
+
+function OrgAnalyticsPanel({ slug, orgName }) {
+    const [data, setData] = useState(null);
+    const [days, setDays] = useState(30);
+    const [loading, setLoading] = useState(false);
+
+    useEffect(() => {
+        if (!slug) return;
+        setLoading(true);
+        api.orgAnalyticsSeries(slug, days)
+            .then((res) => setData(res))
+            .catch(() => setData(null))
+            .finally(() => setLoading(false));
+    }, [slug, days]);
+
+    const series = data?.series || [];
+    const totals = data?.totals || { event_views: 0, org_views: 0, share_clicks: 0 };
+    const best = data?.best_event;
+    const maxVal = Math.max(1, ...series.map((s) => s.event_views + s.org_views));
+
+    // Simple SVG sparkline
+    const W = 640;
+    const H = 140;
+    const pad = 8;
+    const stepX = series.length > 1 ? (W - 2 * pad) / (series.length - 1) : 0;
+    const points = series
+        .map((s, i) => {
+            const x = pad + i * stepX;
+            const y = H - pad - ((s.event_views + s.org_views) / maxVal) * (H - 2 * pad);
+            return `${x.toFixed(1)},${y.toFixed(1)}`;
+        })
+        .join(" ");
+
+    return (
+        <div data-testid="org-analytics-panel" className="rounded-3xl border border-border bg-surface p-6">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                    <h2 className="font-display font-bold text-xl">Reach for {orgName || slug}</h2>
+                    <p className="text-sm text-muted-foreground mt-1">Views, shares and volunteer clicks over the last {days} days.</p>
+                </div>
+                <div className="flex items-center gap-2">
+                    {[7, 30, 90].map((d) => (
+                        <button
+                            key={d}
+                            type="button"
+                            data-testid={`org-analytics-range-${d}`}
+                            onClick={() => setDays(d)}
+                            className={`px-3 py-1.5 rounded-full text-xs font-semibold border ${days === d ? "border-foreground bg-foreground text-background" : "border-border bg-background hover:bg-muted"}`}
+                        >
+                            {d}d
+                        </button>
+                    ))}
+                </div>
+            </div>
+
+            <div className="mt-4 grid sm:grid-cols-3 gap-3">
+                <Stat label="Event views" value={totals.event_views} />
+                <Stat label="Org views" value={totals.org_views} />
+                <Stat label="Share clicks" value={totals.share_clicks} />
+            </div>
+
+            {best ? (
+                <div className="mt-4 rounded-2xl border border-primary/30 bg-primary/5 p-4 flex items-center gap-3">
+                    <div className="h-9 w-9 rounded-2xl bg-primary text-primary-foreground grid place-items-center font-black">★</div>
+                    <div className="flex-1">
+                        <div className="text-[11px] uppercase tracking-wider text-primary font-black">Best performing event</div>
+                        <div className="font-semibold text-sm mt-0.5">{best.title}</div>
+                    </div>
+                    <div className="text-right">
+                        <div className="font-display font-black text-2xl leading-none">{best.views}</div>
+                        <div className="text-[11px] uppercase tracking-wider text-muted-foreground">views</div>
+                    </div>
+                </div>
+            ) : (
+                <div className="mt-4 text-xs text-muted-foreground">
+                    {loading ? "Loading…" : "No analytics recorded yet in this window. Views + shares will start appearing here as people engage with your content."}
+                </div>
+            )}
+
+            {series.length > 0 && (
+                <div className="mt-4">
+                    <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-32">
+                        <defs>
+                            <linearGradient id="orgAnalyticsFill" x1="0" x2="0" y1="0" y2="1">
+                                <stop offset="0%" stopColor="rgb(0,82,255)" stopOpacity="0.4" />
+                                <stop offset="100%" stopColor="rgb(0,82,255)" stopOpacity="0" />
+                            </linearGradient>
+                        </defs>
+                        <polyline
+                            fill="none"
+                            stroke="rgb(0,82,255)"
+                            strokeWidth="2"
+                            points={points}
+                        />
+                        <polygon
+                            fill="url(#orgAnalyticsFill)"
+                            points={`${pad},${H - pad} ${points} ${W - pad},${H - pad}`}
+                        />
+                    </svg>
+                    <div className="flex justify-between text-[10px] text-muted-foreground mt-1">
+                        <span>{series[0]?.day}</span>
+                        <span>{series[series.length - 1]?.day}</span>
+                    </div>
+                </div>
+            )}
         </div>
     );
 }

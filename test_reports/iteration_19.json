@@ -1,0 +1,48 @@
+{
+  "summary": "Iter19 — Batch C: Recurring events, Duplicate, Poster PNG/PDF, Org analytics v2. Backend pytest 5/7 PASS (test_iter19_batch_c.py). PASS: (1) POST /api/events/{id}/duplicate w/ admin JWT returns new event id != source, title='Copy of ...', start/end blanked, status='approved', appears in GET /api/events; (2) GET /api/events/{id}/poster.png returns image/png with \\x89PNG magic bytes, ~64KB; (3) GET /api/events/{id}/poster.pdf returns application/pdf starting with %PDF; (4) GET /api/orgs/{slug}/analytics?days=30 returns correct shape (30-day series w/ event_views/org_views/share_clicks/volunteer_contacts + totals + best_event); POST /api/analytics/track {kind:event_view, entity_id, org_slug} bumps totals and populates best_event. FAIL (2 tests, same root cause): PATCH /api/events/{id} SILENTLY DROPS recurrence — Pydantic model EventPatch (server.py:1711) does not declare a `recurrence` field, and it has `extra='ignore'`. Therefore the ENTIRE recurring-events feature is broken end-to-end (backend AND EventEdit.jsx UI). The frontend UI is fully wired (ee-recurrence-freq with 4 options, ee-recurrence-until, disabled/enabled toggle correct, Save button calls updateEvent w/ correct payload) — but backend drops the field silently and returns recurrence:null. As a consequence, GET /api/events?expand_recurring=true never produces virtual instances, and GET /api/events/{parent}__YYYY-MM-DD returns 404. Frontend UI test PASS: (a) /organisation-dashboard org-analytics-panel + org-analytics-range-7/30/90 all present; (b) 8 event cards each have dash-event-duplicate-<id>, dash-event-poster-png-<id>, dash-event-poster-pdf-<id>, dash-event-edit-<id>; (c) PNG href = /api/events/<id>/poster.png ✓ ; PDF href = /api/events/<id>/poster.pdf ✓ ; (d) clicking dash-event-duplicate-<id> calls backend and navigates to /edit-event/<newId> (newId != srcId) ✓ ; (e) on /edit-event page ee-recurrence-freq present w/ 4 options {none, weekly, biweekly, monthly} & ee-recurrence-until disabled when freq=none, enabled otherwise ✓. Toast 'Event duplicated' code confirmed via source review (OrgDashboard.jsx:547).",
+  "backend_issues": {
+    "critical": [
+      {"endpoint": "PATCH /api/events/{event_id}", "issue": "EventPatch Pydantic model (server.py:1711) is missing the `recurrence` field. Since model_config has extra='ignore', any recurrence supplied in the PATCH body is silently discarded. This breaks the ENTIRE recurring-events feature end-to-end — frontend EventEdit.jsx sends the field but backend never persists it, so no virtual instances are ever expanded and `/events/{parent}__YYYY-MM-DD` always 404s. FIX: add `recurrence: Optional[EventRecurrence] = None` to EventPatch. Also consider explicit None handling if you want the caller to be able to clear recurrence.", "priority": "CRITICAL"}
+    ],
+    "minor": [
+      {"endpoint": "GET /api/events/{event_id} (virtual)", "issue": "Instance lookup requires exact date match on inst['start'][:10] which uses timezone-aware ISO strings — if the parent start is late-UTC evening, the [:10] slice may fall on the next local day. In practice the recurrence uses timedelta(days=7/14/30) so all instances share the same time-of-day and the slice is consistent; still, worth an integration test with events straddling midnight UTC."},
+      {"endpoint": "GET /api/orgs/{slug}/analytics", "issue": "Endpoint is fully public — anyone can read any org's analytics totals + best_event. Acceptable for MVP transparency, but consider gating behind X-Org-Auth if any of the fields ever become sensitive (e.g. volunteer_contacts count)."},
+      {"endpoint": "_expand_recurring_event", "issue": "'monthly' frequency uses timedelta(days=30) — will drift ~5 days/year and skip Feb dates. Acceptable per PRD comment 'approximation; MVP' but should be flagged in the UI so orgs aren't surprised."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [
+      {"flow": "Save recurrence on /edit-event/<id>", "issue": "UI is wired correctly, but Save → PATCH /api/events/<id> body includes {recurrence:{freq:'weekly', until:...}} which backend drops silently (see backend critical bug above). User will click Save, see 'Saved!' toast, but recurrence is not persisted. No error shown. This is entirely a backend-side fix — no frontend changes required once EventPatch model is fixed.", "affected_selectors": ["ee-recurrence-freq", "ee-recurrence-until"]}
+    ],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter19_batch_c.py",
+    "/app/test_reports/pytest/iter19_results.xml"
+  ],
+  "action_items": [
+    "CRITICAL: Add `recurrence: Optional[EventRecurrence] = None` to EventPatch (server.py:1711). Verify PATCH /api/events/<id> with body {recurrence:{freq:'weekly', until:'2026-12-31T23:59:59Z'}} returns recurrence in the response and GET /api/events (default expand_recurring=true) then returns master + weekly instances with id='<parent>__YYYY-MM-DD' and parent_id set.",
+    "Also verify PATCH with {recurrence:null} clears recurrence (may need custom handling if using exclude_none=True in update payload — currently the endpoint uses `patch.model_dump(exclude_none=True)` which will drop a null recurrence and prevent clearing).",
+    "Consider whether monthly recurrence step should use calendar-month math (relativedelta) instead of timedelta(days=30) — will impact multi-year recurrences."
+  ],
+  "critical_code_review_comments": [
+    "server.py: EventPatch missing recurrence — a partial-update model must include every field that the full model has if the UI is supposed to be able to edit it. Consider auto-generating EventPatch from Event via `create_model` or `make_optional` helper so future field additions don't get missed.",
+    "server.py: `update_event` uses `patch.model_dump(exclude_none=True)` — this means null values can never be sent to clear a field. For fields like recurrence/image where empty-clear is meaningful, this is a UX gap. Alternative: use `model_dump(exclude_unset=True)` (needs Pydantic v2 semantics).",
+    "server.py: `_expand_recurring_event` monthly=timedelta(days=30) — noted MVP but definitely fragile.",
+    "server.py: virtual event id parsing uses '__' as delimiter — event ids are UUIDv4 which never contain '__', but if any legacy imported event has '__' in its id (unlikely), lookup will break silently. Consider a stricter regex check.",
+    "OrgDashboard.jsx: uses `window.location.assign` after duplicate instead of react-router `navigate()` — causes full page reload rather than SPA nav. Minor, but inconsistent with other flows.",
+    "OrgDashboard.jsx: poster PNG/PDF links open in new tab (target=_blank) — good UX, but no download attribute. Some browsers will render PDF inline instead of downloading; consider adding `download` attribute for consistent behaviour.",
+    "server.py past 4800 lines — long overdue for module split (carried from prior iterations)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter19_batch_c.py (new)"
+  ],
+  "success_rate": {"backend": "71% (5/7 — 2 failures caused by single root-cause bug: missing recurrence field on EventPatch)", "frontend": "100% (all UI test-ids + duplicate flow + recurrence controls verified — but recurrence Save is a no-op due to backend bug)"},
+  "test_credentials": "admin@blackrodnow.co.uk / BlackrodAdmin!2026 (verified working)",
+  "seed_data_creation": "Created TEST_Batch C Source Event via POST /api/events (as admin), cleaned up in fixture teardown. Duplicated evt-light-switchon-2026 during frontend test → deleted the 'Copy of' clone + reset recurrence on the parent in post-run cleanup.",
+  "retest_needed": true,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "After main agent adds `recurrence: Optional[EventRecurrence] = None` to EventPatch model in server.py:1711, rerun `pytest /app/backend/tests/test_iter19_batch_c.py -v` — the 2 failing tests (TestRecurring.test_patch_recurrence_and_expand and TestRecurring.test_get_instance_by_virtual_id) should turn green. Also worth adding a small assertion that PATCH with {recurrence:null} clears recurrence — currently blocked by exclude_none=True in update_event().",
+  "rca_of_the_issue": "server.py line 1711 defines `class EventPatch(BaseModel)` for partial updates with model_config=ConfigDict(extra='ignore'). It lists every optional field EXCEPT `recurrence`. Meanwhile EventEdit.jsx line 106-113 constructs a PATCH body with `recurrence:{freq, until}`. Because Pydantic strips unknown fields when extra='ignore', the recurrence key never reaches the DB. GET /api/events/<id> then returns recurrence:null, and _expand_recurring_event early-returns [ev] (no expansion). The `parent__date` virtual GET route returns 404 because the parent has no recurrence to expand. Repro: 1) admin JWT login; 2) POST /api/events with valid payload → get id; 3) PATCH /api/events/{id} body {recurrence:{freq:'weekly',until:'2026-12-31T23:59:59Z'}} — response shows recurrence:null; 4) GET /api/events?expand_recurring=true — only the master event appears; 5) GET /api/events/{id}__2026-05-03 → 404. Fix: add `recurrence: Optional[EventRecurrence] = None` to EventPatch."
+}

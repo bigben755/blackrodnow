@@ -46,6 +46,8 @@ export default function EventEdit() {
             contactPhone: event.contactPhone || "",
             image: event.image || "",
             status: event.status || "pending",
+            recurrenceFreq: event.recurrence?.freq || "none",
+            recurrenceUntil: event.recurrence?.until ? String(event.recurrence.until).slice(0, 10) : "",
         });
     }, [event]);
 
@@ -101,6 +103,14 @@ export default function EventEdit() {
                 contactEmail: form.contactEmail,
                 contactPhone: form.contactPhone,
                 image: form.image,
+                recurrence: form.recurrenceFreq && form.recurrenceFreq !== "none"
+                    ? {
+                        freq: form.recurrenceFreq,
+                        until: form.recurrenceUntil
+                            ? new Date(`${form.recurrenceUntil}T23:59:59`).toISOString()
+                            : null,
+                    }
+                    : null,
                 ...(role === "admin" ? { status: form.status } : {}),
             }, event.orgSlug);
             toast.success("Event updated");
@@ -206,6 +216,34 @@ export default function EventEdit() {
                 <Field label="Poster / image URL">
                     <input data-testid="ee-image" value={form.image} onChange={set("image")} className={inp} placeholder="https://" />
                 </Field>
+
+                {/* Recurrence — one entry that repeats (great for weekly clubs / bingo / prayer) */}
+                <div className="rounded-2xl border border-border bg-surface p-4">
+                    <div className="text-xs font-black uppercase tracking-wider text-primary">Repeat this event</div>
+                    <p className="text-xs text-muted-foreground mt-1">
+                        Set once, appears every week / fortnight / month in the calendar. Edit here to update all future instances.
+                    </p>
+                    <div className="mt-3 grid sm:grid-cols-2 gap-3">
+                        <Field label="Frequency">
+                            <select data-testid="ee-recurrence-freq" value={form.recurrenceFreq} onChange={set("recurrenceFreq")} className={inp}>
+                                <option value="none">Doesn't repeat</option>
+                                <option value="weekly">Every week</option>
+                                <option value="biweekly">Every 2 weeks</option>
+                                <option value="monthly">Every month (approx.)</option>
+                            </select>
+                        </Field>
+                        <Field label="Repeat until (optional)">
+                            <input
+                                data-testid="ee-recurrence-until"
+                                type="date"
+                                value={form.recurrenceUntil}
+                                onChange={set("recurrenceUntil")}
+                                disabled={form.recurrenceFreq === "none"}
+                                className={inp}
+                            />
+                        </Field>
+                    </div>
+                </div>
 
                 {isAdmin && (
                     <Field label="Status (super admin only)">

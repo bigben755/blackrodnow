@@ -575,6 +575,13 @@ class Organisation(BaseModel):
     updated_at: str = Field(default_factory=now_iso)
 
 
+class EventRecurrence(BaseModel):
+    """Simple weekly / biweekly / monthly recurrence with an end cap."""
+    freq: Literal["none", "weekly", "biweekly", "monthly"] = "none"
+    until: Optional[str] = None  # ISO date/datetime — inclusive upper bound
+    count: Optional[int] = None  # OR a maximum number of instances (capped at 60)
+
+
 class Event(BaseModel):
     model_config = ConfigDict(extra="ignore")
     id: str = Field(default_factory=new_id)
@@ -595,6 +602,7 @@ class Event(BaseModel):
     image: str = ""
     featured: bool = False
     status: Literal["approved", "pending", "rejected"] = "pending"
+    recurrence: Optional[EventRecurrence] = None
 
 
 class FeedPost(BaseModel):
@@ -1182,10 +1190,59 @@ async def admin_impersonate_org(
 
 
 # ─────────── Events ───────────
+def _expand_recurring_event(ev: Dict[str, Any], horizon_days: int = 180) -> List[Dict[str, Any]]:
+    """Return a list of virtual instances of a recurring event within
+    `horizon_days` from now. The original event is included as instance #0.
+    Non-recurring events are returned as-is."""
+    rec = ev.get("recurrence")
+    if not rec or (rec.get("freq") or "none") == "none":
+        return [ev]
+    try:
+        start = datetime.fromisoformat((ev.get("start") or "").replace("Z", "+00:00"))
+        end = datetime.fromisoformat((ev.get("end") or ev.get("start") or "").replace("Z", "+00:00"))
+    except Exception:
+        return [ev]
+    duration = end - start
+    step = {
+        "weekly": timedelta(days=7),
+        "biweekly": timedelta(days=14),
+        "monthly": timedelta(days=30),  # approximation; MVP
+    }.get(rec.get("freq"))
+    if not step:
+        return [ev]
+    horizon = datetime.now(timezone.utc) + timedelta(days=horizon_days)
+    try:
+        until = datetime.fromisoformat(rec.get("until").replace("Z", "+00:00")) if rec.get("until") else horizon
+    except Exception:
+        until = horizon
+    upper = min(until, horizon)
+    max_count = min(int(rec.get("count") or 60), 60)
+    out: List[Dict[str, Any]] = []
+    cur = start
+    n = 0
+    while cur <= upper and n < max_count:
+        instance = {**ev}
+        instance["start"] = cur.isoformat()
+        instance["end"] = (cur + duration).isoformat()
+        if n > 0:
+            instance["id"] = f"{ev['id']}__{cur.date().isoformat()}"
+            instance["parent_id"] = ev["id"]
+            instance["is_recurrence_instance"] = True
+        out.append(instance)
+        cur += step
+        n += 1
+    return out
+
+
 @api.get("/events")
-async def list_events(upcoming_only: bool = False, include_pending: bool = False):
+async def list_events(upcoming_only: bool = False, include_pending: bool = False, expand_recurring: bool = True):
     q: Dict[str, Any] = {} if include_pending else {"status": {"$ne": "pending"}}
     events = await db.events.find(q, {"_id": 0}).to_list(2000)
+    if expand_recurring:
+        expanded: List[Dict[str, Any]] = []
+        for e in events:
+            expanded.extend(_expand_recurring_event(e))
+        events = expanded
     if upcoming_only:
         nowi = now_iso()
         events = [e for e in events if (e.get("end") or e.get("start")) >= nowi]
@@ -1194,10 +1251,54 @@ async def list_events(upcoming_only: bool = False, include_pending: bool = False
 
 @api.get("/events/{event_id}")
 async def get_event(event_id: str):
+    # Recurring virtual ids look like `<parent>__YYYY-MM-DD` — look up the parent
+    # and return an on-the-fly instance stamped with the correct start/end.
+    if "__" in event_id:
+        parent_id, date_part = event_id.split("__", 1)
+        parent = await db.events.find_one({"id": parent_id}, {"_id": 0})
+        if not parent:
+            raise HTTPException(404, "Event not found")
+        for inst in _expand_recurring_event(parent):
+            if inst.get("id") == event_id or (inst.get("start", "")[:10] == date_part and inst.get("parent_id") == parent_id):
+                return inst
+        raise HTTPException(404, "Event instance not found")
     e = await db.events.find_one({"id": event_id}, {"_id": 0})
     if not e:
         raise HTTPException(404, "Event not found")
     return e
+
+
+@api.post("/events/{event_id}/duplicate")
+async def duplicate_event(
+    event_id: str,
+    request: Request,
+    authorization: Optional[str] = Header(None),
+    admin_code: Optional[str] = Header(None, alias="X-Admin-Code"),
+    org_auth: Optional[str] = Header(None, alias="X-Org-Auth"),
+):
+    """One-click clone of an event. Same fields, blanked start/end (org fills
+    the new date), status='pending' (or 'approved' if admin). Returns the
+    saved new event."""
+    src = await db.events.find_one({"id": event_id}, {"_id": 0})
+    if not src:
+        # Also allow duplicating a recurring instance — clone the parent.
+        if "__" in event_id:
+            src = await db.events.find_one({"id": event_id.split("__", 1)[0]}, {"_id": 0})
+        if not src:
+            raise HTTPException(404, "Event not found")
+    role = _require_org_write_access(src["orgSlug"], org_auth=org_auth, admin_code=admin_code)
+    new_ev = {**src}
+    new_ev["id"] = new_id()
+    new_ev["title"] = f"Copy of {src.get('title','')}".strip()
+    new_ev["start"] = ""
+    new_ev["end"] = ""
+    new_ev["featured"] = False
+    new_ev["recurrence"] = None
+    new_ev["status"] = "approved" if role == "admin" else "pending"
+    new_ev.pop("parent_id", None)
+    new_ev.pop("is_recurrence_instance", None)
+    await db.events.insert_one(new_ev)
+    return {k: v for k, v in new_ev.items() if k != "_id"}
 
 
 # ─────────── Event OG page (rich Facebook/LinkedIn/WhatsApp previews) ───────────
@@ -2291,6 +2392,257 @@ async def admin_impact_pdf(
         media_type="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+# ─────────── Auto-generated poster (per event) ───────────
+def _draw_event_poster_png(event: dict, size: int = 1080) -> bytes:
+    from io import BytesIO
+    from PIL import Image, ImageDraw, ImageFont
+    import qrcode
+
+    W = H = size
+    BLUE = (0, 82, 255)
+    LIME = (210, 255, 0)
+    INK = (10, 10, 24)
+
+    img = Image.new("RGB", (W, H), INK)
+    draw = ImageDraw.Draw(img)
+
+    # Background gradient (blue → dark)
+    for y in range(H):
+        t = y / H
+        r = int(BLUE[0] * (1 - t) + 5 * t)
+        g = int(BLUE[1] * (1 - t) + 8 * t)
+        b = int(BLUE[2] * (1 - t) + 26 * t)
+        draw.line([(0, y), (W, y)], fill=(r, g, b))
+
+    def _font(sz):
+        try:
+            return ImageFont.truetype("/etc/alternatives/fonts-japanese-gothic.ttf", sz)
+        except Exception:
+            return ImageFont.load_default(size=sz) if hasattr(ImageFont, "load_default") else ImageFont.load_default()
+
+    pad = 72
+    # Brand strip
+    draw.rectangle([pad, pad, pad + 220, pad + 44], fill=LIME)
+    draw.text((pad + 16, pad + 8), "BLACKROD NOW", fill=INK, font=_font(22))
+
+    # Category badge
+    cat = (event.get("category") or "Community").upper()
+    draw.text((pad, pad + 84), cat, fill=LIME, font=_font(22))
+
+    # Title (wrap)
+    title = (event.get("title") or "").strip()[:110]
+    title_font = _font(76)
+    words = title.split()
+    lines: List[str] = []
+    cur = ""
+    max_w = W - 2 * pad
+    for w in words:
+        candidate = (cur + " " + w).strip()
+        if draw.textlength(candidate, font=title_font) <= max_w:
+            cur = candidate
+        else:
+            if cur:
+                lines.append(cur)
+            cur = w
+    if cur:
+        lines.append(cur)
+    y = pad + 140
+    for ln in lines[:4]:
+        draw.text((pad, y), ln, fill="white", font=title_font)
+        y += 88
+
+    # Date + time
+    try:
+        start = datetime.fromisoformat((event.get("start") or "").replace("Z", "+00:00"))
+        when = start.strftime("%A %d %B · %H:%M")
+    except Exception:
+        when = event.get("start", "")
+    y += 20
+    draw.text((pad, y), when, fill=LIME, font=_font(36))
+    y += 56
+
+    # Venue
+    venue = event.get("venue") or ""
+    if venue:
+        draw.text((pad, y), venue, fill="white", font=_font(32))
+        y += 46
+    address = event.get("address") or ""
+    if address:
+        draw.text((pad, y), address, fill=(200, 200, 220), font=_font(24))
+        y += 44
+
+    # Cost / Age chips
+    chips = []
+    if event.get("cost"): chips.append(event["cost"])
+    if event.get("age"): chips.append(event["age"])
+    if event.get("accessibility"): chips.append(event["accessibility"][:40])
+    chip_x = pad
+    chip_y = H - 220
+    for chip in chips[:3]:
+        w = int(draw.textlength(chip, font=_font(24))) + 40
+        draw.rounded_rectangle([chip_x, chip_y, chip_x + w, chip_y + 44], radius=22, fill=(255, 255, 255, 40), outline=LIME, width=2)
+        draw.text((chip_x + 20, chip_y + 8), chip, fill="white", font=_font(24))
+        chip_x += w + 12
+
+    # QR code linking to the event page
+    site_url = (os.environ.get("PUBLIC_URL") or PUBLIC_URL).rstrip("/")
+    event_url = f"{site_url}/events/{event.get('id')}" if event.get("id") else site_url
+    qr = qrcode.QRCode(border=2, box_size=8)
+    qr.add_data(event_url)
+    qr.make(fit=True)
+    qr_img = qr.make_image(fill_color="white", back_color=(0, 82, 255)).convert("RGB")
+    qr_img = qr_img.resize((176, 176))
+    img.paste(qr_img, (W - pad - 176, H - pad - 176))
+    draw.text((W - pad - 176, H - pad - 200), "SCAN TO OPEN", fill=LIME, font=_font(18))
+
+    # Footer
+    draw.text((pad, H - pad - 40), "blackrodnow.co.uk · Made in Blackrod", fill=(220, 220, 240), font=_font(20))
+
+    buf = BytesIO()
+    img.save(buf, format="PNG", optimize=True)
+    return buf.getvalue()
+
+
+def _draw_event_poster_pdf(event: dict) -> bytes:
+    """A4 poster — reuse the PNG as a full-bleed image inside a PDF."""
+    from io import BytesIO
+    from reportlab.lib.pagesizes import A4
+    from reportlab.pdfgen import canvas
+    from reportlab.lib.utils import ImageReader
+    from PIL import Image
+    png = _draw_event_poster_png(event, size=1600)
+    img = Image.open(BytesIO(png))
+    buf = BytesIO()
+    c = canvas.Canvas(buf, pagesize=A4)
+    W, H = A4
+    # Fit the square poster into A4 (centre it).
+    side = min(W, H) - 30
+    x = (W - side) / 2
+    y = (H - side) / 2
+    c.drawImage(ImageReader(img), x, y, width=side, height=side)
+    c.showPage()
+    c.save()
+    return buf.getvalue()
+
+
+async def _fetch_event_for_poster(event_id: str) -> dict:
+    if "__" in event_id:
+        parent_id, _ = event_id.split("__", 1)
+        parent = await db.events.find_one({"id": parent_id}, {"_id": 0})
+        if not parent:
+            raise HTTPException(404, "Event not found")
+        for inst in _expand_recurring_event(parent):
+            if inst.get("id") == event_id:
+                return inst
+        raise HTTPException(404, "Event instance not found")
+    ev = await db.events.find_one({"id": event_id}, {"_id": 0})
+    if not ev:
+        raise HTTPException(404, "Event not found")
+    return ev
+
+
+@api.get("/events/{event_id}/poster.png")
+async def event_poster_png(event_id: str):
+    ev = await _fetch_event_for_poster(event_id)
+    png = await asyncio.to_thread(_draw_event_poster_png, ev)
+    fname = f"blackrod-now-{(ev.get('title') or 'event').lower().replace(' ','-')[:40]}.png"
+    return Response(
+        content=png,
+        media_type="image/png",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )
+
+
+@api.get("/events/{event_id}/poster.pdf")
+async def event_poster_pdf(event_id: str):
+    ev = await _fetch_event_for_poster(event_id)
+    pdf = await asyncio.to_thread(_draw_event_poster_pdf, ev)
+    fname = f"blackrod-now-{(ev.get('title') or 'event').lower().replace(' ','-')[:40]}.pdf"
+    return Response(
+        content=pdf,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )
+
+
+# ─────────── Org dashboard analytics uplift ───────────
+@api.get("/orgs/{slug}/analytics")
+async def org_analytics_v2(slug: str, days: int = 30):
+    """Per-day series for org's own reach + best-performing event over the
+    window. Public (any visitor can see basic reach) — the org dashboard uses
+    these numbers to celebrate what's working."""
+    org = await _find_org(slug)
+    days = max(1, min(int(days), 180))
+    now = datetime.now(timezone.utc)
+    since = (now - timedelta(days=days)).isoformat()
+
+    # Bucket analytics events by day + kind for this org's content.
+    pipeline = [
+        {"$match": {"created_at": {"$gte": since}, "org_slug": slug}},
+        {"$group": {
+            "_id": {"day": {"$substr": ["$created_at", 0, 10]}, "kind": "$kind"},
+            "n": {"$sum": "$count"},
+        }},
+        {"$sort": {"_id.day": 1}},
+    ]
+    rows = await db.analytics_events.aggregate(pipeline).to_list(4000)
+    days_map: Dict[str, Dict[str, int]] = {}
+    for r in rows:
+        day = r["_id"]["day"]
+        kind = r["_id"]["kind"] or "misc"
+        days_map.setdefault(day, {})[kind] = r["n"]
+
+    series: List[Dict[str, Any]] = []
+    for i in range(days):
+        d = (now - timedelta(days=days - 1 - i)).date().isoformat()
+        entry = days_map.get(d, {})
+        series.append({
+            "day": d,
+            "event_views": entry.get("event_view", 0),
+            "org_views": entry.get("org_view", 0),
+            "share_clicks": entry.get("share_click", 0),
+            "volunteer_contacts": entry.get("volunteer_contact", 0),
+        })
+
+    # Totals + best-performing event
+    total_event_views = sum(s["event_views"] for s in series)
+    total_org_views = sum(s["org_views"] for s in series)
+    total_shares = sum(s["share_clicks"] for s in series)
+
+    best_pipeline = [
+        {"$match": {
+            "created_at": {"$gte": since},
+            "org_slug": slug,
+            "kind": "event_view",
+            "entity_id": {"$ne": None},
+        }},
+        {"$group": {"_id": "$entity_id", "views": {"$sum": "$count"}}},
+        {"$sort": {"views": -1}},
+        {"$limit": 1},
+    ]
+    best_rows = await db.analytics_events.aggregate(best_pipeline).to_list(1)
+    best: Optional[Dict[str, Any]] = None
+    if best_rows:
+        ev = await db.events.find_one({"id": best_rows[0]["_id"]}, {"_id": 0, "id": 1, "title": 1, "start": 1})
+        if ev:
+            best = {"id": ev["id"], "title": ev.get("title", ""), "start": ev.get("start", ""), "views": best_rows[0]["views"]}
+
+    return {
+        "slug": slug,
+        "org_name": org.get("name", ""),
+        "window_days": days,
+        "series": series,
+        "totals": {
+            "event_views": total_event_views,
+            "org_views": total_org_views,
+            "share_clicks": total_shares,
+        },
+        "best_event": best,
+    }
+
+
 
 
 
