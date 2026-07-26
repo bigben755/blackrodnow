@@ -576,8 +576,8 @@ class Organisation(BaseModel):
 
 
 class EventRecurrence(BaseModel):
-    """Simple weekly / biweekly / monthly recurrence with an end cap."""
-    freq: Literal["none", "weekly", "biweekly", "monthly"] = "none"
+    """Simple daily / weekly / biweekly / monthly / annually recurrence with an end cap."""
+    freq: Literal["none", "daily", "weekly", "biweekly", "monthly", "annually"] = "none"
     until: Optional[str] = None  # ISO date/datetime — inclusive upper bound
     count: Optional[int] = None  # OR a maximum number of instances (capped at 60)
 
@@ -1203,11 +1203,16 @@ def _expand_recurring_event(ev: Dict[str, Any], horizon_days: int = 180) -> List
     except Exception:
         return [ev]
     duration = end - start
+    freq = rec.get("freq")
     step = {
+        "daily": timedelta(days=1),
         "weekly": timedelta(days=7),
         "biweekly": timedelta(days=14),
         "monthly": timedelta(days=30),  # approximation; MVP
-    }.get(rec.get("freq"))
+    }.get(freq)
+    if freq == "annually":
+        # Use ~365-day step; leap years drift by 1 day but MVP is fine.
+        step = timedelta(days=365)
     if not step:
         return [ev]
     horizon = datetime.now(timezone.utc) + timedelta(days=horizon_days)

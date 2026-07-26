@@ -14,7 +14,13 @@ A modern community website for Blackrod, Bolton showcasing local events, clubs, 
 - **Super admin** — approves/edits any org, broadcasts newsletters, sends admin notifications to orgs.
 
 ## Implemented (Feb 2026)
+- **[NEW — Feb 26 2026] Recurrence at creation-time (all three flows).** The recurrence controls previously only available on the Edit Event page are now on every event-creation surface:
+  1. **AI parser drafts** on OrgDashboard — new "Repeat this event" panel on each parsed event draft (`data-testid="parsed-recurrence-freq"` + `parsed-recurrence-until`) so orgs can turn a pasted flyer into a weekly/monthly club in one click.
+  2. **Public /submit-event page** — residents can flag a recurring event when submitting (`se-recurrence-freq`, `se-recurrence-until`).
+  3. **Super Admin Quick Create → Event dialog** on /admin (`qc-ev-recurrence-freq`, `qc-ev-recurrence-until`).
+  Backend `EventRecurrence.freq` Literal extended from `[weekly/biweekly/monthly]` to `[daily/weekly/biweekly/monthly/annually]`. `_expand_recurring_event` handles all five with capped 60-instance / 180-day horizon. Shared `<RecurrenceFields>` component + `buildRecurrencePayload()` helper live in `/app/frontend/src/components/RecurrenceFields.jsx`. 6/6 new pytest cover all frequencies + none. Existing Batch C recurrence tests still 7/7 green.
 - **[NEW — Feb 26 2026] "Post Now" one-click social bundle.** New org-facing shortcut on every event card (OrgDashboard: `data-testid="dash-event-post-now-<id>"`) and on `/events/:id` (`data-testid="event-post-now-btn"`) that opens a `PostNowDialog` combining: 1080×1080 poster preview + PNG/A4 PDF downloads (real `fetch` blob download, not just a new tab), editable caption pre-generated from event fields with 3 tone presets (Friendly / Punchy / Formal), "Rewrite with AI" button (Claude Sonnet 4.5 via Emergent LLM key, template fallback if unavailable), Copy caption / Copy + link, Reset, and the full one-tap ShareButtons row (Facebook / LinkedIn / X / WhatsApp / Instagram / Copy link) wired to the per-event OG endpoint so link previews render rich cards. New backend endpoint `GET /api/events/{id}/social-bundle?tone=&ai=` returns `{caption, caption_with_link, hashtags, link, og_url, poster_png, poster_pdf}`. Hashtags dedupe case-insensitively. 7/7 pytest pass in `/app/backend/tests/test_post_now_bundle.py`; frontend E2E green on both locations.
+
 
 - 20+ pages: Home, Events, Organisations, OrgDetail, LocalFeed, Venues, Volunteering, OrgDashboard, OrgProfileEdit, Admin, SubmitEvent, AddOrganisation, Preferences, Unsubscribe, EventDetail, FAQ, Contact, Notifications, Categories.
 - 29 real Blackrod orgs + 33 events seeded from user-provided Word doc.

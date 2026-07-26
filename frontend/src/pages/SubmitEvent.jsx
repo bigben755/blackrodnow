@@ -5,6 +5,7 @@ import NewsletterSection from "@/components/NewsletterSection";
 import { CheckCircle2, Calendar, Image as ImageIcon, ArrowRight } from "lucide-react";
 import { toast } from "sonner";
 import { useNavigate } from "react-router-dom";
+import RecurrenceFields, { buildRecurrencePayload } from "@/components/RecurrenceFields";
 
 const initial = {
     title: "",
@@ -23,6 +24,8 @@ const initial = {
     age: "All ages",
     accessibility: "",
     image: "",
+    recurrenceFreq: "none",
+    recurrenceUntil: "",
     consent: false,
 };
 
@@ -86,6 +89,7 @@ export default function SubmitEvent() {
                 contactEmail: form.contactEmail,
                 contactPhone: form.contactPhone,
                 image: form.image || "https://images.unsplash.com/photo-1533174072545-7a4b6ad7a6c3?w=1200&q=80",
+                recurrence: buildRecurrencePayload(form.recurrenceFreq, form.recurrenceUntil),
             });
             localStorage.removeItem(DRAFT_KEY);
             setSubmitted(true);
@@ -214,6 +218,15 @@ export default function SubmitEvent() {
                         <input data-testid="se-image" value={form.image} onChange={set("image")} className={`${inp} pl-9`} placeholder="https://" />
                     </div>
                 </Field>
+
+                <RecurrenceFields
+                    freq={form.recurrenceFreq}
+                    until={form.recurrenceUntil}
+                    onFreqChange={(v) => setForm((f) => ({ ...f, recurrenceFreq: v }))}
+                    onUntilChange={(v) => setForm((f) => ({ ...f, recurrenceUntil: v }))}
+                    testIdPrefix="se-recurrence"
+                    inputClassName={inp}
+                />
 
                 <label className="flex items-start gap-2 text-sm">
                     <input

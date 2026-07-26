@@ -14,6 +14,7 @@ import {
     Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter,
 } from "@/components/ui/dialog";
 import AdminEmailCompose from "@/components/AdminEmailCompose";
+import RecurrenceFields, { buildRecurrencePayload } from "@/components/RecurrenceFields";
 
 export default function Admin() {
     const {
@@ -1622,6 +1623,7 @@ function QuickAddContentCard({ orgs, onCreated }) {
         accessibility: "", booking: "",
         contactEmail: "", contactPhone: "", image: "",
         status: "approved",
+        recurrenceFreq: "none", recurrenceUntil: "",
     });
     const [feedForm, setFeedForm] = useState({
         orgSlug: firstOrgSlug, type: "update", title: "", body: "", image: "",
@@ -1675,6 +1677,7 @@ function QuickAddContentCard({ orgs, onCreated }) {
                 contactPhone: eventForm.contactPhone,
                 image: eventForm.image || "https://images.unsplash.com/photo-1533174072545-7a4b6ad7a6c3?w=1200&q=80",
                 status: eventForm.status,
+                recurrence: buildRecurrencePayload(eventForm.recurrenceFreq, eventForm.recurrenceUntil),
             });
             toast.success("Event published");
             setEventForm((prev) => ({
@@ -1683,6 +1686,7 @@ function QuickAddContentCard({ orgs, onCreated }) {
                 venue: "", address: "", description: "",
                 accessibility: "", booking: "", contactEmail: "",
                 contactPhone: "", image: "",
+                recurrenceFreq: "none", recurrenceUntil: "",
             }));
             setEventOpen(false);
             onCreated?.();
@@ -1905,6 +1909,14 @@ function QuickAddContentCard({ orgs, onCreated }) {
                                     <option value="pending">Save as pending</option>
                                 </select>
                             </Field>
+                            <RecurrenceFields
+                                freq={eventForm.recurrenceFreq}
+                                until={eventForm.recurrenceUntil}
+                                onFreqChange={(v) => setEventForm((p) => ({ ...p, recurrenceFreq: v }))}
+                                onUntilChange={(v) => setEventForm((p) => ({ ...p, recurrenceUntil: v }))}
+                                testIdPrefix="qc-ev-recurrence"
+                                inputClassName={inp}
+                            />
                         </div>
                         <DialogFooter>
                             <button type="button" onClick={() => setEventOpen(false)} className="px-4 py-2 rounded-full border border-border text-sm font-semibold">Cancel</button>

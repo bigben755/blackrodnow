@@ -16,6 +16,7 @@ import {
 } from "@/components/ui/dialog";
 import ShareButtons from "@/components/ShareButtons";
 import PostNowDialog from "@/components/PostNowDialog";
+import { buildRecurrencePayload } from "@/components/RecurrenceFields";
 
 const EXAMPLE = `Summer Fair! Saturday 14 June, 11am-4pm at Blackrod Community Centre. Stalls, bouncy castles, raffle, hot food and live music. Free entry.
 
@@ -118,7 +119,7 @@ export default function OrgDashboard() {
         catch { toast.error("Copy failed"); }
     };
 
-    const publishEvent = async (it) => {
+    const publishEvent = async (it, { recurrenceFreq = "none", recurrenceUntil = "" } = {}) => {
         let start;
         try {
             const d = it.date ? new Date(it.date) : new Date(Date.now() + 86400000);
@@ -151,10 +152,14 @@ export default function OrgDashboard() {
                 contactEmail: org?.email || "",
                 contactPhone: org?.phone || "",
                 image: "https://images.unsplash.com/photo-1533174072545-7a4b6ad7a6c3?w=1200&q=80",
+                recurrence: buildRecurrencePayload(recurrenceFreq, recurrenceUntil),
             });
-            toast.success("Event draft created — pending approval", {
-                description: "Use the share buttons below to post it to your socials.",
-            });
+            toast.success(
+                recurrenceFreq !== "none"
+                    ? `Recurring event draft created (${recurrenceFreq}) — pending approval`
+                    : "Event draft created — pending approval",
+                { description: "Use the share buttons below to post it to your socials." }
+            );
         } catch {
             toast.error("Couldn't create event");
         }
@@ -480,7 +485,7 @@ export default function OrgDashboard() {
                         {items.map((it, idx) => (
                             <ParsedCard
                                 key={idx} it={it}
-                                onPublishEvent={() => publishEvent(it)}
+                                onPublishEvent={(opts) => publishEvent(it, opts)}
                                 onPublishUpdate={() => publishUpdate(it)}
                                 onCopy={copy}
                             />
@@ -839,6 +844,8 @@ function NotificationDialog({ notif, org, onClose, onCopy }) {
 
 /* Parsed AI card (single item) */
 function ParsedCard({ it, onPublishEvent, onPublishUpdate, onCopy }) {
+    const [recurrenceFreq, setRecurrenceFreq] = useState("none");
+    const [recurrenceUntil, setRecurrenceUntil] = useState("");
     const shareUrl = typeof window !== "undefined"
         ? `${window.location.origin}/events`
         : "https://blackrodnow.local/events";
@@ -870,8 +877,43 @@ function ParsedCard({ it, onPublishEvent, onPublishUpdate, onCopy }) {
                 <div className="text-[10px] font-bold uppercase tracking-wider text-accent flex items-center gap-1"><Bell className="h-3 w-3" /> Notification</div>
                 <p className="mt-1 text-sm text-background/90">{it.notification_text}</p>
             </div>
+            {it.suggested_type === "event" && (
+                <div className="mt-3 rounded-2xl bg-background/5 border border-background/20 p-3">
+                    <div className="text-[10px] font-bold uppercase tracking-wider text-background/70 flex items-center gap-1">
+                        <Calendar className="h-3 w-3" /> Repeat this event
+                    </div>
+                    <div className="mt-2 grid sm:grid-cols-2 gap-2">
+                        <select
+                            data-testid="parsed-recurrence-freq"
+                            value={recurrenceFreq}
+                            onChange={(e) => setRecurrenceFreq(e.target.value)}
+                            className="w-full px-3 py-2 rounded-2xl border border-background/30 bg-background text-foreground text-xs"
+                        >
+                            <option value="none">Doesn&apos;t repeat</option>
+                            <option value="daily">Every day</option>
+                            <option value="weekly">Every week</option>
+                            <option value="biweekly">Every 2 weeks</option>
+                            <option value="monthly">Every month</option>
+                            <option value="annually">Every year</option>
+                        </select>
+                        <input
+                            data-testid="parsed-recurrence-until"
+                            type="date"
+                            value={recurrenceUntil}
+                            onChange={(e) => setRecurrenceUntil(e.target.value)}
+                            disabled={recurrenceFreq === "none"}
+                            placeholder="Until"
+                            className="w-full px-3 py-2 rounded-2xl border border-background/30 bg-background text-foreground text-xs disabled:opacity-60"
+                        />
+                    </div>
+                </div>
+            )}
             <div className="mt-3 flex flex-wrap gap-2">
-                <button data-testid="parsed-publish-event" onClick={onPublishEvent} className="inline-flex items-center gap-1 px-4 py-2 rounded-full bg-secondary text-secondary-foreground font-semibold text-xs">
+                <button
+                    data-testid="parsed-publish-event"
+                    onClick={() => onPublishEvent({ recurrenceFreq, recurrenceUntil })}
+                    className="inline-flex items-center gap-1 px-4 py-2 rounded-full bg-secondary text-secondary-foreground font-semibold text-xs"
+                >
                     <Calendar className="h-3.5 w-3.5" /> Create event
                 </button>
                 <button data-testid="parsed-publish-update" onClick={onPublishUpdate} className="inline-flex items-center gap-1 px-4 py-2 rounded-full bg-primary text-primary-foreground font-semibold text-xs">

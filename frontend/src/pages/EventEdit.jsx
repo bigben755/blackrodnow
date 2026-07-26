@@ -4,6 +4,7 @@ import { CATEGORIES } from "@/data/mockData";
 import { useNavigate, useParams, Link } from "react-router-dom";
 import { ArrowLeft, Calendar, Loader2, Save, ShieldCheck, Trash2 } from "lucide-react";
 import { toast } from "sonner";
+import RecurrenceFields from "@/components/RecurrenceFields";
 
 /**
  * Edit an existing event. Accessible to org admins (their own events) and
@@ -218,32 +219,14 @@ export default function EventEdit() {
                 </Field>
 
                 {/* Recurrence — one entry that repeats (great for weekly clubs / bingo / prayer) */}
-                <div className="rounded-2xl border border-border bg-surface p-4">
-                    <div className="text-xs font-black uppercase tracking-wider text-primary">Repeat this event</div>
-                    <p className="text-xs text-muted-foreground mt-1">
-                        Set once, appears every week / fortnight / month in the calendar. Edit here to update all future instances.
-                    </p>
-                    <div className="mt-3 grid sm:grid-cols-2 gap-3">
-                        <Field label="Frequency">
-                            <select data-testid="ee-recurrence-freq" value={form.recurrenceFreq} onChange={set("recurrenceFreq")} className={inp}>
-                                <option value="none">Doesn't repeat</option>
-                                <option value="weekly">Every week</option>
-                                <option value="biweekly">Every 2 weeks</option>
-                                <option value="monthly">Every month (approx.)</option>
-                            </select>
-                        </Field>
-                        <Field label="Repeat until (optional)">
-                            <input
-                                data-testid="ee-recurrence-until"
-                                type="date"
-                                value={form.recurrenceUntil}
-                                onChange={set("recurrenceUntil")}
-                                disabled={form.recurrenceFreq === "none"}
-                                className={inp}
-                            />
-                        </Field>
-                    </div>
-                </div>
+                <RecurrenceFields
+                    freq={form.recurrenceFreq}
+                    until={form.recurrenceUntil}
+                    onFreqChange={(v) => setForm((f) => ({ ...f, recurrenceFreq: v }))}
+                    onUntilChange={(v) => setForm((f) => ({ ...f, recurrenceUntil: v }))}
+                    testIdPrefix="ee-recurrence"
+                    inputClassName={inp}
+                />
 
                 {isAdmin && (
                     <Field label="Status (super admin only)">
