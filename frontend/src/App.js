@@ -1,13 +1,14 @@
 import React from "react";
 import "@/App.css";
 import "@/index.css";
-import { BrowserRouter, Routes, Route } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { Toaster } from "sonner";
-import { AppProvider } from "@/context/AppContext";
+import { AppProvider, useApp } from "@/context/AppContext";
 import Layout from "@/components/Layout";
 
 import Home from "@/pages/Home";
 import Events from "@/pages/Events";
+import SavedEvents from "@/pages/SavedEvents";
 import EventDetail from "@/pages/EventDetail";
 import Organisations from "@/pages/Organisations";
 import OrganisationDetail from "@/pages/OrganisationDetail";
@@ -26,6 +27,12 @@ import Unsubscribe from "@/pages/Unsubscribe";
 import OrgProfileEdit from "@/pages/OrgProfileEdit";
 import EventEdit from "@/pages/EventEdit";
 
+function RequireRole({ allowed, children }) {
+    const { role } = useApp();
+    if (!allowed.includes(role)) return <Navigate to="/" replace />;
+    return children;
+}
+
 export default function App() {
     return (
         <AppProvider>
@@ -34,6 +41,7 @@ export default function App() {
                     <Routes>
                         <Route path="/" element={<Home />} />
                         <Route path="/events" element={<Events />} />
+                        <Route path="/saved-events" element={<SavedEvents />} />
                         <Route path="/events/:id" element={<EventDetail />} />
 
                         <Route path="/organisations" element={<Organisations />} />
@@ -43,17 +51,35 @@ export default function App() {
                         />
 
                         <Route path="/submit-event" element={<SubmitEvent />} />
-                        <Route path="/edit-event/:id" element={<EventEdit />} />
+                        <Route
+                            path="/edit-event/:id"
+                            element={(
+                                <RequireRole allowed={["admin", "org"]}>
+                                    <EventEdit />
+                                </RequireRole>
+                            )}
+                        />
                         <Route path="/add-organisation" element={<AddOrganisation />} />
                         <Route path="/local-feed" element={<LocalFeed />} />
                         <Route path="/venues" element={<Venues />} />
                         <Route path="/volunteering" element={<Volunteering />} />
                         <Route path="/notifications" element={<Notifications />} />
 
-                        <Route path="/admin" element={<Admin />} />
+                        <Route
+                            path="/admin"
+                            element={(
+                                <RequireRole allowed={["admin"]}>
+                                    <Admin />
+                                </RequireRole>
+                            )}
+                        />
                         <Route
                             path="/organisation-dashboard"
-                            element={<OrgDashboard />}
+                            element={(
+                                <RequireRole allowed={["admin", "org"]}>
+                                    <OrgDashboard />
+                                </RequireRole>
+                            )}
                         />
 
                         <Route path="/faq" element={<FAQ />} />
@@ -61,7 +87,14 @@ export default function App() {
                         <Route path="/contact" element={<Contact />} />
                         <Route path="/preferences/:token" element={<Preferences />} />
                         <Route path="/unsubscribe/:token" element={<Unsubscribe />} />
-                        <Route path="/edit-organisation/:slug" element={<OrgProfileEdit />} />
+                        <Route
+                            path="/edit-organisation/:slug"
+                            element={(
+                                <RequireRole allowed={["admin", "org"]}>
+                                    <OrgProfileEdit />
+                                </RequireRole>
+                            )}
+                        />
                     </Routes>
                 </Layout>
 

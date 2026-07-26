@@ -2,12 +2,13 @@ import React, { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { useApp } from "@/context/AppContext";
 import { api } from "@/lib/api";
-import { CategoryBadge, formatDate, formatTime } from "@/components/Cards";
+import { CategoryBadge, formatDate, formatTime, Stat } from "@/components/Cards";
 import OrgAvatar from "@/components/OrgAvatar";
 import {
     Wand2, Copy, Calendar, Megaphone, Bell, Sparkles, Loader2,
     Image as ImageIcon, FileText, UploadCloud,
     Send, Edit3, Trash2, Mail, ChevronRight,
+    Eye, Users, BarChart3,
 } from "lucide-react";
 import { toast } from "sonner";
 import {
@@ -22,7 +23,19 @@ Also, Youth Football Open Day - Sunday 15 June, 10am-12:30pm at Aspull Common. A
 Community Clean-Up: Village Green, Saturday 21 June, 10am-12pm. Bags & brew provided.`;
 
 export default function OrgDashboard() {
-    const { orgs, events, addEvent, addFeedPost, activeOrgSlug, setActiveOrgSlug, refresh } = useApp();
+    const {
+        orgs,
+        events,
+        addEvent,
+        addFeedPost,
+        activeOrgSlug,
+        setActiveOrgSlug,
+        refresh,
+        role,
+        hasOrgAccess,
+        unlockOrgAccess,
+        adminCodeSession,
+    } = useApp();
 
     const [selectedOrgSlug, setSelectedOrgSlug] = useState(activeOrgSlug || orgs[0]?.slug || "");
     const [text, setText] = useState("");
@@ -31,6 +44,11 @@ export default function OrgDashboard() {
     const [notifications, setNotifications] = useState([]);
     const [docs, setDocs] = useState([]);
     const [contactOpen, setContactOpen] = useState(false);
+    const [analytics, setAnalytics] = useState(null);
+    const [orgPasswordInput, setOrgPasswordInput] = useState("");
+    const [unlockBusy, setUnlockBusy] = useState(false);
+    const [passwordBusy, setPasswordBusy] = useState(false);
+    const [passwordForm, setPasswordForm] = useState({ current: "", next: "" });
 
     useEffect(() => {
         if (!selectedOrgSlug && orgs.length) setSelectedOrgSlug(orgs[0].slug);
@@ -58,14 +76,28 @@ export default function OrgDashboard() {
             /* ignore */
         }
     };
+    const loadAnalytics = async () => {
+        if (!selectedOrgSlug) return;
+        try {
+            const result = await api.orgAnalytics(selectedOrgSlug);
+            setAnalytics(result);
+        } catch {
+            setAnalytics(null);
+        }
+    };
 
     useEffect(() => {
         loadNotifications();
         loadDocs();
+        loadAnalytics();
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [selectedOrgSlug]);
 
     const unreadCount = notifications.filter((n) => !n.read).length;
+    const metrics = analytics?.overview || {};
+    const sharePlatforms = analytics?.share_platforms_30d || [];
+    const topEvents = analytics?.top_events_30d || [];
+    const requiresOrgPassword = role === "org" && !!selectedOrgSlug && !hasOrgAccess(selectedOrgSlug);
 
     const parse = async () => {
         if (!text.trim()) return toast.error("Paste some content first");
@@ -138,6 +170,96 @@ export default function OrgDashboard() {
         } catch { toast.error("Couldn't publish"); }
     };
 
+    const unlockOrganisation = async () => {
+        if (!selectedOrgSlug) return;
+        if (!orgPasswordInput.trim()) {
+            toast.error("Enter the organisation password");
+            return;
+        }
+        setUnlockBusy(true);
+        try {
+            const result = await api.loginOrgAccess(selectedOrgSlug, { password: orgPasswordInput.trim() });
+            unlockOrgAccess(selectedOrgSlug, result?.token || "");
+            setOrgPasswordInput("");
+            toast.success("Organisation dashboard unlocked");
+        } catch (error) {
+            toast.error(error?.response?.data?.detail || "Could not unlock organisation dashboard");
+        } finally {
+            setUnlockBusy(false);
+        }
+    };
+
+    const changePassword = async () => {
+        if (!selectedOrgSlug) return;
+        if (!passwordForm.next.trim()) {
+            toast.error("Enter a new password");
+            return;
+        }
+        setPasswordBusy(true);
+        try {
+            if (role === "admin") {
+                await api.changeOrgPassword(selectedOrgSlug, {
+                    new_password: passwordForm.next.trim(),
+                    admin_code: adminCodeSession,
+                });
+                toast.success("Organisation password updated by site admin");
+            } else {
+                await api.changeOrgPassword(selectedOrgSlug, {
+                    current_password: passwordForm.current.trim(),
+                    new_password: passwordForm.next.trim(),
+                });
+                toast.success("Organisation password changed");
+            }
+            setPasswordForm({ current: "", next: "" });
+        } catch (error) {
+            toast.error(error?.response?.data?.detail || "Password update failed");
+        } finally {
+            setPasswordBusy(false);
+        }
+    };
+
+    if (requiresOrgPassword) {
+        return (
+            <div data-testid="org-dashboard-lock" className="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 py-16">
+                <div className="rounded-3xl border border-border bg-surface p-8">
+                    <h1 className="font-display font-black text-3xl">Organisation access required</h1>
+                    <p className="mt-2 text-sm text-muted-foreground">
+                        Enter the organisation password to access this dashboard.
+                    </p>
+                    <div className="mt-5 grid gap-3">
+                        <select
+                            value={selectedOrgSlug}
+                            onChange={(e) => setSelectedOrgSlug(e.target.value)}
+                            className="w-full px-4 py-2.5 rounded-2xl border border-border bg-background text-sm"
+                        >
+                            {orgs.map((o) => (
+                                <option key={o.slug} value={o.slug}>{o.name}</option>
+                            ))}
+                        </select>
+                        <input
+                            type="password"
+                            value={orgPasswordInput}
+                            onChange={(e) => setOrgPasswordInput(e.target.value)}
+                            placeholder="Organisation password"
+                            className="w-full px-4 py-2.5 rounded-2xl border border-border bg-background text-sm"
+                        />
+                        <button
+                            onClick={unlockOrganisation}
+                            disabled={unlockBusy}
+                            className="inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-full bg-primary text-primary-foreground text-sm font-semibold disabled:opacity-60"
+                        >
+                            {unlockBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+                            Unlock dashboard
+                        </button>
+                    </div>
+                    <p className="mt-3 text-xs text-muted-foreground">
+                        Default password for new organisations: Organisat10n!&
+                    </p>
+                </div>
+            </div>
+        );
+    }
+
     return (
         <div data-testid="org-dashboard" className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
             {/* Header */}
@@ -197,6 +319,109 @@ export default function OrgDashboard() {
                 <UploadDocsCard slug={selectedOrgSlug} docs={docs} onChange={loadDocs} />
 
                 <SharePackCard slug={selectedOrgSlug} org={org} />
+            </section>
+
+            <section className="mb-8 rounded-3xl border border-border bg-surface p-6">
+                <h3 className="font-display font-bold text-xl">Organisation password</h3>
+                <p className="text-sm text-muted-foreground mt-1">
+                    {role === "admin"
+                        ? "Set or reset this organisation's password."
+                        : "Change your organisation password. Default is Organisat10n!& until changed."}
+                </p>
+                <div className="mt-4 grid sm:grid-cols-2 gap-3">
+                    {role !== "admin" && (
+                        <input
+                            type="password"
+                            value={passwordForm.current}
+                            onChange={(e) => setPasswordForm((prev) => ({ ...prev, current: e.target.value }))}
+                            placeholder="Current password"
+                            className="w-full px-4 py-2.5 rounded-2xl border border-border bg-background text-sm"
+                        />
+                    )}
+                    <input
+                        type="password"
+                        value={passwordForm.next}
+                        onChange={(e) => setPasswordForm((prev) => ({ ...prev, next: e.target.value }))}
+                        placeholder="New password"
+                        className="w-full px-4 py-2.5 rounded-2xl border border-border bg-background text-sm"
+                    />
+                </div>
+                <button
+                    onClick={changePassword}
+                    disabled={passwordBusy || (role === "admin" && !adminCodeSession)}
+                    className="mt-3 inline-flex items-center gap-2 px-4 py-2 rounded-full bg-primary text-primary-foreground text-xs font-semibold disabled:opacity-60"
+                >
+                    {passwordBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+                    Save password
+                </button>
+            </section>
+
+            <section className="mb-8 space-y-4" data-testid="org-analytics-section">
+                <div>
+                    <h2 className="font-display font-black text-2xl">Your metrics</h2>
+                    <p className="text-sm text-muted-foreground mt-1">
+                        Signals for how your page and events are performing over the last {analytics?.window_days || 30} days.
+                    </p>
+                </div>
+
+                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+                    <Stat label="Profile views" value={metrics.page_views_30d || 0} icon={Eye} tone="primary" />
+                    <Stat label="Event views" value={metrics.event_views_30d || 0} icon={BarChart3} />
+                    <Stat label="Share clicks" value={metrics.share_clicks_30d || 0} icon={Sparkles} />
+                    <Stat label="Followers" value={metrics.followers || 0} icon={Users} />
+                    <Stat label="Upcoming events" value={metrics.upcoming_events || 0} icon={Calendar} />
+                    <Stat label="Unread admin notes" value={metrics.notifications_unread || 0} icon={Bell} />
+                </div>
+
+                <div className="grid lg:grid-cols-3 gap-4">
+                    <div className="rounded-3xl border border-border bg-surface p-5">
+                        <h3 className="font-display font-bold text-lg">Audience mix</h3>
+                        <div className="mt-4 grid grid-cols-2 gap-3 text-sm">
+                            <MiniMetric label="Device followers" value={metrics.device_followers || 0} />
+                            <MiniMetric label="Subscriber followers" value={metrics.subscriber_followers || 0} />
+                            <MiniMetric label="Published events" value={metrics.published_events || 0} />
+                            <MiniMetric label="Pending events" value={metrics.pending_events || 0} />
+                            <MiniMetric label="Featured events" value={metrics.featured_events || 0} />
+                            <MiniMetric label="Documents" value={metrics.documents || 0} />
+                        </div>
+                    </div>
+
+                    <div className="rounded-3xl border border-border bg-surface p-5">
+                        <h3 className="font-display font-bold text-lg">Share channels</h3>
+                        {sharePlatforms.length === 0 ? (
+                            <p className="mt-4 text-sm text-muted-foreground">Once people share your events, the channel mix appears here.</p>
+                        ) : (
+                            <div className="mt-4 flex flex-wrap gap-2">
+                                {sharePlatforms.map((item) => (
+                                    <span key={item.platform} className="px-3 py-2 rounded-full bg-muted text-sm">
+                                        {item.platform} · {item.count}
+                                    </span>
+                                ))}
+                            </div>
+                        )}
+                    </div>
+
+                    <div className="rounded-3xl border border-border bg-surface p-5">
+                        <h3 className="font-display font-bold text-lg">Top events</h3>
+                        {topEvents.length === 0 ? (
+                            <p className="mt-4 text-sm text-muted-foreground">Event engagement will populate here after visits and shares.</p>
+                        ) : (
+                            <div className="mt-4 space-y-3">
+                                {topEvents.map((eventItem) => (
+                                    <div key={eventItem.id} className="flex items-start justify-between gap-3 text-sm">
+                                        <div>
+                                            <Link to={`/events/${eventItem.id}`} className="font-semibold hover:text-primary">{eventItem.title}</Link>
+                                            <div className="text-xs text-muted-foreground mt-1">
+                                                {eventItem.views} views · {eventItem.shares} shares
+                                            </div>
+                                        </div>
+                                        <div className="text-right text-xs text-muted-foreground">{eventItem.status}</div>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                    </div>
+                </div>
             </section>
 
             {/* AI Feature */}
@@ -671,6 +896,15 @@ function SharePackCard({ slug, org }) {
             </div>
             <SharePackPreviewDialog open={previewOpen} onClose={() => setPreviewOpen(false)} pack={pack} />
         </>
+    );
+}
+
+function MiniMetric({ label, value }) {
+    return (
+        <div className="rounded-2xl bg-muted/50 px-3 py-3">
+            <div className="text-lg font-display font-bold text-foreground">{value}</div>
+            <div className="text-[11px] uppercase tracking-wider text-muted-foreground mt-1">{label}</div>
+        </div>
     );
 }
 

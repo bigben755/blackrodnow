@@ -4,6 +4,7 @@
 - body-empty 400
 - URL auto-linking + blank-line paragraph split
 """
+import io
 import os
 import requests
 import pytest
@@ -20,7 +21,7 @@ SENDER_B = "now@communityalliances.co.uk"
 @pytest.fixture
 def api():
     s = requests.Session()
-    s.headers.update({"Content-Type": "application/json"})
+    s.headers.update({"Accept": "application/json"})
     return s
 
 
@@ -92,6 +93,27 @@ class TestAdminEmailComposeExtras:
         assert low.count("x@y.co") == 1
         assert d["invalid_recipients"] == ["bad-email"]
         assert d["count"] == 2
+
+    def test_preview_and_send_with_attachment(self, api):
+        files = [
+            ("attachments", ("agenda.txt", io.BytesIO(b"Agenda for the meeting"), "text/plain")),
+        ]
+        payload = {
+            "to": "delivered@resend.dev",
+            "subject": "TEST_attachment",
+            "body": "Please see the attached agenda.",
+        }
+        r = api.post(f"{API}/admin/email/preview", data=payload, files=files, timeout=15)
+        assert r.status_code == 200, r.text
+        d = r.json()
+        assert d["attachment_count"] == 1
+        assert d["attachments"][0]["filename"] == "agenda.txt"
+
+        r2 = api.post(f"{API}/admin/email/send", data=payload, files=files, timeout=30)
+        assert r2.status_code == 200, r2.text
+        sent = r2.json()
+        assert sent["attachments"][0]["filename"] == "agenda.txt"
+        assert sent["results"][0]["attachments"][0]["filename"] == "agenda.txt"
 
     def test_send_400_empty_body(self, api):
         r = api.post(

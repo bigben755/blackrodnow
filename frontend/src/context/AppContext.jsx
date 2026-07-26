@@ -10,13 +10,16 @@ import {
 } from "@/data/mockData";
 
 const AppContext = createContext(null);
+const normalizeRole = (role) => (role === "admin" || role === "org" ? role : "guest");
 
 export function AppProvider({ children }) {
     const [theme, setTheme] = useState(() => {
         if (typeof window === "undefined") return "light";
         return localStorage.getItem("rl-theme") || "light";
     });
-    const [role, setRole] = useState(() => localStorage.getItem("rn-role") || "guest");
+    const [adminUnlocked, setAdminUnlocked] = useState(false);
+    const [adminCodeSession, setAdminCodeSession] = useState("");
+    const [role, setRoleState] = useState("guest");
 
     const [orgs, setOrgs] = useState([]);
     const [events, setEvents] = useState([]);
@@ -26,9 +29,32 @@ export function AppProvider({ children }) {
     const [follows, setFollows] = useState({ orgs: [], categories: [] });
     const [stats, setStats] = useState({ subscribers: 0, events_total: 0, orgs_total: 0, events_pending: 0, orgs_pending: 0, messages_unread: 0 });
     const [notifPrefs, setNotifPrefs] = useState({ email: true, push: false, calendar: false, digest: true });
+    const [savedEventIds, setSavedEventIds] = useState(() => {
+        if (typeof window === "undefined") return [];
+        try {
+            const raw = localStorage.getItem("rn-saved-events");
+            const parsed = raw ? JSON.parse(raw) : [];
+            return Array.isArray(parsed) ? parsed : [];
+        } catch {
+            return [];
+        }
+    });
     const [ready, setReady] = useState(false);
     // Active org (for org dashboard)
     const [activeOrgSlug, setActiveOrgSlug] = useState(() => localStorage.getItem("rn-active-org") || "");
+    const [orgTokens, setOrgTokens] = useState(() => {
+        if (typeof window === "undefined") return {};
+        try {
+            const raw = localStorage.getItem("rn-org-tokens");
+            const parsed = raw ? JSON.parse(raw) : {};
+            return parsed && typeof parsed === "object" ? parsed : {};
+        } catch {
+            return {};
+        }
+    });
+    const [demoActive, setDemoActive] = useState(false);
+    const [demoRole, setDemoRole] = useState("guest");
+    const [demoStepIndex, setDemoStepIndex] = useState(0);
 
     useEffect(() => {
         const root = document.documentElement;
@@ -42,10 +68,86 @@ export function AppProvider({ children }) {
     }, [role]);
 
     useEffect(() => {
+        if (!adminUnlocked && role === "admin") setRoleState("guest");
+    }, [adminUnlocked, role]);
+
+    useEffect(() => {
         if (activeOrgSlug) localStorage.setItem("rn-active-org", activeOrgSlug);
     }, [activeOrgSlug]);
 
+    useEffect(() => {
+        localStorage.setItem("rn-org-tokens", JSON.stringify(orgTokens));
+    }, [orgTokens]);
+
+    useEffect(() => {
+        localStorage.setItem("rn-saved-events", JSON.stringify(savedEventIds));
+    }, [savedEventIds]);
+
     const toggleTheme = () => setTheme((t) => (t === "dark" ? "light" : "dark"));
+
+    const setRole = useCallback(
+        (nextRole) => {
+            const normalized = normalizeRole(nextRole);
+            if (!adminUnlocked && normalized === "admin") return false;
+            setRoleState(normalized);
+            return true;
+        },
+        [adminUnlocked],
+    );
+
+    const unlockAdmin = useCallback((code = "") => {
+        setAdminUnlocked(true);
+        const normalized = code || "";
+        setAdminCodeSession(normalized);
+        if (typeof window !== "undefined") localStorage.setItem("rn-admin-code", normalized);
+        setRoleState("admin");
+    }, []);
+
+    const lockAdmin = useCallback(() => {
+        setAdminUnlocked(false);
+        setAdminCodeSession("");
+        if (typeof window !== "undefined") localStorage.removeItem("rn-admin-code");
+        setRoleState("guest");
+    }, []);
+
+    const hasOrgAccess = useCallback((slug) => !!orgTokens[slug], [orgTokens]);
+    const getOrgToken = useCallback((slug) => orgTokens[slug] || "", [orgTokens]);
+
+    const unlockOrgAccess = useCallback((slug, token) => {
+        if (!slug) return;
+        if (!token) return;
+        setOrgTokens((current) => ({ ...current, [slug]: token }));
+    }, []);
+
+    const clearOrgAccess = useCallback((slug) => {
+        if (!slug) return;
+        setOrgTokens((current) => {
+            const next = { ...current };
+            delete next[slug];
+            return next;
+        });
+    }, []);
+
+    const startDemo = useCallback((roleHint = "guest") => {
+        setDemoRole(roleHint);
+        setDemoStepIndex(0);
+        setDemoActive(true);
+    }, []);
+
+    const stopDemo = useCallback(() => {
+        setDemoActive(false);
+        setDemoStepIndex(0);
+    }, []);
+
+    const nextDemoStep = useCallback((totalSteps = 1) => {
+        const size = Math.max(1, Number(totalSteps) || 1);
+        setDemoStepIndex((current) => (current + 1) % size);
+    }, []);
+
+    const prevDemoStep = useCallback((totalSteps = 1) => {
+        const size = Math.max(1, Number(totalSteps) || 1);
+        setDemoStepIndex((current) => (current - 1 + size) % size);
+    }, []);
 
     // ─────────── Bootstrap: seed if empty, then load ───────────
     const refresh = useCallback(async () => {
@@ -58,6 +160,35 @@ export function AppProvider({ children }) {
             api.follows().catch(() => ({ orgs: [], categories: [] })),
             api.stats().catch(() => ({})),
         ]);
+
+        const apiUnavailable =
+            !orgsR.length &&
+            !evR.length &&
+            !feedR.length &&
+            !vR.length &&
+            !volR.length &&
+            !Object.keys(sR || {}).length;
+
+        if (apiUnavailable) {
+            // Emergency read-only mode when backend is unreachable.
+            setOrgs(SEED_ORGS);
+            setEvents(SEED_EVENTS);
+            setFeed(SEED_FEED);
+            setVenues(SEED_VENUES);
+            setVolunteerOpps(SEED_VOLS);
+            setFollows({ orgs: [], categories: [] });
+            setStats((prev) => ({
+                ...prev,
+                subscribers: 0,
+                events_total: SEED_EVENTS.length,
+                orgs_total: SEED_ORGS.length,
+                events_pending: SEED_EVENTS.filter((item) => item.status === "pending").length,
+                orgs_pending: SEED_ORGS.filter((item) => item.status === "pending").length,
+                messages_unread: 0,
+            }));
+            return;
+        }
+
         setOrgs(orgsR);
         setEvents(evR);
         setFeed(feedR);
@@ -106,14 +237,30 @@ export function AppProvider({ children }) {
         return !already;
     };
 
+    // ─────────── Saved events (resident shortlist) ───────────
+    const isEventSaved = useCallback((eventId) => savedEventIds.includes(eventId), [savedEventIds]);
+
+    const toggleSaveEvent = useCallback((eventId) => {
+        let savedNow = false;
+        setSavedEventIds((current) => {
+            if (current.includes(eventId)) {
+                savedNow = false;
+                return current.filter((id) => id !== eventId);
+            }
+            savedNow = true;
+            return [eventId, ...current];
+        });
+        return savedNow;
+    }, []);
+
     // ─────────── Mutations ───────────
     const addEvent = async (evt) => {
         const created = await api.createEvent({ ...evt, status: "pending" });
         setEvents((prev) => [created, ...prev]);
         return created;
     };
-    const updateEvent = async (id, patch) => {
-        const updated = await api.updateEvent(id, patch);
+    const updateEvent = async (id, patch, orgSlugForAuth = "") => {
+        const updated = await api.updateEvent(id, patch, orgSlugForAuth);
         setEvents((prev) => prev.map((e) => (e.id === id ? updated : e)));
         return updated;
     };
@@ -158,17 +305,60 @@ export function AppProvider({ children }) {
             ready,
             theme, toggleTheme,
             role, setRole,
+            adminUnlocked, adminCodeSession, unlockAdmin, lockAdmin,
             orgs, events, feed, venues, volunteerOpps,
             follows, toggleFollowOrg, toggleFollowCategory, isFollowingOrg, isFollowingCategory,
+            savedEventIds, isEventSaved, toggleSaveEvent,
             stats, refresh,
             notifPrefs, setNotifPrefs,
             activeOrgSlug, setActiveOrgSlug,
+            orgTokens, hasOrgAccess, getOrgToken, unlockOrgAccess, clearOrgAccess,
+            demoActive,
+            demoRole,
+            demoStepIndex,
+            startDemo,
+            stopDemo,
+            nextDemoStep,
+            prevDemoStep,
             addEvent, updateEvent, setEventStatus, toggleEventFeatured, deleteEvent,
             addOrg, patchOrg, setOrgStatus, deleteOrg,
             addFeedPost,
             deviceId: getDeviceId(),
         }),
-        [ready, theme, role, orgs, events, feed, venues, volunteerOpps, follows, stats, notifPrefs, activeOrgSlug, refresh],
+        [
+            ready,
+            theme,
+            role,
+            adminUnlocked,
+            adminCodeSession,
+            unlockAdmin,
+            lockAdmin,
+            orgs,
+            events,
+            feed,
+            venues,
+            volunteerOpps,
+            follows,
+            savedEventIds,
+            isEventSaved,
+            toggleSaveEvent,
+            stats,
+            notifPrefs,
+            activeOrgSlug,
+            orgTokens,
+            hasOrgAccess,
+            getOrgToken,
+            unlockOrgAccess,
+            clearOrgAccess,
+            demoActive,
+            demoRole,
+            demoStepIndex,
+            startDemo,
+            stopDemo,
+            nextDemoStep,
+            prevDemoStep,
+            refresh,
+        ],
     );
 
     return <AppContext.Provider value={value}>{children}</AppContext.Provider>;

@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useEffect, useState } from "react";
 import NewsletterSection from "@/components/NewsletterSection";
 import { Link, useParams } from "react-router-dom";
 import { useApp, eventsByOrg } from "@/context/AppContext";
@@ -19,14 +19,77 @@ import {
     Clock,
     FileText,
     Image as ImageIcon,
+    PenLine,
+    Sparkles,
 } from "lucide-react";
 import { toast } from "sonner";
+import {
+    Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
+} from "@/components/ui/dialog";
 
 export default function OrganisationDetail() {
     const { slug } = useParams();
     const { orgs, events, feed, volunteerOpps, follows, toggleFollowOrg } = useApp();
+    const [claimOpen, setClaimOpen] = useState(false);
+    const [editOpen, setEditOpen] = useState(false);
+    const [claimBusy, setClaimBusy] = useState(false);
+    const [editBusy, setEditBusy] = useState(false);
+    const [claimForm, setClaimForm] = useState({ contact_name: "", contact_email: "", message: "" });
+    const [editForm, setEditForm] = useState({
+        name: "",
+        short: "",
+        about: "",
+        does: "",
+        forWho: "",
+        meeting: "",
+        address: "",
+        location: "Blackrod",
+        email: "",
+        phone: "",
+        website: "",
+        brandColor: "#0052FF",
+        logo: "",
+        cover: "",
+        contact_name: "",
+        contact_email: "",
+        message: "",
+    });
 
     const org = orgs.find((o) => o.slug === slug);
+
+    useEffect(() => {
+        if (!org) return;
+        setEditForm({
+            name: org.name || "",
+            short: org.short || "",
+            about: org.about || "",
+            does: org.does || "",
+            forWho: org.forWho || "",
+            meeting: org.meeting || "",
+            address: org.address || "",
+            location: org.location || "Blackrod",
+            email: org.email || "",
+            phone: org.phone || "",
+            website: org.website || "",
+            brandColor: org.brandColor || "#0052FF",
+            logo: org.logo || "",
+            cover: org.cover || "",
+            contact_name: "",
+            contact_email: "",
+            message: "",
+        });
+    }, [org]);
+
+    useEffect(() => {
+        if (!org?.slug) return;
+        api.trackAnalytics({
+            kind: "org_view",
+            entity_type: "org",
+            entity_id: org.slug,
+            org_slug: org.slug,
+        }).catch(() => {});
+    }, [org?.slug]);
+
     if (!org) {
         return (
             <div className="max-w-3xl mx-auto py-24 px-6 text-center">
@@ -46,6 +109,35 @@ export default function OrganisationDetail() {
     const handleFollow = async () => {
         const nowFollowing = await toggleFollowOrg(org.slug);
         toast.success(nowFollowing ? `Now following ${org.name}` : `Unfollowed ${org.name}`);
+    };
+
+    const submitClaim = async (e) => {
+        e.preventDefault();
+        setClaimBusy(true);
+        try {
+            await api.claimOrg(org.slug, claimForm);
+            toast.success("Claim request sent", { description: "Admins will review the profile ownership request." });
+            setClaimOpen(false);
+            setClaimForm({ contact_name: "", contact_email: "", message: "" });
+        } catch (error) {
+            toast.error(error?.response?.data?.detail || "Couldn't send claim request");
+        } finally {
+            setClaimBusy(false);
+        }
+    };
+
+    const submitEdit = async (e) => {
+        e.preventDefault();
+        setEditBusy(true);
+        try {
+            await api.suggestOrgEdits(org.slug, editForm);
+            toast.success("Edit suggestion sent", { description: "We'll review the suggested updates against the current profile." });
+            setEditOpen(false);
+        } catch (error) {
+            toast.error(error?.response?.data?.detail || "Couldn't send edit suggestion");
+        } finally {
+            setEditBusy(false);
+        }
     };
 
     const brand = org.brandColor || "#0052FF";
@@ -120,6 +212,22 @@ export default function OrganisationDetail() {
                                 </>
                             )}
                         </button>
+                        <div className="flex flex-wrap gap-2">
+                            <button
+                                type="button"
+                                onClick={() => setClaimOpen(true)}
+                                className="inline-flex items-center gap-2 px-4 py-2.5 rounded-full border-2 border-foreground text-sm font-semibold"
+                            >
+                                <PenLine className="h-4 w-4" /> Claim this profile
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => setEditOpen(true)}
+                                className="inline-flex items-center gap-2 px-4 py-2.5 rounded-full bg-muted text-sm font-semibold"
+                            >
+                                <Sparkles className="h-4 w-4" /> Suggest edits
+                            </button>
+                        </div>
                     </div>
                 </div>
 
@@ -276,6 +384,73 @@ export default function OrganisationDetail() {
             </div>
             {/* NEWSLETTER */}
             <NewsletterSection />
+
+            <Dialog open={claimOpen} onOpenChange={setClaimOpen}>
+                <DialogContent className="sm:max-w-xl">
+                    <DialogHeader>
+                        <DialogTitle>Claim this profile</DialogTitle>
+                    </DialogHeader>
+                    <form onSubmit={submitClaim} className="space-y-4">
+                        <p className="text-sm text-muted-foreground">Send proof that you manage this organisation and an admin will review the request.</p>
+                        <Field label="Your name" required>
+                            <input value={claimForm.contact_name} onChange={(e) => setClaimForm((f) => ({ ...f, contact_name: e.target.value }))} className={inp} required />
+                        </Field>
+                        <Field label="Email" required>
+                            <input type="email" value={claimForm.contact_email} onChange={(e) => setClaimForm((f) => ({ ...f, contact_email: e.target.value }))} className={inp} required />
+                        </Field>
+                        <Field label="Why should we transfer this profile?">
+                            <textarea rows={4} value={claimForm.message} onChange={(e) => setClaimForm((f) => ({ ...f, message: e.target.value }))} className={inp} placeholder="A few details help us verify ownership quickly" />
+                        </Field>
+                        <DialogFooter>
+                            <button type="button" onClick={() => setClaimOpen(false)} className="px-4 py-2 rounded-full border border-border text-sm font-semibold">Cancel</button>
+                            <button type="submit" disabled={claimBusy} className="px-4 py-2 rounded-full bg-primary text-primary-foreground text-sm font-semibold disabled:opacity-60">{claimBusy ? "Sending…" : "Send claim request"}</button>
+                        </DialogFooter>
+                    </form>
+                </DialogContent>
+            </Dialog>
+
+            <Dialog open={editOpen} onOpenChange={setEditOpen}>
+                <DialogContent className="sm:max-w-2xl">
+                    <DialogHeader>
+                        <DialogTitle>Suggest edits</DialogTitle>
+                    </DialogHeader>
+                    <form onSubmit={submitEdit} className="space-y-4 max-h-[75vh] overflow-y-auto pr-1">
+                        <p className="text-sm text-muted-foreground">Update the fields you know about. Admins will compare your suggestion to the live profile and apply the changes if they look right.</p>
+                        <div className="grid sm:grid-cols-2 gap-4">
+                            <Field label="Name"><input value={editForm.name} onChange={(e) => setEditForm((f) => ({ ...f, name: e.target.value }))} className={inp} /></Field>
+                            <Field label="Short summary"><input value={editForm.short} onChange={(e) => setEditForm((f) => ({ ...f, short: e.target.value }))} className={inp} /></Field>
+                        </div>
+                        <Field label="About"><textarea rows={4} value={editForm.about} onChange={(e) => setEditForm((f) => ({ ...f, about: e.target.value }))} className={inp} /></Field>
+                        <div className="grid sm:grid-cols-2 gap-4">
+                            <Field label="What we do"><textarea rows={3} value={editForm.does} onChange={(e) => setEditForm((f) => ({ ...f, does: e.target.value }))} className={inp} /></Field>
+                            <Field label="Who it's for"><textarea rows={3} value={editForm.forWho} onChange={(e) => setEditForm((f) => ({ ...f, forWho: e.target.value }))} className={inp} /></Field>
+                        </div>
+                        <div className="grid sm:grid-cols-2 gap-4">
+                            <Field label="Meeting times"><input value={editForm.meeting} onChange={(e) => setEditForm((f) => ({ ...f, meeting: e.target.value }))} className={inp} /></Field>
+                            <Field label="Address"><input value={editForm.address} onChange={(e) => setEditForm((f) => ({ ...f, address: e.target.value }))} className={inp} /></Field>
+                        </div>
+                        <div className="grid sm:grid-cols-3 gap-4">
+                            <Field label="Email"><input type="email" value={editForm.email} onChange={(e) => setEditForm((f) => ({ ...f, email: e.target.value }))} className={inp} /></Field>
+                            <Field label="Phone"><input value={editForm.phone} onChange={(e) => setEditForm((f) => ({ ...f, phone: e.target.value }))} className={inp} /></Field>
+                            <Field label="Website"><input type="url" value={editForm.website} onChange={(e) => setEditForm((f) => ({ ...f, website: e.target.value }))} className={inp} /></Field>
+                        </div>
+                        <div className="grid sm:grid-cols-3 gap-4">
+                            <Field label="Brand colour"><input type="color" value={editForm.brandColor} onChange={(e) => setEditForm((f) => ({ ...f, brandColor: e.target.value }))} className="h-11 w-full rounded-2xl border border-border bg-background" /></Field>
+                            <Field label="Logo emoji"><input value={editForm.logo} onChange={(e) => setEditForm((f) => ({ ...f, logo: e.target.value }))} className={inp} /></Field>
+                            <Field label="Cover URL"><input value={editForm.cover} onChange={(e) => setEditForm((f) => ({ ...f, cover: e.target.value }))} className={inp} /></Field>
+                        </div>
+                        <Field label="Notes for admin"><textarea rows={3} value={editForm.message} onChange={(e) => setEditForm((f) => ({ ...f, message: e.target.value }))} className={inp} placeholder="Tell us what changed and why" /></Field>
+                        <div className="grid sm:grid-cols-2 gap-4">
+                            <Field label="Your name"><input value={editForm.contact_name} onChange={(e) => setEditForm((f) => ({ ...f, contact_name: e.target.value }))} className={inp} /></Field>
+                            <Field label="Your email"><input type="email" value={editForm.contact_email} onChange={(e) => setEditForm((f) => ({ ...f, contact_email: e.target.value }))} className={inp} /></Field>
+                        </div>
+                        <DialogFooter>
+                            <button type="button" onClick={() => setEditOpen(false)} className="px-4 py-2 rounded-full border border-border text-sm font-semibold">Cancel</button>
+                            <button type="submit" disabled={editBusy} className="px-4 py-2 rounded-full bg-primary text-primary-foreground text-sm font-semibold disabled:opacity-60">{editBusy ? "Sending…" : "Send suggestion"}</button>
+                        </DialogFooter>
+                    </form>
+                </DialogContent>
+            </Dialog>
         </div>
         );
     }
@@ -292,4 +467,15 @@ const InfoLine = ({ icon: Icon, children }) => (
         <Icon className="h-4 w-4 text-muted-foreground mt-0.5 shrink-0" />
         <span>{children}</span>
     </div>
+);
+
+const inp = "w-full px-4 py-2.5 rounded-2xl border border-border bg-background text-sm focus:outline-none focus:ring-2 focus:ring-primary";
+
+const Field = ({ label, required, children }) => (
+    <label className="block">
+        <span className="text-xs font-bold tracking-wider uppercase text-muted-foreground">
+            {label} {required && <span className="text-accent">*</span>}
+        </span>
+        <div className="mt-1.5">{children}</div>
+    </label>
 );

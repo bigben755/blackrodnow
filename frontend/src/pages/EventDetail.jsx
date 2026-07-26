@@ -1,10 +1,10 @@
-import React from "react";
+import React, { useEffect } from "react";
 import { useParams, Link } from "react-router-dom";
 import { useApp, eventsByOrg } from "@/context/AppContext";
 import { CategoryBadge, formatDate, formatTime } from "@/components/Cards";
 import NewsletterSection from "@/components/NewsletterSection";
 import ShareButtons from "@/components/ShareButtons";
-import { API } from "@/lib/api";
+import { API, api } from "@/lib/api";
 import {
     CalendarDays,
     MapPin,
@@ -20,6 +20,7 @@ import {
     Download,
     Edit3,
     ShieldCheck,
+    Heart,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -158,8 +159,19 @@ const copyToClipboard = async (text, successMessage) => {
 
 export default function EventDetail() {
     const { id } = useParams();
-    const { events, orgs, role } = useApp();
+    const { events, orgs, role, isEventSaved, toggleSaveEvent } = useApp();
     const event = events.find((e) => e.id === id);
+    const org = orgs.find((o) => o.slug === event?.orgSlug);
+
+    useEffect(() => {
+        if (!event?.id) return;
+        api.trackAnalytics({
+            kind: "event_view",
+            entity_type: "event",
+            entity_id: event.id,
+            org_slug: event.orgSlug,
+        }).catch(() => {});
+    }, [event?.id, event?.orgSlug]);
 
     if (!event) {
         return (
@@ -178,8 +190,6 @@ export default function EventDetail() {
         );
     }
 
-    const org = orgs.find((o) => o.slug === event.orgSlug);
-
     const eventUrl =
         typeof window !== "undefined"
             ? window.location.href
@@ -192,6 +202,7 @@ export default function EventDetail() {
 
     const location = [event.venue, event.address].filter(Boolean).join(", ");
     const facebookPost = buildFacebookPost(event, eventUrl, org);
+    const saved = isEventSaved?.(event.id);
 
     const shareNative = async () => {
         try {
@@ -386,6 +397,19 @@ export default function EventDetail() {
                     </p>
 
                     <div className="mt-8 flex flex-wrap gap-2">
+                        <button
+                            type="button"
+                            data-testid="event-save"
+                            onClick={() => {
+                                const nextSaved = toggleSaveEvent(event.id);
+                                toast.success(nextSaved ? "Saved to your shortlist" : "Removed from shortlist");
+                            }}
+                            className={`inline-flex items-center gap-1.5 px-5 py-3 rounded-full text-sm font-semibold border-2 transition ${saved ? "border-primary bg-primary text-primary-foreground" : "border-foreground hover:bg-foreground hover:text-background"}`}
+                        >
+                            <Heart className={`h-4 w-4 ${saved ? "fill-current" : ""}`} />
+                            {saved ? "Saved" : "Save event"}
+                        </button>
+
                         {event.booking && (
                             <a
                                 href={event.booking}
@@ -463,6 +487,7 @@ export default function EventDetail() {
                             url={eventUrl}
                             ogUrl={shareOgUrl}
                             title={event.title}
+                            analytics={{ entityType: "event", entityId: event.id, orgSlug: event.orgSlug }}
                         />
                     </div>
                 </div>

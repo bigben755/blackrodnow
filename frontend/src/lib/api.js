@@ -5,6 +5,34 @@ import { getDeviceId } from "./device";
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 export { API };
 
+const ORG_TOKEN_KEY = "rn-org-tokens";
+const ADMIN_CODE_KEY = "rn-admin-code";
+
+const readOrgTokens = () => {
+    if (typeof window === "undefined") return {};
+    try {
+        const raw = localStorage.getItem(ORG_TOKEN_KEY);
+        const parsed = raw ? JSON.parse(raw) : {};
+        return parsed && typeof parsed === "object" ? parsed : {};
+    } catch {
+        return {};
+    }
+};
+
+const orgAuthHeaders = (slug) => {
+    const token = readOrgTokens()[slug];
+    const adminCode = typeof window !== "undefined" ? (localStorage.getItem(ADMIN_CODE_KEY) || "") : "";
+    const headers = {};
+    if (token) headers["X-Org-Auth"] = token;
+    if (adminCode) headers["X-Admin-Code"] = adminCode;
+    return headers;
+};
+
+const adminCodeHeaders = () => {
+    const adminCode = typeof window !== "undefined" ? (localStorage.getItem(ADMIN_CODE_KEY) || "") : "";
+    return adminCode ? { "X-Admin-Code": adminCode } : {};
+};
+
 const client = axios.create({ baseURL: API, timeout: 30000 });
 
 export const api = {
@@ -17,8 +45,18 @@ export const api = {
     // Organisations
     orgs: (opts = {}) => client.get("/organisations", { params: opts }).then((r) => r.data),
     org: (slug) => client.get(`/organisations/${slug}`).then((r) => r.data),
+    loginOrgAccess: (slug, payload) =>
+        client.post(`/organisations/${slug}/auth/login`, payload).then((r) => r.data),
+    verifyOrgPassword: (slug, password) =>
+        client.post(`/organisations/${slug}/password/verify`, { password }).then((r) => r.data),
+    changeOrgPassword: (slug, data) =>
+        client.post(`/organisations/${slug}/password/change`, data, { headers: adminCodeHeaders() }).then((r) => r.data),
+    adminResetOrgPassword: (slug, data) =>
+        client.post(`/admin/organisations/${slug}/password/reset`, data).then((r) => r.data),
     submitOrg: (data) => client.post("/organisations", data).then((r) => r.data),
-    patchOrg: (slug, patch) => client.patch(`/organisations/${slug}`, patch).then((r) => r.data),
+    patchOrg: (slug, patch) => client.patch(`/organisations/${slug}`, patch, { headers: orgAuthHeaders(slug) }).then((r) => r.data),
+    claimOrg: (slug, data) => client.post(`/organisations/${slug}/claim`, data).then((r) => r.data),
+    suggestOrgEdits: (slug, data) => client.post(`/organisations/${slug}/suggest-edits`, data).then((r) => r.data),
     setOrgStatus: (slug, status) =>
         client.post(`/admin/organisations/${slug}/status`, { status }).then((r) => r.data),
     deleteOrg: (slug) => client.delete(`/admin/organisations/${slug}`).then((r) => r.data),
@@ -26,8 +64,8 @@ export const api = {
     // Events
     events: (opts = {}) => client.get("/events", { params: opts }).then((r) => r.data),
     event: (id) => client.get(`/events/${id}`).then((r) => r.data),
-    createEvent: (data) => client.post("/events", data).then((r) => r.data),
-    updateEvent: (id, patch) => client.patch(`/events/${id}`, patch).then((r) => r.data),
+    createEvent: (data) => client.post("/events", data, { headers: orgAuthHeaders(data.orgSlug) }).then((r) => r.data),
+    updateEvent: (id, patch, orgSlugForAuth) => client.patch(`/events/${id}`, patch, { headers: orgAuthHeaders(orgSlugForAuth || patch?.orgSlug) }).then((r) => r.data),
     setEventStatus: (id, status) =>
         client.post(`/admin/events/${id}/status`, { status }).then((r) => r.data),
     featureEvent: (id) => client.post(`/admin/events/${id}/feature`).then((r) => r.data),
@@ -35,11 +73,15 @@ export const api = {
 
     // Feed
     feed: () => client.get("/feed").then((r) => r.data),
-    createFeedPost: (data) => client.post("/feed", data).then((r) => r.data),
+    createFeedPost: (data) => client.post("/feed", data, { headers: orgAuthHeaders(data.orgSlug) }).then((r) => r.data),
 
     // Venues & volunteers
     venues: () => client.get("/venues").then((r) => r.data),
+    createVenue: (data) => client.post("/venues", data).then((r) => r.data),
+    updateVenue: (id, patch) => client.patch(`/venues/${id}`, patch).then((r) => r.data),
     volunteers: () => client.get("/volunteers").then((r) => r.data),
+    createVolunteer: (data) => client.post("/volunteers", data).then((r) => r.data),
+    updateVolunteer: (id, patch) => client.patch(`/volunteers/${id}`, patch).then((r) => r.data),
 
     // Follows (device-based)
     follows: () => client.get(`/follows/${getDeviceId()}`).then((r) => r.data),
@@ -62,9 +104,12 @@ export const api = {
 
     // Contact admin
     contactAdmin: (data) => client.post("/contact-admin", data).then((r) => r.data),
+    webWizardEnquiry: (data) => client.post("/web-wizard/enquiry", data).then((r) => r.data),
     notificationThread: (nid) => client.get(`/notifications/${nid}/thread`).then((r) => r.data),
     adminMessages: () => client.get("/admin/messages").then((r) => r.data),
     markMessageRead: (id) => client.patch(`/admin/messages/${id}/read`).then((r) => r.data),
+    orgEditRequests: (status = "") => client.get("/admin/org-edit-requests", { params: status ? { status } : {} }).then((r) => r.data),
+    reviewOrgEditRequest: (id, data) => client.post(`/admin/org-edit-requests/${id}/status`, data).then((r) => r.data),
 
     // Documents
     listDocs: (slug) => client.get(`/organisations/${slug}/documents`).then((r) => r.data),
@@ -73,13 +118,26 @@ export const api = {
         fd.append("file", file);
         return client
             .post(`/organisations/${slug}/documents`, fd, {
+                headers: { "Content-Type": "multipart/form-data", ...orgAuthHeaders(slug) },
+                timeout: 120000,
+            })
+            .then((r) => r.data);
+    },
+    adminParseDocuments: (files, sourceOrgSlug = "", options = {}) => {
+        const fd = new FormData();
+        files.forEach((file) => fd.append("files", file));
+        if (sourceOrgSlug) fd.append("source_org_slug", sourceOrgSlug);
+        if (options.links?.length) fd.append("urls_json", JSON.stringify(options.links));
+        if (options.textBlocks?.length) fd.append("texts_json", JSON.stringify(options.textBlocks));
+        return client
+            .post("/admin/documents/parse", fd, {
                 headers: { "Content-Type": "multipart/form-data" },
                 timeout: 120000,
             })
             .then((r) => r.data);
     },
     deleteDoc: (slug, id) =>
-        client.delete(`/organisations/${slug}/documents/${id}`).then((r) => r.data),
+        client.delete(`/organisations/${slug}/documents/${id}`, { headers: orgAuthHeaders(slug) }).then((r) => r.data),
     docDownloadUrl: (id) => `${API}/documents/${id}/download`,
 
     // Org logo & cover images
@@ -88,7 +146,7 @@ export const api = {
         fd.append("file", file);
         return client
             .post(`/organisations/${slug}/logo`, fd, {
-                headers: { "Content-Type": "multipart/form-data" },
+                headers: { "Content-Type": "multipart/form-data", ...orgAuthHeaders(slug) },
                 timeout: 60000,
             })
             .then((r) => r.data);
@@ -98,13 +156,13 @@ export const api = {
         fd.append("file", file);
         return client
             .post(`/organisations/${slug}/cover`, fd, {
-                headers: { "Content-Type": "multipart/form-data" },
+                headers: { "Content-Type": "multipart/form-data", ...orgAuthHeaders(slug) },
                 timeout: 60000,
             })
             .then((r) => r.data);
     },
-    deleteOrgLogo: (slug) => client.delete(`/organisations/${slug}/logo`).then((r) => r.data),
-    deleteOrgCover: (slug) => client.delete(`/organisations/${slug}/cover`).then((r) => r.data),
+    deleteOrgLogo: (slug) => client.delete(`/organisations/${slug}/logo`, { headers: orgAuthHeaders(slug) }).then((r) => r.data),
+    deleteOrgCover: (slug) => client.delete(`/organisations/${slug}/cover`, { headers: orgAuthHeaders(slug) }).then((r) => r.data),
     orgLogoUrl: (slug, thumb = false, v = "") =>
         `${API}/organisations/${slug}/logo${thumb ? "/thumb" : ""}${v ? `?v=${v}` : ""}`,
     orgCoverUrl: (slug, v = "") => `${API}/organisations/${slug}/cover${v ? `?v=${v}` : ""}`,
@@ -118,13 +176,18 @@ export const api = {
     sendNewsletter: (data) => client.post("/admin/newsletter/send", data).then((r) => r.data),
     broadcast: (data) => client.post("/admin/broadcast", data).then((r) => r.data),
 
+    // Analytics
+    trackAnalytics: (payload) =>
+        client.post("/analytics/track", { ...payload, device_id: getDeviceId() }).then((r) => r.data),
+    orgAnalytics: (slug) => client.get(`/organisations/${slug}/analytics`).then((r) => r.data),
+
     // Admin free-form email compose
     adminEmailSenders: () => client.get("/admin/email/senders").then((r) => r.data),
-    adminEmailPreview: (data) => client.post("/admin/email/preview", data).then((r) => r.data),
-    adminEmailSend: (data) => client.post("/admin/email/send", data).then((r) => r.data),
+    adminEmailPreview: (data) => client.post("/admin/email/preview", data, { timeout: 120000 }).then((r) => r.data),
+    adminEmailSend: (data) => client.post("/admin/email/send", data, { timeout: 120000 }).then((r) => r.data),
 
     // Share pack
     getSharePack: (slug) => client.get(`/organisations/${slug}/share-pack`).then((r) => r.data),
     emailSharePack: (slug, to) =>
-        client.post(`/organisations/${slug}/share-pack/email`, to ? { to } : {}).then((r) => r.data),
+        client.post(`/organisations/${slug}/share-pack/email`, to ? { to } : {}, { headers: orgAuthHeaders(slug) }).then((r) => r.data),
 };

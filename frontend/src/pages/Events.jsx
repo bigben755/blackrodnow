@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { useApp } from "@/context/AppContext";
 import { EventCard, CategoryBadge, formatTime } from "@/components/Cards";
 import NewsletterSection from "@/components/NewsletterSection";
@@ -13,7 +13,7 @@ const startOfMonth = (d) => new Date(d.getFullYear(), d.getMonth(), 1);
 const endOfMonth = (d) => new Date(d.getFullYear(), d.getMonth() + 1, 0);
 
 export default function Events() {
-    const { events, orgs } = useApp();
+    const { events, orgs, savedEventIds } = useApp();
     const approved = events.filter((e) => e.status === "approved");
 
     const [view, setView] = useState("list"); // list | month
@@ -21,11 +21,62 @@ export default function Events() {
     const [cat, setCat] = useState("All");
     const [orgFilter, setOrgFilter] = useState("All");
     const [tag, setTag] = useState("All"); // Free | Family | Accessible | All
+    const [dateWindow, setDateWindow] = useState("all"); // all | today | tomorrow | weekend
+    const [savedOnly, setSavedOnly] = useState(false);
     const [subOpen, setSubOpen] = useState(false);
     const [cursor, setCursor] = useState(new Date());
     const [selectedDay, setSelectedDay] = useState(new Date().toDateString());
 
     const orgName = (slug) => orgs.find((o) => o.slug === slug)?.name;
+
+    useEffect(() => {
+        try {
+            const raw = localStorage.getItem("rn-events-filters");
+            if (!raw) return;
+            const saved = JSON.parse(raw);
+            if (saved?.query) setQuery(saved.query);
+            if (saved?.cat) setCat(saved.cat);
+            if (saved?.orgFilter) setOrgFilter(saved.orgFilter);
+            if (saved?.tag) setTag(saved.tag);
+            if (saved?.view) setView(saved.view);
+            if (saved?.dateWindow) setDateWindow(saved.dateWindow);
+            if (typeof saved?.savedOnly === "boolean") setSavedOnly(saved.savedOnly);
+        } catch {
+            // Ignore malformed local storage entries.
+        }
+    }, []);
+
+    useEffect(() => {
+        localStorage.setItem(
+            "rn-events-filters",
+            JSON.stringify({ query, cat, orgFilter, tag, view, dateWindow, savedOnly }),
+        );
+    }, [query, cat, orgFilter, tag, view, dateWindow, savedOnly]);
+
+    const inDateWindow = (eventStart, mode) => {
+        if (mode === "all") return true;
+        const start = new Date(eventStart);
+        const now = new Date();
+        const dayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+        const dayEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+
+        if (mode === "today") return start >= dayStart && start <= dayEnd;
+
+        if (mode === "tomorrow") {
+            const tStart = new Date(dayStart);
+            tStart.setDate(tStart.getDate() + 1);
+            const tEnd = new Date(dayEnd);
+            tEnd.setDate(tEnd.getDate() + 1);
+            return start >= tStart && start <= tEnd;
+        }
+
+        if (mode === "weekend") {
+            const day = start.getDay();
+            return day === 0 || day === 6;
+        }
+
+        return true;
+    };
 
     const filtered = useMemo(() => {
         const now = new Date();
@@ -44,8 +95,10 @@ export default function Events() {
                 if (tag === "Accessible") return e.accessibility?.toLowerCase().includes("step-free");
                 return true;
             })
+                .filter((e) => inDateWindow(e.start, dateWindow))
+                .filter((e) => (savedOnly ? savedEventIds.includes(e.id) : true))
             .sort((a, b) => new Date(a.start) - new Date(b.start));
-    }, [approved, query, cat, orgFilter, tag]);
+            }, [approved, query, cat, orgFilter, tag, dateWindow, savedOnly, savedEventIds]);
 
     // Month grid
     const monthDays = useMemo(() => {
@@ -87,6 +140,18 @@ export default function Events() {
         });
         return map;
     }, [filteredAll]);
+
+    const hasActiveFilters = Boolean(query.trim()) || cat !== "All" || orgFilter !== "All" || tag !== "All" || dateWindow !== "all" || savedOnly;
+
+    const clearFilters = () => {
+        setQuery("");
+        setCat("All");
+        setOrgFilter("All");
+        setTag("All");
+        setDateWindow("all");
+        setSavedOnly(false);
+        toast.success("Filters cleared");
+    };
 
     return (
         <div data-testid="events-page" className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
@@ -180,10 +245,80 @@ export default function Events() {
                 </select>
             </div>
 
+            <div className="mb-6 flex flex-wrap items-center gap-2">
+                <button
+                    type="button"
+                    onClick={() => setDateWindow("all")}
+                    className={`px-3 py-1.5 rounded-full text-xs font-semibold border transition ${dateWindow === "all" ? "border-foreground bg-foreground text-background" : "border-border bg-surface"}`}
+                >
+                    Any date
+                </button>
+                <button
+                    type="button"
+                    onClick={() => setDateWindow("today")}
+                    className={`px-3 py-1.5 rounded-full text-xs font-semibold border transition ${dateWindow === "today" ? "border-foreground bg-foreground text-background" : "border-border bg-surface"}`}
+                >
+                    Today
+                </button>
+                <button
+                    type="button"
+                    onClick={() => setDateWindow("tomorrow")}
+                    className={`px-3 py-1.5 rounded-full text-xs font-semibold border transition ${dateWindow === "tomorrow" ? "border-foreground bg-foreground text-background" : "border-border bg-surface"}`}
+                >
+                    Tomorrow
+                </button>
+                <button
+                    type="button"
+                    onClick={() => setDateWindow("weekend")}
+                    className={`px-3 py-1.5 rounded-full text-xs font-semibold border transition ${dateWindow === "weekend" ? "border-foreground bg-foreground text-background" : "border-border bg-surface"}`}
+                >
+                    This weekend
+                </button>
+                <button
+                    type="button"
+                    onClick={() => setSavedOnly((v) => !v)}
+                    className={`px-3 py-1.5 rounded-full text-xs font-semibold border transition ${savedOnly ? "border-foreground bg-foreground text-background" : "border-border bg-surface"}`}
+                >
+                    Saved only ({savedEventIds.length})
+                </button>
+                {hasActiveFilters && (
+                    <button
+                        type="button"
+                        onClick={clearFilters}
+                        className="ml-auto px-3 py-1.5 rounded-full text-xs font-semibold border border-border bg-background"
+                    >
+                        Clear filters
+                    </button>
+                )}
+            </div>
+
+            <p className="mb-6 text-sm text-muted-foreground">
+                {view === "list"
+                    ? `Showing ${filtered.length} upcoming event${filtered.length === 1 ? "" : "s"}${hasActiveFilters ? " with your filters" : ""}.`
+                    : `Showing ${filteredAll.length} event${filteredAll.length === 1 ? "" : "s"} across the calendar.`}
+            </p>
+
             {view === "list" ? (
                 filtered.length === 0 ? (
                     <div className="rounded-3xl border border-dashed border-border p-12 text-center text-muted-foreground">
-                        No events match those filters. Try clearing them.
+                        <p>No events match those filters right now.</p>
+                        <div className="mt-4 flex justify-center gap-2 flex-wrap">
+                            {hasActiveFilters && (
+                                <button
+                                    type="button"
+                                    onClick={clearFilters}
+                                    className="px-4 py-2 rounded-full bg-foreground text-background text-sm font-semibold"
+                                >
+                                    Clear filters
+                                </button>
+                            )}
+                            <Link
+                                to="/submit-event"
+                                className="px-4 py-2 rounded-full border border-border text-sm font-semibold"
+                            >
+                                Suggest an event
+                            </Link>
+                        </div>
                     </div>
                 ) : (
                     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">

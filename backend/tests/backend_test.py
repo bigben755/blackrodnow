@@ -17,6 +17,7 @@ import time
 import uuid
 import pytest
 import requests
+from PIL import Image, ImageDraw, ImageFont
 
 BASE_URL = os.environ["REACT_APP_BACKEND_URL"].rstrip("/")
 API = f"{BASE_URL}/api"
@@ -163,6 +164,30 @@ class TestParseContentMultiEvent:
         for it in d["items"]:
             assert it.get("title")
             assert it.get("suggested_type") in ("event", "update")
+
+
+class TestAdminImageParse:
+    def test_image_upload_is_ocrd(self, api):
+        image = Image.new("RGB", (900, 320), "white")
+        draw = ImageDraw.Draw(image)
+        draw.text((40, 80), "Village Hall Open Day", fill="black")
+        draw.text((40, 160), "Saturday 14 June 11am-4pm", fill="black")
+        buffer = io.BytesIO()
+        image.save(buffer, format="PNG")
+        buffer.seek(0)
+
+        files = [
+            ("files", ("flyer.png", buffer, "image/png")),
+        ]
+        data = {"source_org_slug": "blackrod-town-council"}
+        r = api.post(f"{API}/admin/documents/parse", files=files, data=data, timeout=120)
+        assert r.status_code == 200, r.text
+        payload = r.json()
+        assert payload["documents"]
+        doc = payload["documents"][0]
+        assert doc["source_type"] == "image"
+        assert doc["items"]
+        assert any("Village Hall" in item["title"] or item["suggested_type"] == "event" for item in doc["items"])
 
 
 # ─────────── Contact admin inbox ───────────
@@ -573,3 +598,34 @@ class TestDocuments:
         assert r2.status_code == 200
         ids = [x["id"] for x in r2.json()]
         assert doc_id in ids
+
+
+class TestAdminBulkDocumentParse:
+    def test_parse_multiple_documents(self, api):
+        from docx import Document as DocxDocument
+
+        txt = io.BytesIO(
+            b"Blackrod Bloomers Committee update. New spring fair on Saturday 14 June at the village hall."
+        )
+
+        docx_buf = io.BytesIO()
+        doc = DocxDocument()
+        doc.add_paragraph("Blackrod Town Council")
+        doc.add_paragraph("Annual membership update for approved organisations.")
+        doc.save(docx_buf)
+        docx_buf.seek(0)
+
+        files = [
+            ("files", (f"TEST_event_{uuid.uuid4().hex[:6]}.txt", txt, "text/plain")),
+            ("files", (f"TEST_org_{uuid.uuid4().hex[:6]}.docx", docx_buf, "application/vnd.openxmlformats-officedocument.wordprocessingml.document")),
+        ]
+        r = api.post(f"{API}/admin/documents/parse", files=files, timeout=120)
+        assert r.status_code == 200, r.text
+        d = r.json()
+        assert "documents" in d and len(d["documents"]) == 2
+        for doc in d["documents"]:
+            assert doc["filename"]
+            assert isinstance(doc.get("items"), list) and doc["items"]
+            item = doc["items"][0]
+            assert item["title"]
+            assert item["action"] in ("new_event", "update_event", "new_organisation", "update_organisation", "unclear")

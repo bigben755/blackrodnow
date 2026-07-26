@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { api } from "@/lib/api";
-import { Mail, Eye, Send, Loader2, Users, AlertTriangle, CheckCircle2 } from "lucide-react";
+import { Mail, Eye, Send, Loader2, Users, AlertTriangle, CheckCircle2, Paperclip, X } from "lucide-react";
 import { toast } from "sonner";
 import {
     Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription,
@@ -14,6 +14,7 @@ import {
  * - Send: POSTs to `/api/admin/email/send` and surfaces success/failure per address.
  */
 export default function AdminEmailCompose() {
+    const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
     const [senders, setSenders] = useState([]);
     const [defaultSender, setDefaultSender] = useState("");
     const [form, setForm] = useState({
@@ -23,6 +24,7 @@ export default function AdminEmailCompose() {
         from_email: "",
         reply_to: "",
     });
+    const [attachments, setAttachments] = useState([]);
     const [preview, setPreview] = useState(null);
     const [previewOpen, setPreviewOpen] = useState(false);
     const [busy, setBusy] = useState(false);
@@ -53,10 +55,29 @@ export default function AdminEmailCompose() {
 
     const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
 
+    const buildPayload = () => {
+        const payload = new FormData();
+        Object.entries(form).forEach(([key, value]) => payload.append(key, value || ""));
+        attachments.forEach((file) => payload.append("attachments", file));
+        return payload;
+    };
+
+    const formatBytes = (bytes) => {
+        if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+        if (bytes >= 1024) return `${Math.round(bytes / 1024)} KB`;
+        return `${bytes} B`;
+    };
+
+    const oversizedAttachment = attachments.find((file) => file.size > MAX_ATTACHMENT_BYTES);
+
     const doPreview = async () => {
+        if (oversizedAttachment) {
+            toast.error(`${oversizedAttachment.name} is larger than 10 MB`);
+            return;
+        }
         setBusy(true);
         try {
-            const p = await api.adminEmailPreview(form);
+            const p = await api.adminEmailPreview(buildPayload());
             setPreview(p);
             setPreviewOpen(true);
         } catch (e) {
@@ -75,14 +96,19 @@ export default function AdminEmailCompose() {
             toast.error("Subject and body are required");
             return;
         }
+        if (oversizedAttachment) {
+            toast.error(`${oversizedAttachment.name} is larger than 10 MB`);
+            return;
+        }
         if (!window.confirm(`Send email to ${validCount} recipient${validCount === 1 ? "" : "s"}?`)) return;
         setSending(true);
         try {
-            const r = await api.adminEmailSend(form);
+            const r = await api.adminEmailSend(buildPayload());
             setLastResult(r);
             if (r.ok) {
                 toast.success(`Sent to ${r.sent} recipient${r.sent === 1 ? "" : "s"}`);
                 setForm((f) => ({ ...f, to: "", subject: "", body: "" }));
+                setAttachments([]);
                 setPreviewOpen(false);
             } else {
                 toast.error(`Sent ${r.sent}, failed ${r.failed}. See details below.`);
@@ -195,6 +221,42 @@ export default function AdminEmailCompose() {
                     </div>
                 </label>
 
+                <label className="block">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Attachments</span>
+                    <input
+                        data-testid="compose-attachments"
+                        type="file"
+                        multiple
+                        onChange={(e) => setAttachments(Array.from(e.target.files || []))}
+                        className="mt-1 block w-full text-sm text-muted-foreground file:mr-3 file:rounded-full file:border-0 file:bg-muted file:px-4 file:py-2 file:text-xs file:font-semibold file:text-foreground hover:file:bg-muted/80"
+                    />
+                    <div className="mt-1 text-[11px] text-muted-foreground">
+                        Optional. Attach one or more files to the outgoing email. Max 10 MB per file.
+                    </div>
+                    {attachments.length > 0 && (
+                        <div className="mt-2 flex flex-wrap gap-2">
+                            {attachments.map((file, index) => (
+                                <span
+                                    key={`${file.name}-${index}`}
+                                    className="inline-flex items-center gap-2 rounded-full border border-border bg-muted px-3 py-1 text-xs"
+                                >
+                                    <Paperclip className="h-3 w-3 text-muted-foreground" />
+                                    <span className="max-w-[220px] truncate">{file.name}</span>
+                                    <span className="text-[10px] text-muted-foreground">{formatBytes(file.size)}</span>
+                                    <button
+                                        type="button"
+                                        onClick={() => setAttachments((current) => current.filter((_, itemIndex) => itemIndex !== index))}
+                                        className="inline-flex h-4 w-4 items-center justify-center rounded-full hover:bg-background"
+                                        aria-label={`Remove ${file.name}`}
+                                    >
+                                        <X className="h-3 w-3" />
+                                    </button>
+                                </span>
+                            ))}
+                        </div>
+                    )}
+                </label>
+
                 <div className="flex flex-wrap gap-2 pt-1">
                     <button
                         data-testid="compose-preview"
@@ -257,6 +319,10 @@ export default function AdminEmailCompose() {
                             <Row label="Subject" value={preview?.subject} />
                             <Row label="From" value={preview?.from} mono />
                             <Row label="To" value={preview?.recipients?.join(", ")} />
+                            <Row
+                                label="Attachments"
+                                value={preview?.attachments?.length ? preview.attachments.map((file) => file.filename).join(", ") : "None"}
+                            />
                             {preview?.invalid_recipients?.length > 0 && (
                                 <Row label="Skipped (invalid)" value={preview.invalid_recipients.join(", ")} danger />
                             )}

@@ -1,7 +1,8 @@
-import React, { useState } from "react";
-import { Link, NavLink, useLocation } from "react-router-dom";
+import React, { useEffect, useState } from "react";
+import { Link, NavLink, useLocation, useNavigate } from "react-router-dom";
 import { useApp } from "@/context/AppContext";
 import DemoTour from "@/components/DemoTour";
+import { api } from "@/lib/api";
 import {
     Moon,
     Sun,
@@ -13,6 +14,7 @@ import {
     HelpCircle,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { toast } from "sonner";
 import {
     DropdownMenu,
     DropdownMenuContent,
@@ -21,10 +23,21 @@ import {
     DropdownMenuSeparator,
     DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import {
+    Dialog,
+    DialogContent,
+    DialogDescription,
+    DialogFooter,
+    DialogHeader,
+    DialogTitle,
+} from "@/components/ui/dialog";
+
+const ADMIN_LAUNCH_CODE = (process.env.REACT_APP_ADMIN_LAUNCH_CODE || "").trim();
 
 const NAV = [
     { to: "/", label: "Home" },
     { to: "/events", label: "Events" },
+    { to: "/saved-events", label: "Saved" },
     { to: "/organisations", label: "Organisations" },
     { to: "/local-feed", label: "Local Feed" },
     { to: "/volunteering", label: "Volunteering" },
@@ -46,14 +59,81 @@ export const Brand = ({ size = "default" }) => (
 );
 
 function Navbar() {
-    const { theme, toggleTheme, role, setRole } = useApp();
+    const {
+        theme,
+        toggleTheme,
+        role,
+        setRole,
+        adminUnlocked,
+        unlockAdmin,
+        lockAdmin,
+        orgs,
+        unlockOrgAccess,
+        setActiveOrgSlug,
+    } = useApp();
     const [open, setOpen] = useState(false);
-    const loc = useLocation();
+    const [adminLoginOpen, setAdminLoginOpen] = useState(false);
+    const [adminCodeInput, setAdminCodeInput] = useState("");
+    const [orgLoginOpen, setOrgLoginOpen] = useState(false);
+    const [orgLoginBusy, setOrgLoginBusy] = useState(false);
+    const [orgSlugInput, setOrgSlugInput] = useState("");
+    const [orgPasswordInput, setOrgPasswordInput] = useState("");
+    const location = useLocation();
+    const navigate = useNavigate();
+
+    useEffect(() => {
+        if (!orgSlugInput && orgs.length) setOrgSlugInput(orgs[0].slug);
+    }, [orgs, orgSlugInput]);
+
+    useEffect(() => {
+        setOpen(false);
+    }, [location.pathname]);
+
+    const submitAdminLogin = () => {
+        if (!ADMIN_LAUNCH_CODE) {
+            toast.error("Admin login is not configured. Set REACT_APP_ADMIN_LAUNCH_CODE.");
+            return;
+        }
+        if ((adminCodeInput || "").trim() !== ADMIN_LAUNCH_CODE) {
+            toast.error("Invalid admin code");
+            return;
+        }
+        unlockAdmin((adminCodeInput || "").trim());
+        setAdminCodeInput("");
+        setAdminLoginOpen(false);
+        toast.success("Admin mode unlocked");
+    };
+
+    const submitOrgLogin = async () => {
+        if (!orgSlugInput) {
+            toast.error("Select an organisation");
+            return;
+        }
+        if (!orgPasswordInput.trim()) {
+            toast.error("Enter organisation password");
+            return;
+        }
+        setOrgLoginBusy(true);
+        try {
+            const result = await api.loginOrgAccess(orgSlugInput, { password: orgPasswordInput.trim() });
+            unlockOrgAccess(orgSlugInput, result?.token || "");
+            setActiveOrgSlug(orgSlugInput);
+            setRole("org");
+            setOrgPasswordInput("");
+            setOrgLoginOpen(false);
+            toast.success("Organisation access granted");
+            navigate("/organisation-dashboard");
+        } catch (error) {
+            toast.error(error?.response?.data?.detail || "Organisation login failed");
+        } finally {
+            setOrgLoginBusy(false);
+        }
+    };
 
     return (
         <header
             data-testid="site-header"
-            className="sticky top-0 z-50 w-full backdrop-blur-xl bg-background/80 border-b border-border/60"
+            className="sticky top-0 z-[100] w-full backdrop-blur-xl bg-background/80 border-b border-border/60"
         >
             <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
                 <div className="flex items-center gap-8">
@@ -108,86 +188,113 @@ function Navbar() {
                         Help
                     </Link>
 
-                    <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
+                    {adminUnlocked ? (
+                        <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                                <Button
+                                    data-testid="role-switcher"
+                                    variant="ghost"
+                                    size="sm"
+                                    className="rounded-full text-xs font-bold uppercase tracking-wider"
+                                >
+                                    {role === "guest"
+                                        ? "Resident"
+                                        : role === "org"
+                                        ? "Organisation"
+                                        : "Site Admin"}
+                                </Button>
+                            </DropdownMenuTrigger>
+
+                            <DropdownMenuContent align="end" className="rounded-2xl">
+                                <DropdownMenuLabel>Launch day role switcher</DropdownMenuLabel>
+                                <DropdownMenuSeparator />
+
+                                <DropdownMenuItem
+                                    data-testid="role-guest"
+                                    onClick={() => setRole("guest")}
+                                >
+                                    <div className="flex flex-col gap-0.5">
+                                        <span>Resident</span>
+                                        <span className="text-[11px] text-muted-foreground">
+                                            Public browsing view seen by residents.
+                                        </span>
+                                    </div>
+                                </DropdownMenuItem>
+
+                                <DropdownMenuItem
+                                    data-testid="role-org"
+                                    onClick={() => setRole("org")}
+                                >
+                                    <div className="flex flex-col gap-0.5">
+                                        <span>Organisation</span>
+                                        <span className="text-[11px] text-muted-foreground">
+                                            Organisation tools and dashboard access.
+                                        </span>
+                                    </div>
+                                </DropdownMenuItem>
+
+                                <DropdownMenuItem
+                                    data-testid="role-admin"
+                                    onClick={() => setRole("admin")}
+                                >
+                                    <div className="flex flex-col gap-0.5">
+                                        <span>Site Admin</span>
+                                        <span className="text-[11px] text-muted-foreground">
+                                            Full moderation and publishing tools.
+                                        </span>
+                                    </div>
+                                </DropdownMenuItem>
+
+                                <DropdownMenuSeparator />
+
+                                <DropdownMenuItem asChild>
+                                    <Link to="/admin" data-testid="goto-admin">
+                                        Admin dashboard
+                                    </Link>
+                                </DropdownMenuItem>
+
+                                <DropdownMenuItem asChild>
+                                    <Link
+                                        to="/organisation-dashboard"
+                                        data-testid="goto-org-dashboard"
+                                    >
+                                        Organisation dashboard
+                                    </Link>
+                                </DropdownMenuItem>
+
+                                <DropdownMenuItem
+                                    data-testid="admin-logout"
+                                    onClick={() => {
+                                        lockAdmin();
+                                        toast.success("Returned to resident mode");
+                                    }}
+                                >
+                                    Exit admin mode
+                                </DropdownMenuItem>
+                            </DropdownMenuContent>
+                        </DropdownMenu>
+                    ) : (
+                        <>
                             <Button
-                                data-testid="role-switcher"
+                                data-testid="org-login-open"
                                 variant="ghost"
                                 size="sm"
+                                onClick={() => setOrgLoginOpen(true)}
                                 className="rounded-full text-xs font-bold uppercase tracking-wider"
                             >
-                                {role === "guest"
-                                    ? "Guest"
-                                    : role === "org"
-                                    ? "Organisation"
-                                    : "Site Admin"}
+                                Org login
                             </Button>
-                        </DropdownMenuTrigger>
-
-                        <DropdownMenuContent align="end" className="rounded-2xl">
-                            <DropdownMenuLabel>Demo role switcher</DropdownMenuLabel>
-                            <DropdownMenuSeparator />
-
-                            <DropdownMenuItem
-                                data-testid="role-guest"
-                                onClick={() => setRole("guest")}
+                            <Button
+                                data-testid="admin-login-open"
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => setAdminLoginOpen(true)}
+                                className="rounded-full text-xs font-bold uppercase tracking-wider"
                             >
-                                <div className="flex flex-col gap-0.5">
-                                    <span>Guest</span>
-                                    <span className="text-[11px] text-muted-foreground">
-                                        No login needed; can browse public pages.
-                                    </span>
-                                </div>
-                            </DropdownMenuItem>
-
-                            <DropdownMenuItem
-                                data-testid="role-org"
-                                onClick={() => setRole("org")}
-                            >
-                                <div className="flex flex-col gap-0.5">
-                                    <span>Organisation</span>
-                                    <span className="text-[11px] text-muted-foreground">
-                                        Same as Guest plus access to the organisation dashboard.
-                                    </span>
-                                </div>
-                            </DropdownMenuItem>
-
-                            <DropdownMenuItem
-                                data-testid="role-admin"
-                                onClick={() => setRole("admin")}
-                            >
-                                <div className="flex flex-col gap-0.5">
-                                    <span>Site Admin</span>
-                                    <span className="text-[11px] text-muted-foreground">
-                                        Manage subscribers, organisations, notifications and metrics.
-                                    </span>
-                                </div>
-                            </DropdownMenuItem>
-
-                            <DropdownMenuSeparator />
-
-                            <DropdownMenuItem asChild>
-                                <Link to="/admin" data-testid="goto-admin">
-                                    Admin dashboard
-                                </Link>
-                            </DropdownMenuItem>
-
-                            <DropdownMenuItem asChild>
-                                <Link
-                                    to="/organisation-dashboard"
-                                    data-testid="goto-org-dashboard"
-                                >
-                                    Organisation dashboard
-                                </Link>
-                            </DropdownMenuItem>
-
-                            <DropdownMenuItem asChild>
-                                <Link to="/faq" data-testid="goto-help-centre">
-                                    Help Centre
-                                </Link>
-                            </DropdownMenuItem>
-                        </DropdownMenuContent>
-                    </DropdownMenu>
+                                Admin login
+                            </Button>
+                        </>
+                    )}
 
                     <button
                         data-testid="theme-toggle"
@@ -260,7 +367,132 @@ function Navbar() {
                             Add Org
                         </Link>
                     </div>
+
+                    {!adminUnlocked && (
+                        <>
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    setOpen(false);
+                                    setOrgLoginOpen(true);
+                                }}
+                                className="w-full mt-2 px-3 py-2 rounded-full text-sm font-semibold border border-border"
+                            >
+                                Org login
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    setOpen(false);
+                                    setAdminLoginOpen(true);
+                                }}
+                                className="w-full mt-2 px-3 py-2 rounded-full text-sm font-semibold border border-border"
+                            >
+                                Admin login
+                            </button>
+                        </>
+                    )}
                 </div>
+            )}
+
+            {orgLoginOpen && (
+                <Dialog open={orgLoginOpen} onOpenChange={setOrgLoginOpen}>
+                    <DialogContent className="sm:max-w-md">
+                        <DialogHeader>
+                            <DialogTitle>Organisation access</DialogTitle>
+                            <DialogDescription>
+                                Enter your organisation password to open your dashboard.
+                            </DialogDescription>
+                        </DialogHeader>
+
+                        <label className="text-sm">
+                            <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Organisation</span>
+                            <select
+                                value={orgSlugInput}
+                                onChange={(e) => setOrgSlugInput(e.target.value)}
+                                className="mt-1 w-full px-3 py-2 rounded-2xl border border-border bg-background"
+                            >
+                                {orgs.map((o) => (
+                                    <option key={o.slug} value={o.slug}>{o.name}</option>
+                                ))}
+                            </select>
+                        </label>
+
+                        <label className="text-sm">
+                            <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Password</span>
+                            <input
+                                type="password"
+                                value={orgPasswordInput}
+                                onChange={(e) => setOrgPasswordInput(e.target.value)}
+                                onKeyDown={(e) => {
+                                    if (e.key === "Enter") submitOrgLogin();
+                                }}
+                                className="mt-1 w-full px-3 py-2 rounded-2xl border border-border bg-background"
+                            />
+                        </label>
+
+                        <DialogFooter>
+                            <button
+                                type="button"
+                                onClick={() => setOrgLoginOpen(false)}
+                                className="px-4 py-2 rounded-full border border-border text-sm font-semibold"
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                type="button"
+                                disabled={orgLoginBusy}
+                                onClick={submitOrgLogin}
+                                className="px-4 py-2 rounded-full bg-primary text-primary-foreground text-sm font-semibold disabled:opacity-60"
+                            >
+                                Unlock
+                            </button>
+                        </DialogFooter>
+                    </DialogContent>
+                </Dialog>
+            )}
+
+            {adminLoginOpen && (
+                <Dialog open={adminLoginOpen} onOpenChange={setAdminLoginOpen}>
+                    <DialogContent className="sm:max-w-md">
+                        <DialogHeader>
+                            <DialogTitle>Admin access</DialogTitle>
+                            <DialogDescription>
+                                Enter launch admin code to unlock admin and role-switch features.
+                            </DialogDescription>
+                        </DialogHeader>
+
+                        <label className="text-sm">
+                            <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Launch code</span>
+                            <input
+                                type="password"
+                                value={adminCodeInput}
+                                onChange={(e) => setAdminCodeInput(e.target.value)}
+                                onKeyDown={(e) => {
+                                    if (e.key === "Enter") submitAdminLogin();
+                                }}
+                                className="mt-1 w-full px-3 py-2 rounded-2xl border border-border bg-background"
+                            />
+                        </label>
+
+                        <DialogFooter>
+                            <button
+                                type="button"
+                                onClick={() => setAdminLoginOpen(false)}
+                                className="px-4 py-2 rounded-full border border-border text-sm font-semibold"
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                type="button"
+                                onClick={submitAdminLogin}
+                                className="px-4 py-2 rounded-full bg-primary text-primary-foreground text-sm font-semibold"
+                            >
+                                Unlock
+                            </button>
+                        </DialogFooter>
+                    </DialogContent>
+                </Dialog>
             )}
         </header>
     );
@@ -268,6 +500,52 @@ function Navbar() {
 
 function Footer() {
     const { startDemo, role } = useApp();
+    const [wizardOpen, setWizardOpen] = useState(false);
+    const [wizardBusy, setWizardBusy] = useState(false);
+    const [wizardForm, setWizardForm] = useState({
+        name: "",
+        email: "",
+        business: "",
+        service: "Website design and build",
+        budget: "",
+        timeline: "",
+        details: "",
+    });
+
+    const submitWizardForm = async () => {
+        if (!wizardForm.name || !wizardForm.email || !wizardForm.details) {
+            toast.error("Please add your name, email and project details");
+            return;
+        }
+        setWizardBusy(true);
+        try {
+            await api.webWizardEnquiry({
+                from_name: wizardForm.name,
+                from_email: wizardForm.email,
+                business: wizardForm.business,
+                service: wizardForm.service,
+                budget: wizardForm.budget,
+                timeline: wizardForm.timeline,
+                details: wizardForm.details,
+            });
+            toast.success("Thanks, your Web Design Wizard enquiry has been sent");
+            setWizardOpen(false);
+            setWizardForm({
+                name: "",
+                email: "",
+                business: "",
+                service: "Website design and build",
+                budget: "",
+                timeline: "",
+                details: "",
+            });
+        } catch {
+            toast.error("Could not send your enquiry right now");
+        } finally {
+            setWizardBusy(false);
+        }
+    };
+
     return (
         <footer
             data-testid="site-footer"
@@ -372,6 +650,23 @@ function Footer() {
                         project.
                     </span>
 
+                    <div className="flex items-center gap-3 text-sm font-semibold text-foreground">
+                        <span>This website was designed and created by The Web Design Wizard</span>
+                        <button
+                            type="button"
+                            onClick={() => setWizardOpen(true)}
+                            className="rounded-2xl p-1 hover:bg-muted transition-colors"
+                            aria-label="Open Web Design Wizard contact form"
+                        >
+                            <img
+                                src="/webwizard.png"
+                                alt="The Web Design Wizard logo"
+                                className="h-[5.625rem] sm:h-[6.75rem] w-auto"
+                                loading="lazy"
+                            />
+                        </button>
+                    </div>
+
                     <div className="flex items-center gap-4">
                         <a href="#" className="hover:text-foreground">
                             Privacy
@@ -397,6 +692,75 @@ function Footer() {
                     </div>
                 </div>
             </div>
+
+            {wizardOpen && (
+                <Dialog open={wizardOpen} onOpenChange={setWizardOpen}>
+                    <DialogContent className="w-[calc(100vw-1.25rem)] sm:max-w-xl max-h-[88vh] overflow-y-auto p-4 sm:p-6">
+                    <DialogHeader>
+                        <DialogTitle>The Web Design Wizard</DialogTitle>
+                        <DialogDescription>
+                            Tell us what you need and we will follow up with service options and a quote.
+                        </DialogDescription>
+                    </DialogHeader>
+
+                    <div className="space-y-3">
+                        <div className="rounded-2xl border border-border bg-muted/30 p-3 text-sm">
+                            <p className="font-semibold">Web design and development services</p>
+                            <p className="text-muted-foreground mt-1">Brand-led websites, UX improvements, and full build support for local organisations and businesses.</p>
+                        </div>
+
+                        <div className="grid sm:grid-cols-2 gap-3">
+                            <label className="text-sm">
+                                <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Name</span>
+                                <input value={wizardForm.name} onChange={(e) => setWizardForm((prev) => ({ ...prev, name: e.target.value }))} className="mt-1 w-full px-3 py-2 rounded-2xl border border-border bg-background text-base sm:text-sm" />
+                            </label>
+                            <label className="text-sm">
+                                <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Email</span>
+                                <input type="email" value={wizardForm.email} onChange={(e) => setWizardForm((prev) => ({ ...prev, email: e.target.value }))} className="mt-1 w-full px-3 py-2 rounded-2xl border border-border bg-background text-base sm:text-sm" />
+                            </label>
+                        </div>
+
+                        <div className="grid sm:grid-cols-2 gap-3">
+                            <label className="text-sm">
+                                <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Business or organisation</span>
+                                <input value={wizardForm.business} onChange={(e) => setWizardForm((prev) => ({ ...prev, business: e.target.value }))} className="mt-1 w-full px-3 py-2 rounded-2xl border border-border bg-background text-base sm:text-sm" />
+                            </label>
+                            <label className="text-sm">
+                                <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Service required</span>
+                                <select value={wizardForm.service} onChange={(e) => setWizardForm((prev) => ({ ...prev, service: e.target.value }))} className="mt-1 w-full px-3 py-2 rounded-2xl border border-border bg-background text-base sm:text-sm">
+                                    <option>Website design and build</option>
+                                    <option>Website redesign</option>
+                                    <option>Landing page and conversion optimisation</option>
+                                    <option>Ongoing website support</option>
+                                    <option>Branding and web strategy</option>
+                                </select>
+                            </label>
+                        </div>
+
+                        <div className="grid sm:grid-cols-2 gap-3">
+                            <label className="text-sm">
+                                <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Budget range</span>
+                                <input value={wizardForm.budget} onChange={(e) => setWizardForm((prev) => ({ ...prev, budget: e.target.value }))} placeholder="e.g. GBP2,000 to GBP5,000" className="mt-1 w-full px-3 py-2 rounded-2xl border border-border bg-background text-base sm:text-sm" />
+                            </label>
+                            <label className="text-sm">
+                                <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Timeline</span>
+                                <input value={wizardForm.timeline} onChange={(e) => setWizardForm((prev) => ({ ...prev, timeline: e.target.value }))} placeholder="e.g. Launch in 6 weeks" className="mt-1 w-full px-3 py-2 rounded-2xl border border-border bg-background text-base sm:text-sm" />
+                            </label>
+                        </div>
+
+                        <label className="text-sm block">
+                            <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Project details</span>
+                            <textarea rows={5} value={wizardForm.details} onChange={(e) => setWizardForm((prev) => ({ ...prev, details: e.target.value }))} placeholder="Tell us about goals, pages, functionality and style preferences" className="mt-1 w-full px-3 py-2 rounded-2xl border border-border bg-background text-base sm:text-sm" />
+                        </label>
+                    </div>
+
+                    <DialogFooter className="mt-2 gap-2">
+                        <button type="button" onClick={() => setWizardOpen(false)} className="px-4 py-2 rounded-full border border-border text-sm font-semibold">Close</button>
+                        <button type="button" onClick={submitWizardForm} disabled={wizardBusy} className="px-4 py-2 rounded-full bg-primary text-primary-foreground text-sm font-semibold disabled:opacity-60">Request quote</button>
+                    </DialogFooter>
+                    </DialogContent>
+                </Dialog>
+            )}
         </footer>
     );
 }

@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { useApp } from "@/context/AppContext";
 import { EventCard, OrgCard, VolunteerCard } from "@/components/Cards";
@@ -7,7 +7,7 @@ import {
     ArrowRight,
     Sparkles,
     Coffee,
-    Wand2,
+    Heart,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -19,12 +19,114 @@ const COMMUNITY_IMAGES = {
     localBusiness: "https://images.unsplash.com/photo-1445116572660-236099ec97a0?auto=format&fit=crop&w=1200&q=80",
 };
 
+const HERO_SEQUENCE = [
+    { key: "on", lead: "What's", accent: "On" },
+    { key: "new", lead: "What's", accent: "New" },
+    { key: "next", lead: "What's", accent: "Next" },
+    { key: "now", lead: "Blackrod", accent: "Now" },
+];
+
 export default function Home() {
-    const { events, orgs, volunteerOpps, stats, ready } = useApp();
+    const { events, orgs, volunteerOpps, stats, ready, savedEventIds } = useApp();
     const subscribers = stats?.subscribers || 0;
+    const [headlineStep, setHeadlineStep] = useState(0);
+    const [activeFeed, setActiveFeed] = useState("on");
+    const [previousSeenEventIds, setPreviousSeenEventIds] = useState([]);
+    const [lastVisitedAt, setLastVisitedAt] = useState("");
+    const listRef = useRef(null);
+
+    useEffect(() => {
+        if (headlineStep >= HERO_SEQUENCE.length - 1) return;
+        const timer = window.setTimeout(() => {
+            setHeadlineStep((current) => Math.min(current + 1, HERO_SEQUENCE.length - 1));
+        }, 2000);
+        return () => window.clearTimeout(timer);
+    }, [headlineStep]);
+
+    const approved = useMemo(() => events.filter((e) => e.status === "approved"), [events]);
+    const now = new Date();
+
+    const sortedByDate = useMemo(() => {
+        const n = new Date();
+        return [...approved]
+            .filter((e) => new Date(e.end || e.start) >= n)
+            .sort((a, b) => new Date(a.start) - new Date(b.start));
+    }, [approved]);
+
+    const upcoming = sortedByDate.slice(0, 8);
+
+    const thisWeek = useMemo(() => {
+        const weekFromNow = new Date();
+        weekFromNow.setDate(weekFromNow.getDate() + 7);
+        return sortedByDate.filter((e) => new Date(e.start) <= weekFromNow);
+    }, [sortedByDate]);
+
+    const nextThirtyDays = useMemo(() => {
+        const end = new Date();
+        end.setDate(end.getDate() + 30);
+        return sortedByDate.filter((e) => new Date(e.start) <= end);
+    }, [sortedByDate]);
+
+    // Read previous visit data once on mount
+    useEffect(() => {
+        const seenRaw = localStorage.getItem("rn-home-seen-events");
+        const lastVisitRaw = localStorage.getItem("rn-home-last-visit");
+        let previous = [];
+        try {
+            previous = seenRaw ? JSON.parse(seenRaw) : [];
+        } catch {
+            previous = [];
+        }
+        setPreviousSeenEventIds(Array.isArray(previous) ? previous : []);
+        setLastVisitedAt(lastVisitRaw || "");
+    }, []);
+
+    // Write current visit data when approved events are known
+    useEffect(() => {
+        if (approved.length === 0) return;
+        localStorage.setItem("rn-home-seen-events", JSON.stringify(approved.map((e) => e.id)));
+        localStorage.setItem("rn-home-last-visit", new Date().toISOString());
+    }, [approved]);
+
+    const whatsNew = useMemo(() => {
+        const previousSet = new Set(previousSeenEventIds);
+        return sortedByDate.filter((e) => !previousSet.has(e.id));
+    }, [sortedByDate, previousSeenEventIds]);
+
+    const streamMeta = {
+        on: {
+            label: "What's On",
+            subtitle: "Events happening in the next 7 days",
+            events: thisWeek,
+        },
+        new: {
+            label: "What's New",
+            subtitle: lastVisitedAt
+                ? `Posted since your last visit (${new Date(lastVisitedAt).toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })})`
+                : "Posted since your last visit",
+            events: whatsNew,
+        },
+        next: {
+            label: "What's Next",
+            subtitle: "Events in the next 30 days",
+            events: nextThirtyDays,
+        },
+    };
+
+    const selectedStream = streamMeta[activeFeed] || streamMeta.on;
+
+    const savedUpcoming = useMemo(() => {
+        const saved = new Set(savedEventIds);
+        return sortedByDate.filter((e) => saved.has(e.id)).slice(0, 3);
+    }, [sortedByDate, savedEventIds]);
+
+    const onPillClick = (key) => {
+        setActiveFeed(key);
+        listRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    };
 
     // Guard early loading: return a skeleton while seed/refresh is in flight
-    if (!ready || orgs.length === 0) {
+    if (!ready) {
         return (
             <div data-testid="home-page" className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-20 text-center">
                 <div className="animate-pulse text-muted-foreground text-sm">Loading Blackrod Now…</div>
@@ -32,19 +134,33 @@ export default function Home() {
         );
     }
 
-    const approved = events.filter((e) => e.status === "approved");
-    const now = new Date();
-
-    const sortedByDate = [...approved]
-        .filter((e) => new Date(e.end || e.start) >= now)
-        .sort((a, b) => new Date(a.start) - new Date(b.start));
-
-    const upcoming = sortedByDate.slice(0, 8);
-
-    const weekFromNow = new Date();
-    weekFromNow.setDate(weekFromNow.getDate() + 7);
-
-    const thisWeek = sortedByDate.filter((e) => new Date(e.start) <= weekFromNow);
+    if (orgs.length === 0 && events.length === 0) {
+        return (
+            <div data-testid="home-page" className="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 py-16">
+                <div className="rounded-3xl border border-border bg-surface p-8">
+                    <h1 className="font-display font-black text-3xl tracking-tight">Blackrod Now is temporarily offline</h1>
+                    <p className="mt-3 text-sm text-muted-foreground">
+                        We could not load community data right now. Navigation is still available, but content may be limited until the backend is reachable again.
+                    </p>
+                    <div className="mt-5 flex flex-wrap gap-2">
+                        <button
+                            type="button"
+                            onClick={() => window.location.reload()}
+                            className="inline-flex items-center px-4 py-2 rounded-full bg-primary text-primary-foreground text-sm font-semibold"
+                        >
+                            Retry
+                        </button>
+                        <Link
+                            to="/contact"
+                            className="inline-flex items-center px-4 py-2 rounded-full border border-border text-sm font-semibold"
+                        >
+                            Contact us
+                        </Link>
+                    </div>
+                </div>
+            </div>
+        );
+    }
 
     const featuredEvents = sortedByDate.filter((e) => e.featured).slice(0, 3);
     const featuredOrgs = orgs.slice(0, 4);
@@ -64,11 +180,31 @@ export default function Home() {
                         </div>
 
                         <h1 className="font-display font-black tracking-tight text-5xl sm:text-6xl lg:text-7xl leading-[0.95] text-foreground">
-                            Blackrod<span className="text-primary"> Now</span>
-                            <span className="block text-foreground/70 text-3xl sm:text-4xl lg:text-5xl font-bold mt-3">
-                                What's on, what's new, what's next.
+                            <span className="sr-only">What's On, What's New, What's Next, Blackrod Now</span>
+                            <span
+                                key={headlineStep}
+                                className={`hero-sequence-headline block mt-1 ${headlineStep < HERO_SEQUENCE.length - 1 ? "hero-sequence-headline-animated" : ""}`}
+                                aria-hidden="true"
+                            >
+                                <span className="text-foreground">{HERO_SEQUENCE[headlineStep].lead} </span>
+                                <span className="text-primary">{HERO_SEQUENCE[headlineStep].accent}</span>
                             </span>
                         </h1>
+                        {headlineStep === HERO_SEQUENCE.length - 1 && (
+                            <div className="hero-sequence-taglines mt-3" aria-hidden="true">
+                                {HERO_SEQUENCE.slice(0, 3).map((line) => (
+                                    <button
+                                        key={line.key}
+                                        type="button"
+                                        onClick={() => onPillClick(line.key)}
+                                        className={`hero-sequence-tagline ${activeFeed === line.key ? "hero-sequence-tagline-active" : ""}`}
+                                    >
+                                        <span className="text-foreground">{line.lead} </span>
+                                        <span className="text-primary">{line.accent}</span>
+                                    </button>
+                                ))}
+                            </div>
+                        )}
 
                         <p className="mt-6 max-w-xl text-base sm:text-lg text-muted-foreground leading-relaxed">
                             Blackrod Now brings together local events, groups, clubs, schools, businesses and
@@ -168,14 +304,14 @@ export default function Home() {
             </section>
 
             {/* WHAT'S ON THIS WEEK */}
-            <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-16 sm:py-20">
+            <section ref={listRef} className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-16 sm:py-20">
                 <div className="flex items-end justify-between mb-8 gap-4">
                     <div>
                         <span className="text-xs font-bold uppercase tracking-[0.2em] text-primary">
-                            What's on
+                            {selectedStream.label}
                         </span>
                         <h2 className="font-display font-bold text-3xl sm:text-4xl tracking-tight mt-2">
-                            This week in Blackrod
+                            {selectedStream.subtitle}
                         </h2>
                     </div>
 
@@ -187,13 +323,15 @@ export default function Home() {
                     </Link>
                 </div>
 
-                {thisWeek.length === 0 ? (
+                {selectedStream.events.length === 0 ? (
                     <div className="rounded-3xl border border-dashed border-border p-10 text-center text-muted-foreground">
-                        Nothing on the calendar for this week — yet.
+                        {activeFeed === "new"
+                            ? "No new events since your last visit."
+                            : "No events in this window yet."}
                     </div>
                 ) : (
                     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
-                        {thisWeek.slice(0, 4).map((e) => (
+                        {selectedStream.events.slice(0, 8).map((e) => (
                             <EventCard key={e.id} event={e} orgName={orgName(e.orgSlug)} />
                         ))}
                     </div>
@@ -201,6 +339,52 @@ export default function Home() {
             </section>
 
             {/* FEATURED EVENTS */}
+            <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pb-16 sm:pb-20">
+                <div className="rounded-3xl border border-border bg-surface p-6 sm:p-8">
+                    <div className="flex flex-wrap items-start justify-between gap-3 mb-5">
+                        <div>
+                            <span className="text-xs font-bold uppercase tracking-[0.2em] text-primary">
+                                Your shortlist
+                            </span>
+                            <h2 className="font-display font-bold text-2xl sm:text-3xl tracking-tight mt-2 inline-flex items-center gap-2">
+                                <Heart className="h-5 w-5 text-primary" /> Saved this week
+                            </h2>
+                            <p className="mt-2 text-sm text-muted-foreground">
+                                Quickly jump back into events you marked to revisit.
+                            </p>
+                        </div>
+                        <Link
+                            to="/saved-events"
+                            className="inline-flex items-center gap-1 text-sm font-semibold text-primary"
+                        >
+                            Open saved events <ArrowRight className="h-4 w-4" />
+                        </Link>
+                    </div>
+
+                    {savedUpcoming.length === 0 ? (
+                        <div className="rounded-2xl border border-dashed border-border p-6 text-sm text-muted-foreground">
+                            You have not saved any upcoming events yet. Tap the heart on an event card to build your shortlist.
+                        </div>
+                    ) : (
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                            {savedUpcoming.map((e) => (
+                                <Link
+                                    key={e.id}
+                                    to={`/events/${e.id}`}
+                                    className="rounded-2xl border border-border bg-background p-4 hover:border-primary/40 transition"
+                                >
+                                    <div className="text-[10px] font-bold uppercase tracking-[0.1em] text-muted-foreground">
+                                        {new Date(e.start).toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" })}
+                                    </div>
+                                    <h3 className="mt-2 font-display font-bold text-lg leading-tight">{e.title}</h3>
+                                    <p className="mt-1 text-xs text-muted-foreground truncate">{orgName(e.orgSlug)} • {e.venue}</p>
+                                </Link>
+                            ))}
+                        </div>
+                    )}
+                </div>
+            </section>
+
             {featuredEvents.length > 0 && (
                 <section className="bg-surface border-y border-border">
                     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-16 sm:py-20">

@@ -9,7 +9,7 @@ import OrgAvatar from "@/components/OrgAvatar";
 
 export default function OrgProfileEdit() {
     const { slug } = useParams();
-    const { orgs, patchOrg, role, refresh } = useApp();
+    const { orgs, patchOrg, role, refresh, hasOrgAccess } = useApp();
     const org = orgs.find((o) => o.slug === slug);
     const navigate = useNavigate();
     const [form, setForm] = useState(null);
@@ -50,6 +50,16 @@ export default function OrgProfileEdit() {
             <div className="max-w-2xl mx-auto py-24 px-6 text-center">
                 <h1 className="font-display font-bold text-3xl">Organisation not found</h1>
                 <Link to="/organisations" className="mt-6 inline-flex text-primary font-semibold">Back to directory</Link>
+            </div>
+        );
+    }
+
+    if (role === "org" && !hasOrgAccess(slug)) {
+        return (
+            <div className="max-w-2xl mx-auto py-24 px-6 text-center">
+                <h1 className="font-display font-bold text-3xl">Organisation access required</h1>
+                <p className="mt-3 text-muted-foreground">Unlock this organisation from your dashboard before editing the profile.</p>
+                <Link to="/organisation-dashboard" className="mt-6 inline-flex text-primary font-semibold">Go to dashboard</Link>
             </div>
         );
     }

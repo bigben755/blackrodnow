@@ -102,6 +102,70 @@
         background: hsl(var(--border));
         border-radius: 999px;
     }
+
+    .hero-sequence-headline {
+        white-space: nowrap;
+    }
+
+    .hero-sequence-headline-animated {
+        animation: heroSequencePulse 2s ease-in-out both;
+    }
+
+    @keyframes heroSequencePulse {
+        from {
+            opacity: 0;
+            transform: translateY(24%);
+        }
+        16% {
+            opacity: 1;
+            transform: translateY(0);
+        }
+        74% {
+            opacity: 1;
+            transform: translateY(0);
+        }
+        to {
+            opacity: 0;
+            transform: translateY(-14%);
+        }
+    }
+
+    .hero-sequence-taglines {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.5rem;
+    }
+
+    .hero-sequence-tagline {
+        display: inline-flex;
+        align-items: center;
+        padding: 0.3rem 0.65rem;
+        border-radius: 999px;
+        font-size: 0.675rem;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: hsl(var(--muted-foreground));
+        background: hsl(var(--muted));
+        transition: transform 180ms ease, box-shadow 180ms ease, background-color 180ms ease;
+    }
+
+    .hero-sequence-tagline:hover {
+        transform: translateY(-1px);
+    }
+
+    .hero-sequence-tagline-active {
+        background: hsl(var(--secondary));
+        box-shadow: 0 6px 16px -10px rgba(0, 0, 0, 0.35);
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+        .hero-sequence-headline {
+            animation: none;
+            opacity: 1;
+            transform: none;
+        }
+    }
 }
 
 /* Selection */

@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { useApp } from "@/context/AppContext";
 import { CATEGORIES } from "@/data/mockData";
 import NewsletterSection from "@/components/NewsletterSection";
@@ -26,12 +26,33 @@ const initial = {
     consent: false,
 };
 
+const DRAFT_KEY = "rn-submit-event-draft";
+
 export default function SubmitEvent() {
     const { addEvent, orgs } = useApp();
     const [form, setForm] = useState(initial);
     const [submitted, setSubmitted] = useState(false);
     const [busy, setBusy] = useState(false);
     const navigate = useNavigate();
+
+    useEffect(() => {
+        try {
+            const raw = localStorage.getItem(DRAFT_KEY);
+            if (raw) setForm((current) => ({ ...current, ...JSON.parse(raw) }));
+        } catch {
+            /* ignore draft load errors */
+        }
+    }, []);
+
+    useEffect(() => {
+        try {
+            const draft = { ...form };
+            delete draft.consent;
+            localStorage.setItem(DRAFT_KEY, JSON.stringify(draft));
+        } catch {
+            /* ignore draft save errors */
+        }
+    }, [form]);
 
     const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.type === "checkbox" ? e.target.checked : e.target.value }));
 
@@ -66,9 +87,10 @@ export default function SubmitEvent() {
                 contactPhone: form.contactPhone,
                 image: form.image || "https://images.unsplash.com/photo-1533174072545-7a4b6ad7a6c3?w=1200&q=80",
             });
+            localStorage.removeItem(DRAFT_KEY);
             setSubmitted(true);
             toast.success("Event submitted for approval", {
-                description: "Our admins will review and publish it shortly.",
+                description: "Admins will check the details, tidy up duplicates if needed, and publish it once approved.",
             });
         } catch (err) {
             toast.error("Couldn't submit — please try again");
@@ -117,8 +139,12 @@ export default function SubmitEvent() {
                     Tell us what's on
                 </h1>
                 <p className="mt-2 text-muted-foreground text-sm">
-                    Submit an event — it'll be reviewed and added to the Blackrod Now calendar.
+                    Submit an event — we'll save your draft as you go, then review it before it goes live.
                 </p>
+                <div className="mt-4 rounded-2xl border border-border bg-surface p-4 text-sm text-muted-foreground">
+                    <div className="font-semibold text-foreground">What happens next</div>
+                    <p className="mt-1">1. Your draft is autosaved locally. 2. Admins review it for duplicates or missing details. 3. Approved events go straight into the calendar.</p>
+                </div>
             </div>
 
             <form onSubmit={submit} data-testid="submit-event-form" className="rounded-3xl border border-border bg-surface p-6 sm:p-8 space-y-6">
@@ -150,15 +176,15 @@ export default function SubmitEvent() {
                     </Field>
                 </div>
                 <div className="grid sm:grid-cols-2 gap-4">
-                    <Field label="Venue" required>
-                        <input data-testid="se-venue" required value={form.venue} onChange={set("venue")} className={inp} />
+                    <Field label="Venue">
+                        <input data-testid="se-venue" value={form.venue} onChange={set("venue")} className={inp} />
                     </Field>
                     <Field label="Address">
                         <input data-testid="se-address" value={form.address} onChange={set("address")} className={inp} />
                     </Field>
                 </div>
-                <Field label="Description" required>
-                    <textarea data-testid="se-desc" required rows={5} value={form.description} onChange={set("description")} className={inp} />
+                <Field label="Description">
+                    <textarea data-testid="se-desc" rows={5} value={form.description} onChange={set("description")} className={inp} placeholder="A short summary helps admins publish this faster" />
                 </Field>
                 <div className="grid sm:grid-cols-2 gap-4">
                     <Field label="Cost">
@@ -175,8 +201,8 @@ export default function SubmitEvent() {
                     <input data-testid="se-booking" type="url" value={form.booking} onChange={set("booking")} className={inp} placeholder="https://" />
                 </Field>
                 <div className="grid sm:grid-cols-2 gap-4">
-                    <Field label="Contact email" required>
-                        <input data-testid="se-email" type="email" required value={form.contactEmail} onChange={set("contactEmail")} className={inp} />
+                    <Field label="Contact email">
+                        <input data-testid="se-email" type="email" value={form.contactEmail} onChange={set("contactEmail")} className={inp} />
                     </Field>
                     <Field label="Contact phone">
                         <input data-testid="se-phone" value={form.contactPhone} onChange={set("contactPhone")} className={inp} />

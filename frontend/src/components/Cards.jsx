@@ -14,6 +14,8 @@ import {
 import { Badge } from "@/components/ui/badge";
 import OrgAvatar from "@/components/OrgAvatar";
 import { api } from "@/lib/api";
+import { useApp } from "@/context/AppContext";
+import { toast } from "sonner";
 
 // Category → colour key (pill backgrounds)
 const CAT_STYLE = {
@@ -50,15 +52,56 @@ const formatDate = (iso) => {
 const formatTime = (iso) =>
     new Date(iso).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
 
+const LINK_RE = /(https?:\/\/[^\s]+)/gi;
+
+const renderTextWithLinks = (text) => {
+    const parts = String(text || "").split(LINK_RE);
+    return parts.map((part, idx) => {
+        if (part.match(/^https?:\/\//i)) {
+            const clean = part.replace(/[.,;!?]+$/, "");
+            return (
+                <a
+                    key={`link-${idx}-${clean}`}
+                    href={clean}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-primary underline break-all"
+                >
+                    {clean}
+                </a>
+            );
+        }
+        return <React.Fragment key={`txt-${idx}`}>{part}</React.Fragment>;
+    });
+};
+
 export const EventCard = ({ event, featured = false, orgName }) => {
+    const { isEventSaved, toggleSaveEvent } = useApp();
+    const saved = isEventSaved?.(event.id);
+
     return (
-        <Link
-            to={`/events/${event.id}`}
+        <article
             data-testid={`event-card-${event.id}`}
             className={`group relative flex flex-col bg-surface rounded-3xl border border-border overflow-hidden transition-all duration-300 hover:-translate-y-1.5 hover:shadow-[0_14px_44px_-12px_rgba(0,0,0,0.18)] dark:hover:shadow-[0_14px_44px_-12px_rgba(0,0,0,0.5)] hover:border-primary/30 ${
                 featured ? "md:flex-row md:col-span-2" : ""
             }`}
         >
+            <button
+                type="button"
+                data-testid={`save-event-${event.id}`}
+                aria-label={saved ? "Remove from saved events" : "Save this event"}
+                onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const nextSaved = toggleSaveEvent(event.id);
+                    toast.success(nextSaved ? "Saved to your shortlist" : "Removed from shortlist");
+                }}
+                className={`absolute top-3 right-3 z-20 h-9 w-9 rounded-full border backdrop-blur grid place-items-center transition ${saved ? "bg-primary text-primary-foreground border-primary" : "bg-background/85 text-foreground border-border hover:border-primary/40"}`}
+            >
+                <Heart className={`h-4 w-4 ${saved ? "fill-current" : ""}`} />
+            </button>
+
+            <Link to={`/events/${event.id}`} className="contents">
             <div
                 className={`relative overflow-hidden bg-muted ${
                     featured ? "md:w-1/2 aspect-[4/3] md:aspect-auto" : "aspect-[16/10]"
@@ -110,7 +153,8 @@ export const EventCard = ({ event, featured = false, orgName }) => {
                     </span>
                 </div>
             </div>
-        </Link>
+            </Link>
+        </article>
     );
 };
 
@@ -227,7 +271,7 @@ export const FeedCard = ({ post, orgName, orgLogo, orgSlug, org }) => {
                 </div>
             </div>
             <h3 className="font-display font-bold text-lg leading-tight">{post.title}</h3>
-            <p className="text-sm text-muted-foreground leading-relaxed">{post.body}</p>
+            <p className="text-sm text-muted-foreground leading-relaxed whitespace-pre-line">{renderTextWithLinks(post.body)}</p>
             {post.image && (
                 <img
                     src={post.image}

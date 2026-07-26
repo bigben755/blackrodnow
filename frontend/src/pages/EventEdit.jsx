@@ -13,7 +13,7 @@ import { toast } from "sonner";
  */
 export default function EventEdit() {
     const { id } = useParams();
-    const { events, orgs, role, updateEvent, setEventStatus, deleteEvent } = useApp();
+    const { events, orgs, role, updateEvent, setEventStatus, deleteEvent, hasOrgAccess } = useApp();
     const navigate = useNavigate();
 
     const event = useMemo(() => events.find((e) => e.id === id), [events, id]);
@@ -59,6 +59,17 @@ export default function EventEdit() {
             </div>
         );
     }
+    if (role === "org" && !hasOrgAccess(event.orgSlug)) {
+        return (
+            <div className="max-w-2xl mx-auto px-6 py-24 text-center">
+                <h1 className="font-display font-black text-3xl">Organisation access required</h1>
+                <p className="mt-3 text-muted-foreground">Unlock this organisation from your dashboard before editing events.</p>
+                <Link to="/organisation-dashboard" className="mt-6 inline-block text-primary font-semibold">
+                    Go to organisation dashboard
+                </Link>
+            </div>
+        );
+    }
     if (!form) return null;
 
     const set = (k) => (e) =>
@@ -76,7 +87,7 @@ export default function EventEdit() {
             const end = new Date(`${form.date}T${form.endTime || form.startTime || "11:00"}`).toISOString();
             await updateEvent(event.id, {
                 title: form.title,
-                orgSlug: form.orgSlug,
+                orgSlug: role === "admin" ? form.orgSlug : event.orgSlug,
                 category: form.category,
                 start,
                 end,
@@ -91,7 +102,7 @@ export default function EventEdit() {
                 contactPhone: form.contactPhone,
                 image: form.image,
                 ...(role === "admin" ? { status: form.status } : {}),
-            });
+            }, event.orgSlug);
             toast.success("Event updated");
             navigate(`/events/${event.id}`);
         } catch (err) {
@@ -142,9 +153,13 @@ export default function EventEdit() {
                 </Field>
                 <div className="grid sm:grid-cols-2 gap-4">
                     <Field label="Organisation" required>
-                        <select data-testid="ee-org" required value={form.orgSlug} onChange={set("orgSlug")} className={inp}>
-                            {orgs.map((o) => <option key={o.slug} value={o.slug}>{o.name}</option>)}
-                        </select>
+                        {role === "admin" ? (
+                            <select data-testid="ee-org" required value={form.orgSlug} onChange={set("orgSlug")} className={inp}>
+                                {orgs.map((o) => <option key={o.slug} value={o.slug}>{o.name}</option>)}
+                            </select>
+                        ) : (
+                            <input value={orgs.find((o) => o.slug === event.orgSlug)?.name || event.orgSlug} readOnly className={inp} />
+                        )}
                     </Field>
                     <Field label="Category" required>
                         <select data-testid="ee-category" value={form.category} onChange={set("category")} className={inp}>

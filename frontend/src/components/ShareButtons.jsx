@@ -1,6 +1,7 @@
 import React from "react";
 import { Facebook, Linkedin, MessageCircle, Copy, Share2, Instagram } from "lucide-react";
 import { toast } from "sonner";
+import { api } from "@/lib/api";
 
 /**
  * Universal share-to-socials button row.
@@ -24,6 +25,7 @@ export default function ShareButtons({
     title = "",
     compact = false,
     platforms = ["facebook", "linkedin", "twitter", "whatsapp", "instagram", "copy"],
+    analytics = null,
 }) {
     const canonicalUrl = url || (typeof window !== "undefined" ? window.location.href : "");
     const socialUrl = ogUrl || canonicalUrl;
@@ -46,6 +48,17 @@ export default function ShareButtons({
         }
     };
 
+    const trackShare = (platform) => {
+        if (!analytics) return;
+        api.trackAnalytics({
+            kind: "share_click",
+            entity_type: analytics.entityType,
+            entity_id: analytics.entityId,
+            org_slug: analytics.orgSlug,
+            platform,
+        }).catch(() => {});
+    };
+
     const handlers = {
         facebook: {
             label: "Facebook",
@@ -54,31 +67,44 @@ export default function ShareButtons({
             // NOTE: the `quote` param was deprecated by Facebook in 2017 and now
             // triggers "must use a domain you own" errors — the sharer only
             // reads OG tags from the URL, which we set in index.html.
-            onClick: () => open(`https://www.facebook.com/sharer/sharer.php?u=${enc(socialUrl)}`),
+            onClick: () => {
+                trackShare("facebook");
+                open(`https://www.facebook.com/sharer/sharer.php?u=${enc(socialUrl)}`);
+            },
         },
         linkedin: {
             label: "LinkedIn",
             icon: Linkedin,
             className: "bg-[#0A66C2] text-white hover:brightness-110",
-            onClick: () => open(`https://www.linkedin.com/sharing/share-offsite/?url=${enc(socialUrl)}`),
+            onClick: () => {
+                trackShare("linkedin");
+                open(`https://www.linkedin.com/sharing/share-offsite/?url=${enc(socialUrl)}`);
+            },
         },
         twitter: {
             label: "X / Twitter",
             icon: TwitterX,
             className: "bg-black text-white hover:brightness-110",
-            onClick: () => open(`https://twitter.com/intent/tweet?text=${enc(text)}&url=${enc(socialUrl)}`),
+            onClick: () => {
+                trackShare("twitter");
+                open(`https://twitter.com/intent/tweet?text=${enc(text)}&url=${enc(socialUrl)}`);
+            },
         },
         whatsapp: {
             label: "WhatsApp",
             icon: MessageCircle,
             className: "bg-[#25D366] text-white hover:brightness-110",
-            onClick: () => open(`https://wa.me/?text=${enc(`${text}\n${socialUrl}`.trim())}`),
+            onClick: () => {
+                trackShare("whatsapp");
+                open(`https://wa.me/?text=${enc(`${text}\n${socialUrl}`.trim())}`);
+            },
         },
         instagram: {
             label: "Copy for Instagram",
             icon: Instagram,
             className: "bg-gradient-to-br from-[#E1306C] via-[#F56040] to-[#FCAF45] text-white hover:brightness-110",
             onClick: async () => {
+                trackShare("instagram");
                 try {
                     await navigator.clipboard.writeText(`${text}\n${canonicalUrl}`.trim());
                     toast.success("Caption copied — open Instagram and paste into your post or story.");
@@ -92,6 +118,7 @@ export default function ShareButtons({
             icon: Copy,
             className: "bg-muted text-foreground hover:bg-muted/80",
             onClick: async () => {
+                trackShare("copy");
                 try {
                     await navigator.clipboard.writeText(canonicalUrl);
                     toast.success("Link copied");
@@ -105,6 +132,7 @@ export default function ShareButtons({
             icon: Share2,
             className: "bg-foreground text-background hover:brightness-110",
             onClick: async () => {
+                trackShare("native");
                 if (typeof navigator !== "undefined" && navigator.share) {
                     try {
                         await navigator.share({ title, text, url: canonicalUrl });

@@ -2,6 +2,25 @@
 
 This project was bootstrapped with [Create React App](https://github.com/facebook/create-react-app).
 
+## Launch-Day Access Mode
+
+The site is configured to open in resident mode by default.
+
+- Admin and role-switch demo features are locked until an admin code is entered.
+- Admin code is read from `REACT_APP_ADMIN_LAUNCH_CODE` at build time.
+
+### Required environment variable
+
+Set this before building for launch:
+
+`REACT_APP_ADMIN_LAUNCH_CODE=<your-strong-code>`
+
+Example:
+
+`REACT_APP_ADMIN_LAUNCH_CODE=Blackr0dN0w!&`
+
+If `REACT_APP_ADMIN_LAUNCH_CODE` is not set, admin login remains unavailable.
+
 ## Available Scripts
 
 In the project directory, you can run:
