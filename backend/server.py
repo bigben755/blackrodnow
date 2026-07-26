@@ -218,6 +218,7 @@ class AnalyticsEvent(BaseModel):
         "newsletter_send",
         "broadcast_send",
         "admin_email_send",
+        "volunteer_contact",
     ]
     entity_type: Optional[Literal["org", "event", "site"]] = None
     entity_id: Optional[str] = None
@@ -229,7 +230,7 @@ class AnalyticsEvent(BaseModel):
 
 
 class AnalyticsTrackReq(BaseModel):
-    kind: Literal["org_view", "event_view", "share_click"]
+    kind: Literal["org_view", "event_view", "share_click", "volunteer_contact"]
     entity_type: Optional[Literal["org", "event"]] = None
     entity_id: Optional[str] = None
     org_slug: Optional[str] = None
@@ -1881,6 +1882,413 @@ async def _seed_admin_user() -> None:
 
 # Update: impersonation endpoint now accepts either an admin JWT (preferred)
 # or the legacy launch code (backward compat).
+
+
+# ─────────── Funder Impact Dashboard ───────────
+_UK_POSTCODE_RE = re.compile(
+    r"\b([A-PR-UWYZ][A-HK-Y]?\d[A-Z0-9]?)\s*(\d[A-Z]{2})?\b", re.IGNORECASE
+)
+
+
+def _extract_postcode(text: str) -> Optional[str]:
+    """Return the outward code (e.g. 'BL6') of the first UK postcode found."""
+    if not text:
+        return None
+    m = _UK_POSTCODE_RE.search(text)
+    if not m:
+        return None
+    outward = m.group(1)
+    return outward.upper() if outward else None
+
+
+async def _get_grant_config() -> Dict[str, Any]:
+    doc = await db.site_settings.find_one({"_id": _SITE_SETTINGS_ID}) or {}
+    return {
+        "grant_amount": float(doc.get("grant_amount", 0) or 0),
+        "grant_currency": doc.get("grant_currency", "GBP"),
+        "grant_period_label": doc.get("grant_period_label", "annual"),
+    }
+
+
+async def _build_impact_snapshot(days: int = 90) -> Dict[str, Any]:
+    now = datetime.now(timezone.utc)
+    since = (now - timedelta(days=max(1, days))).isoformat()
+
+    # Unique residents engaged = unique device_ids from analytics + unique subscriber emails.
+    device_pipeline = [
+        {"$match": {"created_at": {"$gte": since}, "device_id": {"$ne": None}}},
+        {"$group": {"_id": "$device_id"}},
+        {"$count": "n"},
+    ]
+    device_rows = await db.analytics_events.aggregate(device_pipeline).to_list(1)
+    unique_devices = device_rows[0]["n"] if device_rows else 0
+
+    sub_count = await db.subscribers.count_documents({"unsubscribed": {"$ne": True}})
+    follow_count = await db.follows.count_documents({})
+    unique_residents = max(unique_devices, sub_count, follow_count)
+
+    # Volunteer conversions (contact-button clicks on volunteering cards).
+    volunteer_clicks = await db.analytics_events.count_documents(
+        {"kind": "volunteer_contact", "created_at": {"$gte": since}}
+    )
+
+    # Cross-org collaboration proxy: count of subscribers who follow >1 org.
+    multi_follow = await db.subscribers.count_documents(
+        {"unsubscribed": {"$ne": True}, "followed_orgs.1": {"$exists": True}}
+    )
+
+    # Retention proxy: subscribers with digest=true & last 60 days.
+    active_subs = await db.subscribers.count_documents(
+        {"unsubscribed": {"$ne": True}, "digest": {"$ne": False}}
+    )
+
+    # Total content served
+    total_events_live = await db.events.count_documents({"status": "approved"})
+    total_orgs_live = await db.orgs.count_documents({"status": "approved"})
+    total_venues = await db.venues.count_documents({})
+    total_volunteer_opps = await db.volunteers.count_documents({})
+
+    # Reach — sum of analytics counts by kind
+    reach_pipeline = [
+        {"$match": {"created_at": {"$gte": since}}},
+        {"$group": {"_id": "$kind", "n": {"$sum": "$count"}}},
+    ]
+    reach_rows = await db.analytics_events.aggregate(reach_pipeline).to_list(20)
+    reach = {row["_id"]: row["n"] for row in reach_rows}
+
+    # Geographic reach — pull outward postcodes from all approved orgs + events.
+    postcode_counter: Counter = Counter()
+    orgs_all = await db.orgs.find(
+        {"status": "approved"}, {"_id": 0, "slug": 1, "name": 1, "address": 1, "location": 1}
+    ).to_list(500)
+    for o in orgs_all:
+        pc = _extract_postcode(o.get("address") or "") or _extract_postcode(o.get("location") or "")
+        if pc:
+            postcode_counter[pc] += 1
+    events_all = await db.events.find(
+        {"status": "approved"}, {"_id": 0, "id": 1, "address": 1, "venue": 1}
+    ).to_list(1000)
+    for ev in events_all:
+        pc = _extract_postcode(ev.get("address") or "") or _extract_postcode(ev.get("venue") or "")
+        if pc:
+            postcode_counter[pc] += 1
+
+    geo = [
+        {"postcode": pc, "count": count}
+        for pc, count in postcode_counter.most_common(30)
+    ]
+
+    # Top orgs by follower + reach
+    org_follow_pipeline = [
+        {"$match": {"unsubscribed": {"$ne": True}}},
+        {"$unwind": "$followed_orgs"},
+        {"$group": {"_id": "$followed_orgs", "n": {"$sum": 1}}},
+        {"$sort": {"n": -1}},
+        {"$limit": 10},
+    ]
+    org_follow_rows = await db.subscribers.aggregate(org_follow_pipeline).to_list(10)
+    org_lookup = {o.get("slug"): o.get("name") for o in orgs_all}
+    top_orgs = [
+        {"slug": row["_id"], "name": org_lookup.get(row["_id"], row["_id"]), "followers": row["n"]}
+        for row in org_follow_rows
+    ]
+
+    # Cost per resident
+    grant = await _get_grant_config()
+    cost_per_resident = (
+        (grant["grant_amount"] / unique_residents) if grant["grant_amount"] and unique_residents else 0
+    )
+
+    # SROI-ish proxy: assume 1 volunteer_contact = 4 hours saved, £15/hour standard multiplier.
+    volunteer_hours_est = volunteer_clicks * 4
+    volunteer_value_est = volunteer_hours_est * 15
+
+    return {
+        "window_days": days,
+        "generated_at": now.isoformat(),
+        "grant": grant,
+        "headline": {
+            "unique_residents": unique_residents,
+            "subscribers": sub_count,
+            "device_follows": follow_count,
+            "cost_per_resident": round(cost_per_resident, 2),
+            "orgs_live": total_orgs_live,
+            "events_live": total_events_live,
+            "venues": total_venues,
+            "volunteer_opps": total_volunteer_opps,
+            "volunteer_conversions": volunteer_clicks,
+            "volunteer_hours_estimated": volunteer_hours_est,
+            "volunteer_value_estimated": volunteer_value_est,
+            "active_digest_subscribers": active_subs,
+            "cross_org_engagement": multi_follow,
+        },
+        "reach": {
+            "org_views": reach.get("org_view", 0),
+            "event_views": reach.get("event_view", 0),
+            "share_clicks": reach.get("share_click", 0),
+            "volunteer_clicks": reach.get("volunteer_contact", 0),
+        },
+        "geography": geo,
+        "top_orgs": top_orgs,
+    }
+
+
+@api.get("/admin/impact/summary")
+async def admin_impact_summary(
+    days: int = 90,
+    request: Request = None,  # type: ignore
+    authorization: Optional[str] = Header(None),
+    admin_code: Optional[str] = Header(None, alias="X-Admin-Code"),
+):
+    ok = False
+    if request and read_admin_from_request(request, authorization):
+        ok = True
+    elif admin_code and hmac.compare_digest(admin_code, ADMIN_LAUNCH_CODE):
+        ok = True
+    if not ok:
+        raise HTTPException(403, "Admin authentication required")
+    return await _build_impact_snapshot(max(1, min(int(days), 730)))
+
+
+class GrantConfigPatch(BaseModel):
+    grant_amount: Optional[float] = None
+    grant_currency: Optional[str] = None
+    grant_period_label: Optional[str] = None
+
+
+@api.post("/admin/impact/grant-config")
+async def set_grant_config(
+    patch: GrantConfigPatch,
+    request: Request,
+    authorization: Optional[str] = Header(None),
+    admin_code: Optional[str] = Header(None, alias="X-Admin-Code"),
+):
+    ok = False
+    if read_admin_from_request(request, authorization):
+        ok = True
+    elif admin_code and hmac.compare_digest(admin_code, ADMIN_LAUNCH_CODE):
+        ok = True
+    if not ok:
+        raise HTTPException(403, "Admin authentication required")
+    updates = {k: v for k, v in patch.model_dump(exclude_none=True).items()}
+    if updates:
+        updates["updated_at"] = now_iso()
+        await db.site_settings.update_one({"_id": _SITE_SETTINGS_ID}, {"$set": updates}, upsert=True)
+    return await _get_grant_config()
+
+
+# PDF report ------------------------------------------------------------------
+def _build_impact_pdf(snapshot: Dict[str, Any], variant: str) -> bytes:
+    from io import BytesIO
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import mm
+    from reportlab.lib import colors
+    from reportlab.platypus import (
+        SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak,
+    )
+
+    buf = BytesIO()
+    doc = SimpleDocTemplate(
+        buf, pagesize=A4,
+        rightMargin=18 * mm, leftMargin=18 * mm,
+        topMargin=18 * mm, bottomMargin=18 * mm,
+        title="Blackrod Now — Impact Report",
+    )
+    styles = getSampleStyleSheet()
+    h1 = ParagraphStyle("h1", parent=styles["Heading1"], textColor=colors.HexColor("#0052FF"), fontSize=22, spaceAfter=8)
+    h2 = ParagraphStyle("h2", parent=styles["Heading2"], textColor=colors.HexColor("#0F172A"), fontSize=14, spaceBefore=14, spaceAfter=6)
+    body = ParagraphStyle("body", parent=styles["BodyText"], fontSize=10, leading=14, textColor=colors.HexColor("#334155"))
+    small = ParagraphStyle("small", parent=styles["BodyText"], fontSize=8, textColor=colors.HexColor("#64748B"))
+    tile_val = ParagraphStyle("tile_val", parent=styles["Heading1"], fontSize=20, textColor=colors.HexColor("#0052FF"), alignment=1)
+    tile_label = ParagraphStyle("tile_label", parent=styles["BodyText"], fontSize=8, textColor=colors.HexColor("#64748B"), alignment=1)
+
+    head = snapshot["headline"]
+    reach = snapshot["reach"]
+    grant = snapshot["grant"]
+    cur = "£" if grant["grant_currency"] == "GBP" else grant["grant_currency"] + " "
+    story = []
+
+    story.append(Paragraph("Blackrod Now — Impact Report", h1))
+    story.append(Paragraph(
+        f"Reporting window: last {snapshot['window_days']} days · Generated {snapshot['generated_at'][:10]}",
+        small,
+    ))
+    story.append(Spacer(1, 8))
+
+    # Executive summary
+    story.append(Paragraph("Executive summary", h2))
+    exec_lines = [
+        f"<b>{head['unique_residents']:,}</b> unique Blackrod residents engaged with the platform in the last {snapshot['window_days']} days.",
+        f"<b>{head['orgs_live']}</b> community organisations are live on Blackrod Now, promoting <b>{head['events_live']}</b> events.",
+        f"<b>{head['volunteer_conversions']}</b> volunteering contact clicks — an estimated <b>{head['volunteer_hours_estimated']}</b> volunteer hours (≈ {cur}{head['volunteer_value_estimated']:,.0f} in social value at £15/hour).",
+    ]
+    if grant["grant_amount"] and head["unique_residents"]:
+        exec_lines.append(
+            f"<b>{cur}{head['cost_per_resident']:.2f} per resident engaged</b>, against a grant of {cur}{grant['grant_amount']:,.0f} ({grant['grant_period_label']})."
+        )
+    for line in exec_lines:
+        story.append(Paragraph("• " + line, body))
+    story.append(Spacer(1, 8))
+
+    # Big-number tiles
+    def tile(v, label):
+        cell = [
+            Paragraph(str(v), tile_val),
+            Paragraph(label, tile_label),
+        ]
+        return cell
+
+    tiles_row1 = [
+        tile(f"{head['unique_residents']:,}", "Unique residents"),
+        tile(f"{head['orgs_live']}", "Organisations live"),
+        tile(f"{head['events_live']}", "Events published"),
+        tile(f"{head['volunteer_conversions']}", "Volunteer signups"),
+    ]
+    tiles_row2 = [
+        tile(f"{reach['event_views']:,}", "Event views"),
+        tile(f"{reach['org_views']:,}", "Org views"),
+        tile(f"{reach['share_clicks']:,}", "Shares"),
+        tile(f"{cur}{head['cost_per_resident']:.2f}", "Cost per resident"),
+    ]
+    for row in (tiles_row1, tiles_row2):
+        table = Table([row], colWidths=[42 * mm] * 4, rowHeights=[24 * mm])
+        table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#F1F5F9")),
+            ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#E2E8F0")),
+            ("INNERGRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#E2E8F0")),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ]))
+        story.append(table)
+        story.append(Spacer(1, 6))
+
+    # Short variant stops here
+    if variant == "short":
+        story.append(Spacer(1, 12))
+        story.append(Paragraph(
+            "This is a summary view. For the full report with geographic breakdown, top organisations and methodology notes, download the detailed version from the Impact dashboard.",
+            small,
+        ))
+        doc.build(story)
+        return buf.getvalue()
+
+    # Full variant continues -----------------------------------------------
+    story.append(PageBreak())
+
+    story.append(Paragraph("Reach breakdown", h2))
+    reach_rows = [
+        ["Metric", "Count"],
+        ["Event page views", f"{reach['event_views']:,}"],
+        ["Organisation page views", f"{reach['org_views']:,}"],
+        ["Share button clicks", f"{reach['share_clicks']:,}"],
+        ["Volunteering contact clicks", f"{reach['volunteer_clicks']:,}"],
+        ["Newsletter subscribers (active)", f"{head['active_digest_subscribers']:,}"],
+        ["Cross-org engagement (follow >1 org)", f"{head['cross_org_engagement']:,}"],
+    ]
+    t = Table(reach_rows, colWidths=[110 * mm, 60 * mm])
+    t.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0052FF")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F8FAFC")]),
+        ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#CBD5E1")),
+        ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#CBD5E1")),
+        ("FONTSIZE", (0, 0), (-1, -1), 10),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
+    ]))
+    story.append(t)
+
+    # Geography
+    story.append(Paragraph("Geographic reach (by outward postcode)", h2))
+    geo = snapshot["geography"]
+    if geo:
+        rows = [["Postcode area", "Listings"]] + [[g["postcode"], str(g["count"])] for g in geo[:20]]
+        gt = Table(rows, colWidths=[80 * mm, 40 * mm])
+        gt.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0052FF")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F8FAFC")]),
+            ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#CBD5E1")),
+            ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#CBD5E1")),
+            ("FONTSIZE", (0, 0), (-1, -1), 10),
+        ]))
+        story.append(gt)
+    else:
+        story.append(Paragraph("No postcode data recorded yet. Encourage organisations to include a postcode in their venue / address fields.", body))
+
+    # Top orgs
+    story.append(Paragraph("Top organisations by follower count", h2))
+    if snapshot["top_orgs"]:
+        rows = [["Organisation", "Followers"]] + [[o["name"], str(o["followers"])] for o in snapshot["top_orgs"]]
+        ot = Table(rows, colWidths=[130 * mm, 40 * mm])
+        ot.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0052FF")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F8FAFC")]),
+            ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#CBD5E1")),
+            ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#CBD5E1")),
+            ("FONTSIZE", (0, 0), (-1, -1), 10),
+        ]))
+        story.append(ot)
+    else:
+        story.append(Paragraph("No follower data recorded yet.", body))
+
+    # Methodology
+    story.append(Paragraph("Methodology &amp; notes", h2))
+    methodology = [
+        "<b>Unique residents</b> is the maximum of unique tracked devices, unique subscribed emails, and unique device-follow records — an upper bound guard against under-counting.",
+        "<b>Volunteer conversions</b> counts clicks on volunteering opportunity contact buttons. Volunteer hours are estimated at 4 hours per contact (industry proxy) valued at £15/hour (national volunteer social value multiplier).",
+        "<b>Cost per resident</b> = grant amount ÷ unique residents engaged in this window. Grant amount is configured by the site administrator.",
+        "<b>Geographic reach</b> is derived from UK postcode outward codes found in organisation and event addresses. Fine-grained locations are never stored or displayed beyond the outward code.",
+        "<b>Cross-org engagement</b> is the count of newsletter subscribers who follow more than one organisation — a proxy for cross-community discovery, a stated aim of the Community Alliance Fund.",
+    ]
+    for line in methodology:
+        story.append(Paragraph("• " + line, body))
+
+    doc.build(story)
+    return buf.getvalue()
+
+
+@api.get("/admin/impact/pdf")
+async def admin_impact_pdf(
+    days: int = 90,
+    variant: str = "full",
+    request: Request = None,  # type: ignore
+    authorization: Optional[str] = Header(None),
+    admin_code: Optional[str] = Header(None, alias="X-Admin-Code"),
+    token: Optional[str] = None,
+):
+    """PDF impact report. Accepts admin JWT via header OR ?token= query param
+    (needed because <a href download> can't set Authorization headers)."""
+    ok = False
+    if request and read_admin_from_request(request, authorization):
+        ok = True
+    elif token:
+        try:
+            payload = decode_token(token)
+            if payload.get("role") == "admin":
+                ok = True
+        except Exception:
+            pass
+    elif admin_code and hmac.compare_digest(admin_code, ADMIN_LAUNCH_CODE):
+        ok = True
+    if not ok:
+        raise HTTPException(403, "Admin authentication required")
+    if variant not in ("short", "full"):
+        variant = "full"
+    snapshot = await _build_impact_snapshot(max(1, min(int(days), 730)))
+    pdf_bytes = _build_impact_pdf(snapshot, variant)
+    filename = f"blackrod-now-impact-{variant}-{snapshot['generated_at'][:10]}.pdf"
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 
 
 # ─────────── Chatbot context (public read-only feed for Charla) ───────────

@@ -65,6 +65,16 @@ export const api = {
     updateSiteSettings: (patch) =>
         client.post("/admin/site/settings", patch).then((r) => r.data),
 
+    // Impact dashboard (funder)
+    impactSummary: (days = 90) =>
+        client.get("/admin/impact/summary", { params: { days } }).then((r) => r.data),
+    setGrantConfig: (patch) =>
+        client.post("/admin/impact/grant-config", patch).then((r) => r.data),
+    impactPdfUrl: (days = 90, variant = "full") => {
+        const jwt = typeof window !== "undefined" ? (localStorage.getItem("rn-admin-jwt") || "") : "";
+        return `${API}/admin/impact/pdf?days=${days}&variant=${variant}${jwt ? `&token=${encodeURIComponent(jwt)}` : ""}`;
+    },
+
     // Meta
     stats: () => client.get("/admin/stats").then((r) => r.data),
     isSeeded: () => client.get("/admin/seeded").then((r) => r.data),

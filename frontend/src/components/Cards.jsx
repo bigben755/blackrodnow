@@ -238,6 +238,18 @@ export const VolunteerCard = ({ opp, orgName }) => (
         </div>
         <button
             data-testid={`volunteer-contact-${opp.id}`}
+            onClick={() => {
+                try {
+                    // Fire-and-forget analytics for the funder impact dashboard.
+                    import("@/lib/api").then(({ api }) => {
+                        api.trackAnalytics({
+                            kind: "volunteer_contact",
+                            entity_id: opp.id,
+                            org_slug: opp.orgSlug,
+                        }).catch(() => {});
+                    });
+                } catch { /* ignore */ }
+            }}
             className="mt-3 self-start px-4 py-2 rounded-full text-sm font-semibold bg-foreground text-background hover:scale-105 transition-transform"
         >
             Get in touch

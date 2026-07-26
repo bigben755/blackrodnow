@@ -202,9 +202,18 @@ export default function Admin() {
                         Admin dashboard
                     </h1>
                 </div>
-                <Link to="/" className="hidden sm:inline-flex px-4 py-2 rounded-full border-2 border-foreground font-semibold text-xs">
-                    View site
-                </Link>
+                <div className="hidden sm:flex items-center gap-2">
+                    <Link
+                        to="/admin/impact"
+                        data-testid="nav-impact-dashboard"
+                        className="inline-flex items-center gap-1.5 px-4 py-2 rounded-full bg-primary text-primary-foreground font-semibold text-xs"
+                    >
+                        <BarChart3 className="h-3.5 w-3.5" /> Impact dashboard
+                    </Link>
+                    <Link to="/" className="inline-flex px-4 py-2 rounded-full border-2 border-foreground font-semibold text-xs">
+                        View site
+                    </Link>
+                </div>
             </div>
 
             <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">

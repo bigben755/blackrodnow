@@ -1,0 +1,40 @@
+{
+  "summary": "Iter17 — Funder Impact Dashboard: end-to-end tested BOTH backend and frontend. Backend: 11/11 pytest tests pass covering GET /api/admin/impact/summary (403 unauth, 200 with admin JWT, correct shape), grant-config POST (0 → cost_per_resident=0; 15000 → cost_per_resident=15000/unique_residents), volunteer_contact analytics increments (headline.volunteer_conversions +1, reach.volunteer_clicks +1, hours=conv*4, value=hours*15), geography contains 'BL6' outward-code only, PDF endpoint (403 unauth, 200 with header auth, 200 with ?token= query auth, %PDF-1.4 header, short PDF byte-size < full). Frontend: admin logged in via ComingSoon cs-admin-login-open flow, navigated to /admin, nav-impact-dashboard button present and clicked → /admin/impact loads with all 8 tiles (unique-residents, orgs-live, events-live, volunteer-conv, event-views, org-views, shares, cost-per-resident) + social value card + grant-config-card + geographic reach bar (BL6 shown, count 42) + top orgs panel. Window select 90→7 refetched. Refresh button reloaded. Grant save (20000) → toast 'Grant configuration saved' + cost tile updated to £3,333.33. PDF download intercepted (blackrod-now-impact-short-2026-07-26.pdf). Anchor hrefs for impact-download-short/full both include token= query param. 11 volunteer-contact buttons on /volunteering → click fires POST /api/analytics/track (200). Grant reset to 0 at end (idempotent).",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter17_impact.py",
+    "/app/test_reports/pytest/iter17_results.xml"
+  ],
+  "action_items": [
+    "Two bugs found and auto-fixed by testing agent (see updated_files) — please review the fixes.",
+    "Bug 1 (BACKEND CRITICAL, fixed): AnalyticsEvent model Literal (server.py line 213-221) did NOT include 'volunteer_contact', but AnalyticsTrackReq accepts it. POST /api/analytics/track with kind='volunteer_contact' 500'd with pydantic ValidationError. Fix: added 'volunteer_contact' to AnalyticsEvent.kind Literal.",
+    "Bug 2 (FRONTEND CRITICAL, fixed): Cards.jsx line 244 had `// eslint-disable-next-line import/no-unresolved` referencing a rule not present in project ESLint config → webpack overlay 'Compiled with problems' blocked the entire app UI. Also frontend was sending `entity_type: 'volunteer'` but AnalyticsTrackReq only accepts entity_type in {'org','event'} → would 422. Fix: removed the eslint-disable line AND removed entity_type from the trackAnalytics payload."
+  ],
+  "critical_code_review_comments": [
+    "AnalyticsEvent and AnalyticsTrackReq Literals were out of sync — the model refactor when adding volunteer_contact missed one side. Consider a shared enum or constant list to prevent recurrence.",
+    "The webpack ESLint overlay blocked the entire ComingSoon page silently in preview (user couldn't click Admin login). Configure eslint plugins consistently, or set eslint-webpack-plugin to warning-only in dev.",
+    "server.py still 4250+ lines — long overdue for module split (carried from iter14–16).",
+    "Cards.jsx uses dynamic `import('@/lib/api')` inside a click handler for a fire-and-forget analytics call — works but is unusual. Recommend importing `api` at the top of the module (it's already a static module) to avoid webpack chunk splitting overhead and stale imports.",
+    "PDF variant=short is functional but only ~10% smaller than full — consider skipping full geography/top-orgs tables in short variant to make the difference more meaningful for board summaries."
+  ],
+  "updated_files": [
+    "/app/backend/server.py (added 'volunteer_contact' to AnalyticsEvent.kind Literal)",
+    "/app/frontend/src/components/Cards.jsx (removed broken eslint-disable + invalid entity_type='volunteer')",
+    "/app/backend/tests/test_iter17_impact.py (new)"
+  ],
+  "success_rate": {"backend": "100% (11/11)", "frontend": "100% (all Impact dashboard flows + PDF download + volunteer analytics tracking verified)"},
+  "test_credentials": "admin@blackrodnow.co.uk / BlackrodAdmin!2026 (verified)",
+  "seed_data_creation": "Added 1 analytics_events row (kind=volunteer_contact, entity_id=vol-test-iter17) via pytest + 1 via UI test click. Grant config reset to 0 at end of both test runs. No other persistent test data.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Funder Impact Dashboard (Batch A) is fully green after two bug fixes applied by testing agent: (1) server.py AnalyticsEvent Literal missing 'volunteer_contact' → volunteer button was 500'ing; (2) Cards.jsx eslint-disable pointing at undefined rule was blocking webpack compile with an overlay, and entity_type='volunteer' would have 422'd once compile fixed. Both fixed and re-tested. Grant is left at 0 so dashboard shows £— for cost per resident (per problem statement request). Site remains coming_soon=true.",
+  "rca_of_the_issue": "AnalyticsEvent.kind Literal (server.py) and AnalyticsTrackReq.kind Literal are duplicated definitions. When adding 'volunteer_contact' the developer added it only to the request model, so validation on the request succeeded but insertion into the DB via AnalyticsEvent(...) 500'd. Reproduction: POST /api/analytics/track {kind:'volunteer_contact', entity_id:'x'} → 500 Internal Server Error with pydantic ValidationError in stack trace. Mitigation: share one Literal/Enum between the two models."
+}

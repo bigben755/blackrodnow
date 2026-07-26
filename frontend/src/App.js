@@ -26,6 +26,7 @@ import Contact from "@/pages/Contact";
 import Preferences from "@/pages/Preferences";
 import Unsubscribe from "@/pages/Unsubscribe";
 import OrgProfileEdit from "@/pages/OrgProfileEdit";
+import Impact from "@/pages/Impact";
 import EventEdit from "@/pages/EventEdit";
 
 function RequireRole({ allowed, children }) {
@@ -94,6 +95,14 @@ export default function App() {
                                 element={(
                                     <RequireRole allowed={["admin"]}>
                                         <Admin />
+                                    </RequireRole>
+                                )}
+                            />
+                            <Route
+                                path="/admin/impact"
+                                element={(
+                                    <RequireRole allowed={["admin"]}>
+                                        <Impact />
                                     </RequireRole>
                                 )}
                             />
