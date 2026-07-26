@@ -9,7 +9,7 @@ import {
     DialogFooter,
     DialogTrigger,
 } from "@/components/ui/dialog";
-import { CalendarDays, Sun, Moon, Send, Sparkles, ArrowRight } from "lucide-react";
+import { CalendarDays, Sun, Moon, Sparkles, ArrowRight } from "lucide-react";
 import { useApp } from "@/context/AppContext";
 import { Brand } from "@/components/Layout";
 import { api } from "@/lib/api";
@@ -41,12 +41,16 @@ function useCountdown(targetIso) {
     }, [now, targetIso]);
 }
 
-const CountdownUnit = ({ label, value }) => (
-    <div className="flex flex-col items-center justify-center min-w-[70px] sm:min-w-[92px] rounded-2xl border border-white/15 bg-white/5 backdrop-blur px-3 py-4 sm:px-5 sm:py-5">
-        <div data-testid={`cs-countdown-${label.toLowerCase()}`} className="font-display font-black text-3xl sm:text-5xl leading-none tabular-nums text-white">
+const CountdownUnit = ({ label, value, theme = "dark" }) => (
+    <div className={`flex flex-col items-center justify-center min-w-[70px] sm:min-w-[92px] rounded-2xl px-3 py-4 sm:px-5 sm:py-5 backdrop-blur ${
+        theme === "dark"
+            ? "border border-white/15 bg-white/5"
+            : "border border-slate-200 bg-white/70"
+    }`}>
+        <div data-testid={`cs-countdown-${label.toLowerCase()}`} className={`font-display font-black text-3xl sm:text-5xl leading-none tabular-nums ${theme === "dark" ? "text-white" : "text-slate-900"}`}>
             {String(value).padStart(2, "0")}
         </div>
-        <div className="text-[10px] sm:text-xs uppercase tracking-[0.2em] text-white/60 mt-2">{label}</div>
+        <div className={`text-[10px] sm:text-xs uppercase tracking-[0.2em] mt-2 ${theme === "dark" ? "text-white/60" : "text-slate-500"}`}>{label}</div>
     </div>
 );
 
@@ -182,26 +186,38 @@ export default function ComingSoon() {
     return (
         <div
             data-testid="coming-soon-page"
-            className="min-h-screen text-white relative overflow-hidden"
-            style={{
-                background:
-                    "radial-gradient(1200px 600px at 15% -10%, rgba(0,82,255,0.35), transparent 60%), radial-gradient(900px 500px at 100% 0%, rgba(210,255,0,0.25), transparent 60%), linear-gradient(180deg,#050a1d 0%, #030517 60%, #010314 100%)",
-            }}
+            data-theme={theme}
+            className="min-h-screen relative overflow-hidden transition-colors duration-500"
+            style={
+                theme === "dark"
+                    ? {
+                        color: "#F8FAFC",
+                        background:
+                            "radial-gradient(1200px 600px at 15% -10%, rgba(0,82,255,0.55), transparent 60%), radial-gradient(900px 500px at 100% 0%, rgba(210,255,0,0.14), transparent 60%), linear-gradient(180deg,#050a1d 0%, #030517 60%, #010314 100%)",
+                    }
+                    : {
+                        color: "#0F172A",
+                        background:
+                            "radial-gradient(1200px 600px at 15% -10%, rgba(0,82,255,0.18), transparent 60%), radial-gradient(900px 500px at 100% 0%, rgba(210,255,0,0.16), transparent 60%), linear-gradient(180deg,#F8FAFF 0%, #EEF3FF 60%, #E4ECFF 100%)",
+                    }
+            }
         >
             {/* Grid overlay */}
             <div
                 aria-hidden
-                className="pointer-events-none absolute inset-0 opacity-[0.08]"
+                className={`pointer-events-none absolute inset-0 ${theme === "dark" ? "opacity-[0.08]" : "opacity-[0.05]"}`}
                 style={{
                     backgroundImage:
-                        "linear-gradient(rgba(255,255,255,0.5) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.5) 1px, transparent 1px)",
+                        theme === "dark"
+                            ? "linear-gradient(rgba(255,255,255,0.5) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.5) 1px, transparent 1px)"
+                            : "linear-gradient(rgba(15,23,42,0.35) 1px, transparent 1px), linear-gradient(90deg, rgba(15,23,42,0.35) 1px, transparent 1px)",
                     backgroundSize: "48px 48px",
                 }}
             />
 
             {/* Header */}
             <header className="relative z-10 max-w-7xl mx-auto px-5 sm:px-8 py-6 flex items-center justify-between flex-wrap gap-3">
-                <div className="text-white [&_span]:text-white [&_span_span]:text-primary">
+                <div className={theme === "dark" ? "[&_span]:!text-white [&_span_span]:!text-[#0052FF]" : ""}>
                     <Brand size="lg" />
                 </div>
                 <div className="flex items-center gap-2">
@@ -209,7 +225,11 @@ export default function ComingSoon() {
                         type="button"
                         data-testid="cs-admin-login-open"
                         onClick={() => setAdminOpen(true)}
-                        className="px-4 py-2 rounded-full border border-white/20 hover:bg-white/10 text-xs font-bold uppercase tracking-wider transition"
+                        className={`px-4 py-2 rounded-full text-xs font-bold uppercase tracking-wider transition ${
+                            theme === "dark"
+                                ? "border border-white/20 hover:bg-white/10 text-white"
+                                : "border border-slate-300 hover:bg-white text-slate-800"
+                        }`}
                     >
                         Admin login
                     </button>
@@ -217,7 +237,7 @@ export default function ComingSoon() {
                         type="button"
                         data-testid="cs-org-login-open"
                         onClick={() => setOrgOpen(true)}
-                        className="px-4 py-2 rounded-full bg-primary text-primary-foreground text-xs font-bold uppercase tracking-wider hover:brightness-110 transition"
+                        className="px-4 py-2 rounded-full bg-[#0052FF] text-white text-xs font-bold uppercase tracking-wider hover:brightness-110 transition"
                     >
                         Org login
                     </button>
@@ -226,7 +246,11 @@ export default function ComingSoon() {
                         data-testid="cs-theme-toggle"
                         onClick={toggleTheme}
                         aria-label="Toggle theme"
-                        className="p-2 rounded-full border border-white/20 hover:bg-white/10 transition"
+                        className={`p-2 rounded-full transition ${
+                            theme === "dark"
+                                ? "border border-white/20 hover:bg-white/10 text-white"
+                                : "border border-slate-300 hover:bg-white text-slate-800"
+                        }`}
                     >
                         {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
                     </button>
@@ -243,34 +267,34 @@ export default function ComingSoon() {
                         >
                             <Sparkles className="h-3.5 w-3.5" /> Made possible by the Community Alliance Fund
                         </span>
-                        <h1 className="font-display font-black tracking-tight text-white mt-5 text-5xl sm:text-6xl lg:text-7xl leading-[0.95]">
+                        <h1 className={`font-display font-black tracking-tight mt-5 text-5xl sm:text-6xl lg:text-7xl leading-[0.95] ${theme === "dark" ? "text-white" : "text-slate-900"}`}>
                             Something
                             <br />
-                            <span className="text-[#D2FF00]">brilliant</span> is
+                            <span className="text-[#0052FF]">brilliant</span> is
                             <br />
                             coming to Blackrod.
                         </h1>
-                        <p className="mt-6 text-white/75 max-w-xl text-base sm:text-lg leading-relaxed">
+                        <p className={`mt-6 max-w-xl text-base sm:text-lg leading-relaxed ${theme === "dark" ? "text-white/75" : "text-slate-600"}`}>
                             Blackrod Now is a new community hub for what&apos;s on, what&apos;s new, and what&apos;s next —
                             events, clubs, organisations, volunteering, and news, all in one place. Free. No account needed.
                         </p>
 
                         {/* Countdown */}
                         <div className="mt-8 sm:mt-10">
-                            <div className="text-xs uppercase tracking-[0.25em] text-white/50 flex items-center gap-2">
+                            <div className={`text-xs uppercase tracking-[0.25em] flex items-center gap-2 ${theme === "dark" ? "text-white/50" : "text-slate-500"}`}>
                                 <CalendarDays className="h-3.5 w-3.5" /> Launching 12 September 2026
                             </div>
                             <div data-testid="cs-countdown" className="mt-3 flex flex-wrap gap-2 sm:gap-3">
-                                <CountdownUnit label="Days" value={days} />
-                                <CountdownUnit label="Hours" value={hours} />
-                                <CountdownUnit label="Mins" value={minutes} />
-                                <CountdownUnit label="Secs" value={seconds} />
+                                <CountdownUnit label="Days" value={days} theme={theme} />
+                                <CountdownUnit label="Hours" value={hours} theme={theme} />
+                                <CountdownUnit label="Mins" value={minutes} theme={theme} />
+                                <CountdownUnit label="Secs" value={seconds} theme={theme} />
                             </div>
                         </div>
 
                         {/* Subscribe */}
                         <div className="mt-10 max-w-lg">
-                            <div className="text-xs uppercase tracking-[0.25em] text-white/50 mb-3">Be the first to know</div>
+                            <div className={`text-xs uppercase tracking-[0.25em] mb-3 ${theme === "dark" ? "text-white/50" : "text-slate-500"}`}>Be the first to know</div>
                             <div className="flex flex-col sm:flex-row gap-2 sm:gap-2">
                                 <input
                                     data-testid="cs-subscribe-input"
@@ -281,14 +305,18 @@ export default function ComingSoon() {
                                     onKeyDown={(e) => {
                                         if (e.key === "Enter") submitSubscribe();
                                     }}
-                                    className="flex-1 min-w-0 px-4 py-3 rounded-full bg-white/10 border border-white/20 placeholder:text-white/40 text-white focus:outline-none focus:ring-2 focus:ring-[#D2FF00] text-sm"
+                                    className={`flex-1 min-w-0 px-4 py-3 rounded-full text-sm focus:outline-none focus:ring-2 focus:ring-[#0052FF] ${
+                                        theme === "dark"
+                                            ? "bg-white/10 border border-white/20 placeholder:text-white/40 text-white"
+                                            : "bg-white border border-slate-300 placeholder:text-slate-400 text-slate-900"
+                                    }`}
                                 />
                                 <button
                                     type="button"
                                     data-testid="cs-subscribe-submit"
                                     disabled={subscribing}
                                     onClick={submitSubscribe}
-                                    className="inline-flex items-center justify-center gap-2 px-6 py-3 rounded-full bg-[#D2FF00] text-black text-sm font-black uppercase tracking-wider hover:brightness-95 disabled:opacity-60"
+                                    className="inline-flex items-center justify-center gap-2 px-6 py-3 rounded-full bg-[#0052FF] text-white text-sm font-black uppercase tracking-wider hover:brightness-110 disabled:opacity-60 shadow-lg shadow-[#0052FF]/25"
                                 >
                                     {subscribing ? "Adding…" : (
                                         <>
@@ -297,48 +325,58 @@ export default function ComingSoon() {
                                     )}
                                 </button>
                             </div>
-                            <p className="text-[11px] text-white/40 mt-2">
+                            <p className={`text-[11px] mt-2 ${theme === "dark" ? "text-white/40" : "text-slate-500"}`}>
                                 One friendly email at launch. Unsubscribe any time. No spam, no adverts.
                             </p>
                         </div>
                     </div>
 
-                    {/* Right column — spotlight cards */}
+                    {/* Right column — What's coming card only */}
                     <aside className="lg:col-span-5">
-                        <div className="grid gap-4">
-                            <div className="rounded-3xl border border-white/15 bg-white/5 backdrop-blur p-6">
-                                <div className="text-xs uppercase tracking-[0.25em] text-[#D2FF00]">What&apos;s coming</div>
-                                <ul className="mt-3 space-y-2 text-sm text-white/80">
-                                    <li>• Weekly events across Blackrod &amp; Horwich</li>
-                                    <li>• Local organisation directory &amp; profiles</li>
-                                    <li>• Volunteering opportunities and spaces to hire</li>
-                                    <li>• Personalised newsletter — follow only what you love</li>
-                                </ul>
-                            </div>
-                            <div className="rounded-3xl border border-white/15 bg-white/5 backdrop-blur p-6">
-                                <div className="text-xs uppercase tracking-[0.25em] text-[#D2FF00]">Run a business?</div>
-                                <p className="mt-3 text-sm text-white/80">
-                                    The team behind Blackrod Now, The Web Design Wizard, builds sites like this for local businesses across Bolton.
-                                </p>
-                                <button
-                                    type="button"
-                                    data-testid="cs-webwizard-open"
-                                    onClick={() => setWizardOpen(true)}
-                                    className="mt-4 inline-flex items-center gap-2 px-5 py-2.5 rounded-full bg-white text-black text-xs font-black uppercase tracking-wider hover:bg-white/90 transition"
-                                >
-                                    <Send className="h-3.5 w-3.5" /> Get in touch
-                                </button>
-                            </div>
+                        <div className={`rounded-3xl border p-6 backdrop-blur ${
+                            theme === "dark"
+                                ? "border-white/15 bg-white/5"
+                                : "border-slate-200 bg-white/70"
+                        }`}>
+                            <div className="text-xs uppercase tracking-[0.25em] text-[#0052FF] font-black">What&apos;s coming</div>
+                            <ul className={`mt-4 space-y-2.5 text-sm ${theme === "dark" ? "text-white/80" : "text-slate-700"}`}>
+                                <li className="flex items-start gap-2"><span className="text-[#D2FF00] mt-1">▸</span> Weekly events across Blackrod &amp; Horwich</li>
+                                <li className="flex items-start gap-2"><span className="text-[#D2FF00] mt-1">▸</span> Local organisation directory &amp; profiles</li>
+                                <li className="flex items-start gap-2"><span className="text-[#D2FF00] mt-1">▸</span> Volunteering opportunities and spaces to hire</li>
+                                <li className="flex items-start gap-2"><span className="text-[#D2FF00] mt-1">▸</span> Personalised newsletter — follow only what you love</li>
+                            </ul>
                         </div>
                     </aside>
                 </div>
             </main>
 
-            {/* Footer */}
-            <footer className="relative z-10 border-t border-white/10">
-                <div className="max-w-7xl mx-auto px-5 sm:px-8 py-6 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-white/50">
-                    <div>© 2026 Blackrod Now · A community project</div>
-                    <div>Built by The Web Design Wizard · Blackrod, Bolton</div>
+            {/* Footer — Web Wizard credit */}
+            <footer className={`relative z-10 border-t ${theme === "dark" ? "border-white/10" : "border-slate-200"}`}>
+                <div className="max-w-7xl mx-auto px-5 sm:px-8 py-6 flex flex-col sm:flex-row items-center justify-between gap-4">
+                    <div className={`text-xs ${theme === "dark" ? "text-white/50" : "text-slate-500"}`}>
+                        © 2026 Blackrod Now · A community project
+                    </div>
+                    <button
+                        type="button"
+                        onClick={() => setWizardOpen(true)}
+                        data-testid="cs-webwizard-footer"
+                        className={`flex items-center gap-3 rounded-2xl px-3 py-2 transition ${
+                            theme === "dark" ? "hover:bg-white/5" : "hover:bg-white/70"
+                        }`}
+                        title="Get in touch with The Web Design Wizard"
+                    >
+                        <img
+                            src="/webwizard.png"
+                            alt="The Web Design Wizard logo"
+                            className="h-10 w-auto"
+                            loading="lazy"
+                        />
+                        <span className={`text-xs sm:text-sm text-left leading-tight ${theme === "dark" ? "text-white/70" : "text-slate-600"}`}>
+                            This site was created by
+                            <br />
+                            <span className={`font-semibold ${theme === "dark" ? "text-white" : "text-slate-900"}`}>The Web Design Wizard</span>
+                        </span>
+                    </button>
                 </div>
             </footer>
 
