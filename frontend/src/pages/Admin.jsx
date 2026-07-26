@@ -36,9 +36,11 @@ export default function Admin() {
 
     const loginAsOrg = async (slug, name) => {
         try {
+            // Navigate BEFORE flipping role so Admin's RequireRole guard doesn't
+            // race-redirect to '/' when it re-renders with role='org'.
+            navigate("/organisation-dashboard");
             await impersonateOrg(slug);
             toast.success(`Logged in as ${name}`);
-            navigate("/organisation-dashboard");
         } catch (error) {
             toast.error(error?.response?.data?.detail || "Impersonation failed. Check admin code.");
         }
