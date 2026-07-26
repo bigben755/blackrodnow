@@ -71,12 +71,26 @@ def new_token() -> str:
 
 
 def _require_org_write_access(slug: str, org_auth: Optional[str] = None, admin_code: Optional[str] = None) -> str:
-    """Auth guard stub. Real JWT/Google auth is on the P1 backlog; today the
-    role switcher lives on the client and the backend simply accepts write
-    requests. Returns the effective role ('admin' if admin_code present, else
-    'org'). Route handlers use this both as a role-checker AND as a signal
-    for what fields the caller is allowed to change (e.g. status)."""
-    return "admin" if admin_code else "org"
+    """Auth guard. Accepts (a) X-Admin-Code matching ADMIN_LAUNCH_CODE, (b) an
+    admin/org JWT via X-Org-Auth `Bearer <jwt>` header, or (c) legacy org tokens
+    (current permissive rollout). Returns the effective role ('admin' if the
+    caller proved admin credentials, else 'org').
+    Real JWT flow now uses `/api/auth/admin/login`; this shim keeps existing
+    role-switcher UI working while we migrate."""
+    # Admin: launch code header
+    if admin_code and hmac.compare_digest(admin_code, ADMIN_LAUNCH_CODE):
+        return "admin"
+    # Admin/Org: bearer JWT via X-Org-Auth (frontend already sends this)
+    if org_auth and org_auth.lower().startswith("bearer "):
+        token = org_auth[7:].strip()
+        try:
+            from auth import decode_token
+            payload = decode_token(token)
+            if payload.get("role") == "admin":
+                return "admin"
+        except Exception:
+            pass
+    return "org"
 
 
 def now_iso() -> str:
@@ -1059,17 +1073,23 @@ async def reset_org_password(slug: str, body: Dict[str, str]):
 
 
 @api.post("/admin/organisations/{slug}/impersonate")
-async def admin_impersonate_org(slug: str, body: Dict[str, str]):
-    """Super admin exchanges the admin launch code for an organisation access
-    token so they can operate an organisation dashboard on the owner's behalf
-    (e.g. help non-technical orgs set up). The returned token is a synthetic
-    value the frontend passes via X-Org-Auth; because auth is currently
-    stubbed permissively, presence of the token is sufficient to signal an
-    admin-impersonation session to the client."""
+async def admin_impersonate_org(
+    slug: str,
+    body: Dict[str, str],
+    request: Request,
+    authorization: Optional[str] = Header(None),
+):
+    """Super admin exchanges credentials for an organisation access token so
+    they can operate an organisation dashboard on the owner's behalf. Accepts
+    EITHER an admin JWT (`Authorization: Bearer …` — new preferred flow) OR
+    the legacy `admin_code` body field (backward compat during rollover).
+    The returned token is a synthetic value the frontend passes via X-Org-Auth
+    to signal an admin-impersonation session."""
     org = await _find_org(slug)
+    admin_payload = read_admin_from_request(request, authorization)
     admin_code = (body.get("admin_code") or "").strip()
-    if not hmac.compare_digest(admin_code, ADMIN_LAUNCH_CODE):
-        raise HTTPException(403, "Invalid admin code")
+    if not admin_payload and not (admin_code and hmac.compare_digest(admin_code, ADMIN_LAUNCH_CODE)):
+        raise HTTPException(403, "Admin authentication required")
     token = f"admin-impersonate:{slug}:{new_token()}"
     return {
         "ok": True,
@@ -1665,6 +1685,389 @@ async def update_volunteer(vol_id: str, patch: VolunteerPatch):
     if not updated:
         raise HTTPException(404, "Volunteer opportunity not found")
     return updated
+
+
+# ─────────── Auth (JWT — admin + org) ───────────
+from auth import (  # noqa: E402
+    hash_password,
+    verify_password,
+    create_access_token,
+    decode_token,
+    read_admin_from_request,
+)
+
+
+class AdminLoginReq(BaseModel):
+    email: EmailStr
+    password: str
+
+
+LOGIN_MAX_ATTEMPTS = int(os.environ.get("LOGIN_MAX_ATTEMPTS", "5"))
+LOGIN_LOCKOUT_MINUTES = int(os.environ.get("LOGIN_LOCKOUT_MINUTES", "15"))
+
+
+async def _record_login_attempt(identifier: str, success: bool) -> None:
+    now = datetime.now(timezone.utc)
+    if success:
+        await db.login_attempts.delete_many({"identifier": identifier})
+        return
+    doc = await db.login_attempts.find_one({"identifier": identifier})
+    if not doc:
+        await db.login_attempts.insert_one({
+            "identifier": identifier,
+            "count": 1,
+            "first_at": now.isoformat(),
+            "last_at": now.isoformat(),
+        })
+    else:
+        await db.login_attempts.update_one(
+            {"identifier": identifier},
+            {"$inc": {"count": 1}, "$set": {"last_at": now.isoformat()}},
+        )
+
+
+async def _login_is_locked(identifier: str) -> bool:
+    doc = await db.login_attempts.find_one({"identifier": identifier})
+    if not doc or (doc.get("count") or 0) < LOGIN_MAX_ATTEMPTS:
+        return False
+    try:
+        last = datetime.fromisoformat(doc["last_at"])
+    except Exception:
+        return False
+    if last.tzinfo is None:
+        last = last.replace(tzinfo=timezone.utc)
+    if datetime.now(timezone.utc) - last > timedelta(minutes=LOGIN_LOCKOUT_MINUTES):
+        # Lockout expired — clear counter.
+        await db.login_attempts.delete_many({"identifier": identifier})
+        return False
+    return True
+
+
+@api.post("/auth/admin/login")
+async def auth_admin_login(req: AdminLoginReq, request: Request):
+    email = req.email.lower().strip()
+    ip = request.client.host if request.client else "unknown"
+    identifier = f"{ip}:{email}"
+    if await _login_is_locked(identifier):
+        raise HTTPException(429, "Too many failed attempts. Try again in a few minutes.")
+    user = await db.users.find_one({"email": email, "role": "admin"})
+    if not user or not verify_password(req.password, user.get("password_hash", "")):
+        await _record_login_attempt(identifier, False)
+        raise HTTPException(401, "Invalid email or password")
+    await _record_login_attempt(identifier, True)
+    token = create_access_token(sub=email, role="admin", extra={"email": email, "name": user.get("name") or "Admin"})
+    return {
+        "token": token,
+        "user": {"email": email, "role": "admin", "name": user.get("name") or "Admin"},
+    }
+
+
+@api.get("/auth/me")
+async def auth_me(request: Request, authorization: Optional[str] = Header(None)):
+    payload = read_admin_from_request(request, authorization)
+    if not payload:
+        raise HTTPException(401, "Not authenticated")
+    return {
+        "email": payload.get("email") or payload.get("sub"),
+        "role": payload.get("role"),
+        "name": payload.get("name"),
+        "exp": payload.get("exp"),
+    }
+
+
+async def _seed_admin_user() -> None:
+    email = (os.environ.get("ADMIN_EMAIL") or "").lower().strip()
+    password = os.environ.get("ADMIN_PASSWORD") or ""
+    if not email or not password:
+        logger.warning("Admin seed skipped: ADMIN_EMAIL / ADMIN_PASSWORD not set.")
+        return
+    existing = await db.users.find_one({"email": email})
+    if not existing:
+        await db.users.insert_one({
+            "email": email,
+            "password_hash": hash_password(password),
+            "role": "admin",
+            "name": "Site Admin",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+        logger.info("Seeded admin user %s", email)
+    elif not verify_password(password, existing.get("password_hash", "")):
+        await db.users.update_one(
+            {"email": email},
+            {"$set": {
+                "password_hash": hash_password(password),
+                "role": "admin",
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }},
+        )
+        logger.info("Rotated admin password for %s", email)
+
+
+# Update: impersonation endpoint now accepts either an admin JWT (preferred)
+# or the legacy launch code (backward compat).
+
+
+# ─────────── Chatbot context (public read-only feed for Charla) ───────────
+from data.faqs import FAQS as _CHAT_FAQS  # noqa: E402
+
+
+def _iso_date_only(value: Any) -> str:
+    if not value:
+        return ""
+    try:
+        if isinstance(value, str):
+            return value[:10]
+        return value.isoformat()[:10]
+    except Exception:
+        return ""
+
+
+async def _build_chat_context(days: int = 30) -> Dict[str, Any]:
+    """Compact, public snapshot for a chatbot knowledge base.
+    - upcoming events (next `days` days, approved)
+    - approved organisations (name, category, short, contact)
+    - venues
+    - volunteering opportunities
+    - FAQs
+    """
+    now = datetime.now(timezone.utc)
+    horizon = now + timedelta(days=max(1, days))
+
+    orgs_cursor = db.orgs.find({"status": "approved"}, {"_id": 0}).sort("name", 1)
+    orgs = await orgs_cursor.to_list(length=500)
+    org_name_by_slug = {o.get("slug"): o.get("name") for o in orgs}
+
+    events_cursor = db.events.find(
+        {"status": "approved", "start": {"$lte": horizon.isoformat()}},
+        {"_id": 0},
+    ).sort("start", 1)
+    events_all = await events_cursor.to_list(length=500)
+
+    def _keep(ev: Dict[str, Any]) -> bool:
+        start = ev.get("start") or ""
+        if not start:
+            return False
+        try:
+            when = datetime.fromisoformat(start.replace("Z", "+00:00"))
+            if when.tzinfo is None:
+                when = when.replace(tzinfo=timezone.utc)
+        except Exception:
+            return False
+        return when >= now - timedelta(hours=6)  # allow "happening today"
+
+    events = [ev for ev in events_all if _keep(ev)][:80]
+
+    venues = await db.venues.find({}, {"_id": 0}).sort("name", 1).to_list(length=200)
+    volunteers = await db.volunteers.find({}, {"_id": 0}).sort("title", 1).to_list(length=200)
+
+    # Prefer explicit PUBLIC_URL, fall back to APP_URL supervisor env, else placeholder.
+    site_url = (os.environ.get("PUBLIC_URL") or os.environ.get("APP_URL") or PUBLIC_URL).rstrip("/")
+
+    def _e(ev: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "id": ev.get("id"),
+            "title": ev.get("title"),
+            "date": _iso_date_only(ev.get("start")),
+            "time": (ev.get("start") or "")[11:16],
+            "end": (ev.get("end") or "")[11:16],
+            "venue": ev.get("venue") or "",
+            "address": ev.get("address") or "",
+            "category": ev.get("category") or "",
+            "cost": ev.get("cost") or "",
+            "age": ev.get("age") or "",
+            "organiser": org_name_by_slug.get(ev.get("orgSlug"), ev.get("orgSlug") or ""),
+            "description": (ev.get("description") or "")[:400],
+            "url": f"{site_url}/events/{ev.get('id')}" if ev.get("id") else "",
+        }
+
+    def _o(org: Dict[str, Any]) -> Dict[str, Any]:
+        socials = org.get("socials") or {}
+        return {
+            "slug": org.get("slug"),
+            "name": org.get("name"),
+            "category": org.get("category") or "",
+            "short": (org.get("short") or org.get("about") or "")[:280],
+            "email": org.get("email") or "",
+            "phone": org.get("phone") or "",
+            "website": org.get("website") or "",
+            "facebook": socials.get("facebook") or "",
+            "instagram": socials.get("instagram") or "",
+            "meeting": org.get("meeting") or "",
+            "address": org.get("address") or "",
+            "url": f"{site_url}/organisations/{org.get('slug')}" if org.get("slug") else "",
+        }
+
+    def _v(v: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "id": v.get("id"),
+            "name": v.get("name"),
+            "address": v.get("address") or "",
+            "capacity": v.get("capacity") or 0,
+            "facilities": v.get("facilities") or [],
+            "accessibility": v.get("accessibility") or "",
+            "booking": v.get("booking") or "",
+        }
+
+    def _vol(v: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "id": v.get("id"),
+            "title": v.get("title"),
+            "organiser": org_name_by_slug.get(v.get("orgSlug"), v.get("orgSlug") or ""),
+            "description": (v.get("description") or "")[:400],
+            "time": v.get("time") or "",
+            "age": v.get("age") or "",
+            "skills": v.get("skills") or "",
+        }
+
+    return {
+        "site": {
+            "name": "Blackrod Now",
+            "url": site_url,
+            "description": "Community hub for Blackrod, Bolton — events, groups, clubs, schools, businesses and volunteering.",
+            "contact": ADMIN_SENDER_EMAILS[0] if 'ADMIN_SENDER_EMAILS' in globals() and ADMIN_SENDER_EMAILS else "hello@communityalliances.co.uk",
+            "generated_at": now.isoformat(),
+            "window_days": days,
+        },
+        "events": [_e(ev) for ev in events],
+        "organisations": [_o(o) for o in orgs],
+        "venues": [_v(v) for v in venues],
+        "volunteering": [_vol(v) for v in volunteers],
+        "faqs": _CHAT_FAQS,
+    }
+
+
+@api.get("/chat/context")
+async def chat_context(days: int = 30):
+    """Public JSON snapshot of Blackrod Now data — designed to be fed into an
+    external chatbot's knowledge base (Charla, etc.). Refreshes on every hit."""
+    try:
+        days_clamped = max(1, min(int(days), 180))
+    except Exception:
+        days_clamped = 30
+    return await _build_chat_context(days_clamped)
+
+
+@api.get("/chat/context.md", response_class=_PlainResp)
+async def chat_context_markdown(days: int = 30):
+    """Human-readable Markdown mirror of the chat context. Many chatbot builders
+    prefer to ingest a URL of Markdown rather than JSON."""
+    try:
+        days_clamped = max(1, min(int(days), 180))
+    except Exception:
+        days_clamped = 30
+    ctx = await _build_chat_context(days_clamped)
+
+    lines: List[str] = []
+    site = ctx["site"]
+    lines.append(f"# {site['name']}")
+    lines.append("")
+    lines.append(site["description"])
+    lines.append("")
+    lines.append(f"- Website: {site['url']}")
+    lines.append(f"- Contact: {site['contact']}")
+    lines.append(f"- Snapshot generated: {site['generated_at']}")
+    lines.append("")
+
+    lines.append(f"## Upcoming events (next {site['window_days']} days)")
+    lines.append("")
+    if not ctx["events"]:
+        lines.append("_No upcoming events in the current window._")
+    for ev in ctx["events"]:
+        header = f"### {ev['title']}"
+        lines.append(header)
+        meta = [
+            f"**When:** {ev['date']}" + (f" · {ev['time']}" if ev["time"] else ""),
+            f"**Where:** {ev['venue']}" + (f", {ev['address']}" if ev["address"] else "") if ev["venue"] else None,
+            f"**Organiser:** {ev['organiser']}" if ev["organiser"] else None,
+            f"**Category:** {ev['category']}" if ev["category"] else None,
+            f"**Cost:** {ev['cost']}" if ev["cost"] else None,
+            f"**Age:** {ev['age']}" if ev["age"] else None,
+        ]
+        for m in meta:
+            if m:
+                lines.append(m)
+        if ev["description"]:
+            lines.append("")
+            lines.append(ev["description"])
+        if ev["url"]:
+            lines.append("")
+            lines.append(f"[Event page]({ev['url']})")
+        lines.append("")
+
+    lines.append("## Organisations")
+    lines.append("")
+    for org in ctx["organisations"]:
+        lines.append(f"### {org['name']}")
+        if org["category"]:
+            lines.append(f"_{org['category']}_")
+        if org["short"]:
+            lines.append("")
+            lines.append(org["short"])
+        contacts = []
+        if org["email"]:
+            contacts.append(f"Email: {org['email']}")
+        if org["phone"]:
+            contacts.append(f"Phone: {org['phone']}")
+        if org["website"]:
+            contacts.append(f"Website: {org['website']}")
+        if org["meeting"]:
+            contacts.append(f"When they meet: {org['meeting']}")
+        if org["address"]:
+            contacts.append(f"Address: {org['address']}")
+        if contacts:
+            lines.append("")
+            for c in contacts:
+                lines.append(f"- {c}")
+        if org["url"]:
+            lines.append("")
+            lines.append(f"[Organisation page]({org['url']})")
+        lines.append("")
+
+    lines.append("## Venues (spaces to hire)")
+    lines.append("")
+    for v in ctx["venues"]:
+        lines.append(f"### {v['name']}")
+        if v["address"]:
+            lines.append(f"Address: {v['address']}")
+        if v["capacity"]:
+            lines.append(f"Capacity: {v['capacity']}")
+        if v["facilities"]:
+            lines.append(f"Facilities: {', '.join(v['facilities'])}")
+        if v["accessibility"]:
+            lines.append(f"Accessibility: {v['accessibility']}")
+        if v["booking"]:
+            lines.append(f"Booking: {v['booking']}")
+        lines.append("")
+
+    lines.append("## Volunteering opportunities")
+    lines.append("")
+    for v in ctx["volunteering"]:
+        lines.append(f"### {v['title']}")
+        if v["organiser"]:
+            lines.append(f"_{v['organiser']}_")
+        if v["description"]:
+            lines.append("")
+            lines.append(v["description"])
+        if v["time"]:
+            lines.append(f"- Time: {v['time']}")
+        if v["age"]:
+            lines.append(f"- Age: {v['age']}")
+        if v["skills"]:
+            lines.append(f"- Skills: {v['skills']}")
+        lines.append("")
+
+    lines.append("## Frequently asked questions")
+    lines.append("")
+    for f in ctx["faqs"]:
+        lines.append(f"### {f['q']}")
+        lines.append(f"_{f['cat']}_")
+        lines.append("")
+        lines.append(f["a"])
+        lines.append("")
+
+    return "\n".join(lines)
+
+
 
 
 # ─────────── Subscribers ───────────
@@ -2967,12 +3370,12 @@ async def parse_content(req: ParseRequest):
 
 @api.post("/admin/documents/parse", response_model=BulkParseResponse)
 async def admin_parse_documents(
-    files: Optional[List[UploadFile]] = File(None),
+    files: List[UploadFile] = File(default=[]),
     source_org_slug: Optional[str] = Form(None),
     urls_json: Optional[str] = Form(None),
     texts_json: Optional[str] = Form(None),
 ):
-    return await _admin_parse_documents(files, source_org_slug=source_org_slug, urls_json=urls_json, texts_json=texts_json)
+    return await _admin_parse_documents(files or [], source_org_slug=source_org_slug, urls_json=urls_json, texts_json=texts_json)
 
 
 # ─────────── Newsletter & broadcast ───────────
@@ -3341,8 +3744,11 @@ async def startup():
         await db.analytics_events.create_index([("kind", 1), ("created_at", -1)])
         await db.analytics_events.create_index([("org_slug", 1), ("created_at", -1)])
         await db.analytics_events.create_index([("entity_id", 1), ("created_at", -1)])
+        await db.users.create_index("email", unique=True)
+        await db.login_attempts.create_index("identifier")
     except Exception as e:
         logger.warning("Index setup: %s", e)
+    await _seed_admin_user()
 
 
 @app.on_event("shutdown")

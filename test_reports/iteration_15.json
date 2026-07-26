@@ -1,0 +1,24 @@
+{
+  "summary": "Session 15 — Tested new JWT admin auth (POST /api/auth/admin/login, GET /api/auth/me, 5-attempt IP+email lockout), the chatbot context feed (GET /api/chat/context + /api/chat/context.md), Bearer-JWT impersonation, and the pre-existing parser regression (image OCR + multi-doc). Backend: 11/11 new pytest tests pass. The 2 previously-failing parser tests (TestAdminImageParse::test_image_upload_is_ocrd, TestAdminBulkDocumentParse::test_parse_multiple_documents) now also PASS. Frontend: end-to-end auth UI works — bad password shows 'Invalid email or password' toast and no JWT stored; good login stores a 3-part JWT in localStorage['rn-admin-jwt'], sets rn-role='admin', closes dialog, shows 'Signed in as admin' toast; JWT + role SURVIVE a hard page reload (regression from iter14 fixed); SPA-nav to /admin works; clicking [data-testid=impersonate-org-blackrod-town-council] now correctly lands on /organisation-dashboard with the impersonation banner visible (the iter14 redirect race bug is FIXED).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_session15_auth_chat.py",
+    "/app/test_reports/pytest/iter15_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py is very large (3700+ lines). Consider splitting auth, chat context, admin, and org route groups into modules under /app/backend/routers/.",
+    "backend_test.py hard-fails at import if REACT_APP_BACKEND_URL isn't in os.environ (KeyError on collection). test_session15_auth_chat.py falls back to reading /app/frontend/.env — recommend applying the same pattern to backend_test.py to make the whole suite robust when pytest is launched without env exports.",
+    "Admin.jsx is still ~2200 lines (flagged in iter14). Extracting QuickAddContentCard / BroadcastCard / TriageQueue would help maintainability.",
+    "login_attempts collection has no TTL index visible — brute-force records will accumulate. Consider a MongoDB TTL index on createdAt (expireAfterSeconds=900) so the lockout window auto-purges."
+  ],
+  "updated_files": ["/app/backend/tests/test_session15_auth_chat.py (new)"],
+  "success_rate": {"backend": "100% (11/11 new + 2/2 parser regression)", "frontend": "100% — auth login/logout/reload persistence/impersonation all verified end-to-end"},
+  "test_credentials": "admin@blackrodnow.co.uk / BlackrodAdmin!2026 (verified). Legacy launch code Blackr0dN0w!& still accepted per /app/memory/test_credentials.md.",
+  "seed_data_creation": "login_attempts collection is cleared before and after the lockout test to avoid locking out subsequent runs.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "All session-15 auth + chat + parser features are green. Iter14's impersonation redirect race is fixed (verified URL lands on /organisation-dashboard after clicking impersonate). If lockout test locks the admin out on future runs, clear via: mongo --eval 'db.login_attempts.deleteMany({})' on test_database (test file already does this in a module-scoped fixture).",
+  "rca_of_the_issue": "No new bugs found."
+}

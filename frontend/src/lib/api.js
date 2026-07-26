@@ -7,6 +7,7 @@ export { API };
 
 const ORG_TOKEN_KEY = "rn-org-tokens";
 const ADMIN_CODE_KEY = "rn-admin-code";
+const ADMIN_JWT_KEY = "rn-admin-jwt";
 
 const readOrgTokens = () => {
     if (typeof window === "undefined") return {};
@@ -19,11 +20,15 @@ const readOrgTokens = () => {
     }
 };
 
+const readAdminJwt = () => (typeof window !== "undefined" ? (localStorage.getItem(ADMIN_JWT_KEY) || "") : "");
+
 const orgAuthHeaders = (slug) => {
     const token = readOrgTokens()[slug];
     const adminCode = typeof window !== "undefined" ? (localStorage.getItem(ADMIN_CODE_KEY) || "") : "";
+    const adminJwt = readAdminJwt();
     const headers = {};
-    if (token) headers["X-Org-Auth"] = token;
+    if (adminJwt) headers["X-Org-Auth"] = `Bearer ${adminJwt}`;
+    else if (token) headers["X-Org-Auth"] = token;
     if (adminCode) headers["X-Admin-Code"] = adminCode;
     return headers;
 };
@@ -35,7 +40,26 @@ const adminCodeHeaders = () => {
 
 const client = axios.create({ baseURL: API, timeout: 30000 });
 
+// Attach admin JWT to every request when present (backend routes that don't
+// need it will simply ignore it). This lets us move to JWT-first auth without
+// touching every method.
+client.interceptors.request.use((config) => {
+    const jwt = readAdminJwt();
+    if (jwt) {
+        config.headers = config.headers || {};
+        if (!config.headers.Authorization) {
+            config.headers.Authorization = `Bearer ${jwt}`;
+        }
+    }
+    return config;
+});
+
 export const api = {
+    // Auth (JWT)
+    authLoginAdmin: (email, password) =>
+        client.post("/auth/admin/login", { email, password }).then((r) => r.data),
+    authMe: () => client.get("/auth/me").then((r) => r.data),
+
     // Meta
     stats: () => client.get("/admin/stats").then((r) => r.data),
     isSeeded: () => client.get("/admin/seeded").then((r) => r.data),
@@ -54,7 +78,10 @@ export const api = {
     adminResetOrgPassword: (slug, data) =>
         client.post(`/admin/organisations/${slug}/password/reset`, data).then((r) => r.data),
     adminImpersonateOrg: (slug) =>
-        client.post(`/admin/organisations/${slug}/impersonate`, { admin_code: (typeof window !== "undefined" ? (localStorage.getItem(ADMIN_CODE_KEY) || "") : "") }).then((r) => r.data),
+        client.post(`/admin/organisations/${slug}/impersonate`, {
+            // Fallback body param — the axios interceptor also adds Authorization Bearer <admin-jwt>.
+            admin_code: (typeof window !== "undefined" ? (localStorage.getItem(ADMIN_CODE_KEY) || "") : ""),
+        }).then((r) => r.data),
     submitOrg: (data) => client.post("/organisations", data).then((r) => r.data),
     patchOrg: (slug, patch) => client.patch(`/organisations/${slug}`, patch, { headers: orgAuthHeaders(slug) }).then((r) => r.data),
     claimOrg: (slug, data) => client.post(`/organisations/${slug}/claim`, data).then((r) => r.data),

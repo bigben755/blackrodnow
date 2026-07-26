@@ -66,6 +66,7 @@ function Navbar() {
         setRole,
         adminUnlocked,
         unlockAdmin,
+        loginAdmin,
         lockAdmin,
         orgs,
         unlockOrgAccess,
@@ -73,7 +74,9 @@ function Navbar() {
     } = useApp();
     const [open, setOpen] = useState(false);
     const [adminLoginOpen, setAdminLoginOpen] = useState(false);
-    const [adminCodeInput, setAdminCodeInput] = useState("");
+    const [adminEmailInput, setAdminEmailInput] = useState("");
+    const [adminPasswordInput, setAdminPasswordInput] = useState("");
+    const [adminLoginBusy, setAdminLoginBusy] = useState(false);
     const [orgLoginOpen, setOrgLoginOpen] = useState(false);
     const [orgLoginBusy, setOrgLoginBusy] = useState(false);
     const [orgSlugInput, setOrgSlugInput] = useState("");
@@ -89,19 +92,36 @@ function Navbar() {
         setOpen(false);
     }, [location.pathname]);
 
-    const submitAdminLogin = () => {
-        if (!ADMIN_LAUNCH_CODE) {
-            toast.error("Admin login is not configured. Set REACT_APP_ADMIN_LAUNCH_CODE.");
+    const submitAdminLogin = async () => {
+        const email = (adminEmailInput || "").trim();
+        const password = adminPasswordInput || "";
+        // Legacy: launch-code-only path (dev/fallback). If email is empty and
+        // the password field contains the launch code, keep the old behaviour.
+        if (!email && ADMIN_LAUNCH_CODE && password.trim() === ADMIN_LAUNCH_CODE) {
+            unlockAdmin(password.trim());
+            setAdminEmailInput("");
+            setAdminPasswordInput("");
+            setAdminLoginOpen(false);
+            toast.success("Admin mode unlocked (legacy)");
             return;
         }
-        if ((adminCodeInput || "").trim() !== ADMIN_LAUNCH_CODE) {
-            toast.error("Invalid admin code");
+        if (!email || !password) {
+            toast.error("Enter admin email and password");
             return;
         }
-        unlockAdmin((adminCodeInput || "").trim());
-        setAdminCodeInput("");
-        setAdminLoginOpen(false);
-        toast.success("Admin mode unlocked");
+        setAdminLoginBusy(true);
+        try {
+            await loginAdmin(email, password);
+            setAdminEmailInput("");
+            setAdminPasswordInput("");
+            setAdminLoginOpen(false);
+            toast.success("Signed in as admin");
+        } catch (error) {
+            const detail = error?.response?.data?.detail;
+            toast.error(typeof detail === "string" ? detail : "Login failed");
+        } finally {
+            setAdminLoginBusy(false);
+        }
     };
 
     const submitOrgLogin = async () => {
@@ -454,20 +474,34 @@ function Navbar() {
 
             {adminLoginOpen && (
                 <Dialog open={adminLoginOpen} onOpenChange={setAdminLoginOpen}>
-                    <DialogContent className="sm:max-w-md">
+                    <DialogContent className="sm:max-w-md" data-testid="admin-login-dialog">
                         <DialogHeader>
-                            <DialogTitle>Admin access</DialogTitle>
+                            <DialogTitle>Admin sign in</DialogTitle>
                             <DialogDescription>
-                                Enter launch admin code to unlock admin and role-switch features.
+                                Sign in with your admin email and password. Access lasts 12 hours.
                             </DialogDescription>
                         </DialogHeader>
 
-                        <label className="text-sm">
-                            <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Launch code</span>
+                        <label className="text-sm block">
+                            <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Email</span>
+                            <input
+                                type="email"
+                                autoComplete="username"
+                                data-testid="admin-email-input"
+                                value={adminEmailInput}
+                                onChange={(e) => setAdminEmailInput(e.target.value)}
+                                className="mt-1 w-full px-3 py-2 rounded-2xl border border-border bg-background"
+                            />
+                        </label>
+
+                        <label className="text-sm block mt-3">
+                            <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Password</span>
                             <input
                                 type="password"
-                                value={adminCodeInput}
-                                onChange={(e) => setAdminCodeInput(e.target.value)}
+                                autoComplete="current-password"
+                                data-testid="admin-password-input"
+                                value={adminPasswordInput}
+                                onChange={(e) => setAdminPasswordInput(e.target.value)}
                                 onKeyDown={(e) => {
                                     if (e.key === "Enter") submitAdminLogin();
                                 }}
@@ -485,10 +519,12 @@ function Navbar() {
                             </button>
                             <button
                                 type="button"
+                                disabled={adminLoginBusy}
+                                data-testid="admin-login-submit"
                                 onClick={submitAdminLogin}
-                                className="px-4 py-2 rounded-full bg-primary text-primary-foreground text-sm font-semibold"
+                                className="px-4 py-2 rounded-full bg-primary text-primary-foreground text-sm font-semibold disabled:opacity-60"
                             >
-                                Unlock
+                                {adminLoginBusy ? "Signing in…" : "Sign in"}
                             </button>
                         </DialogFooter>
                     </DialogContent>

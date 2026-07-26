@@ -17,9 +17,35 @@ export function AppProvider({ children }) {
         if (typeof window === "undefined") return "light";
         return localStorage.getItem("rl-theme") || "light";
     });
-    const [adminUnlocked, setAdminUnlocked] = useState(false);
-    const [adminCodeSession, setAdminCodeSession] = useState("");
-    const [role, setRoleState] = useState("guest");
+    const [adminUnlocked, setAdminUnlocked] = useState(() => {
+        if (typeof window === "undefined") return false;
+        // Rehydrate admin session from stored JWT if present + not expired.
+        const jwt = localStorage.getItem("rn-admin-jwt") || "";
+        if (!jwt) return false;
+        try {
+            const payload = JSON.parse(atob(jwt.split(".")[1]));
+            if (payload?.exp && payload.exp * 1000 > Date.now() && payload?.role === "admin") return true;
+            localStorage.removeItem("rn-admin-jwt");
+        } catch {
+            localStorage.removeItem("rn-admin-jwt");
+        }
+        return false;
+    });
+    const [adminCodeSession, setAdminCodeSession] = useState(() => {
+        if (typeof window === "undefined") return "";
+        return localStorage.getItem("rn-admin-jwt") || "";
+    });
+    const [role, setRoleState] = useState(() => {
+        if (typeof window === "undefined") return "guest";
+        try {
+            const jwt = localStorage.getItem("rn-admin-jwt") || "";
+            if (jwt) {
+                const payload = JSON.parse(atob(jwt.split(".")[1]));
+                if (payload?.exp && payload.exp * 1000 > Date.now() && payload?.role === "admin") return "admin";
+            }
+        } catch { /* ignore */ }
+        return "guest";
+    });
 
     const [orgs, setOrgs] = useState([]);
     const [events, setEvents] = useState([]);
@@ -109,10 +135,25 @@ export function AppProvider({ children }) {
         setRoleState("admin");
     }, []);
 
+    const loginAdmin = useCallback(async (email, password) => {
+        const res = await api.authLoginAdmin(email, password);
+        if (!res?.token) throw new Error("Login failed");
+        if (typeof window !== "undefined") {
+            localStorage.setItem("rn-admin-jwt", res.token);
+        }
+        setAdminUnlocked(true);
+        setAdminCodeSession(res.token);
+        setRoleState("admin");
+        return res;
+    }, []);
+
     const lockAdmin = useCallback(() => {
         setAdminUnlocked(false);
         setAdminCodeSession("");
-        if (typeof window !== "undefined") localStorage.removeItem("rn-admin-code");
+        if (typeof window !== "undefined") {
+            localStorage.removeItem("rn-admin-code");
+            localStorage.removeItem("rn-admin-jwt");
+        }
         setRoleState("guest");
     }, []);
 
@@ -334,7 +375,7 @@ export function AppProvider({ children }) {
             ready,
             theme, toggleTheme,
             role, setRole,
-            adminUnlocked, adminCodeSession, unlockAdmin, lockAdmin,
+            adminUnlocked, adminCodeSession, unlockAdmin, loginAdmin, lockAdmin,
             orgs, events, feed, venues, volunteerOpps,
             follows, toggleFollowOrg, toggleFollowCategory, isFollowingOrg, isFollowingCategory,
             savedEventIds, isEventSaved, toggleSaveEvent,
@@ -362,6 +403,7 @@ export function AppProvider({ children }) {
             adminUnlocked,
             adminCodeSession,
             unlockAdmin,
+            loginAdmin,
             lockAdmin,
             orgs,
             events,
