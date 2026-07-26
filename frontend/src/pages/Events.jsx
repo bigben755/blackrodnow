@@ -16,35 +16,30 @@ export default function Events() {
     const { events, orgs, savedEventIds } = useApp();
     const approved = events.filter((e) => e.status === "approved");
 
-    const [view, setView] = useState("list"); // list | month
-    const [query, setQuery] = useState("");
-    const [cat, setCat] = useState("All");
-    const [orgFilter, setOrgFilter] = useState("All");
-    const [tags, setTags] = useState([]); // multi: Free | Kids | Wheelchair | Hearing | Quiet | StepFree
-    const [dateWindow, setDateWindow] = useState("all"); // all | today | tomorrow | weekend | evening
-    const [savedOnly, setSavedOnly] = useState(false);
+    // Rehydrate filters from localStorage on first render (lazy init avoids
+    // a race with the write-LS effect on strict-mode double-mount).
+    const _initialFilters = React.useMemo(() => {
+        if (typeof window === "undefined") return null;
+        try {
+            const raw = localStorage.getItem("rn-events-filters");
+            return raw ? JSON.parse(raw) : null;
+        } catch {
+            return null;
+        }
+    }, []);
+
+    const [view, setView] = useState(_initialFilters?.view || "list"); // list | month
+    const [query, setQuery] = useState(_initialFilters?.query || "");
+    const [cat, setCat] = useState(_initialFilters?.cat || "All");
+    const [orgFilter, setOrgFilter] = useState(_initialFilters?.orgFilter || "All");
+    const [tags, setTags] = useState(Array.isArray(_initialFilters?.tags) ? _initialFilters.tags : []); // multi: Free | Kids | Wheelchair | Hearing | Quiet | StepFree
+    const [dateWindow, setDateWindow] = useState(_initialFilters?.dateWindow || "all"); // all | today | tomorrow | weekend | evening
+    const [savedOnly, setSavedOnly] = useState(typeof _initialFilters?.savedOnly === "boolean" ? _initialFilters.savedOnly : false);
     const [subOpen, setSubOpen] = useState(false);
     const [cursor, setCursor] = useState(new Date());
     const [selectedDay, setSelectedDay] = useState(new Date().toDateString());
 
     const orgName = (slug) => orgs.find((o) => o.slug === slug)?.name;
-
-    useEffect(() => {
-        try {
-            const raw = localStorage.getItem("rn-events-filters");
-            if (!raw) return;
-            const saved = JSON.parse(raw);
-            if (saved?.query) setQuery(saved.query);
-            if (saved?.cat) setCat(saved.cat);
-            if (saved?.orgFilter) setOrgFilter(saved.orgFilter);
-            if (Array.isArray(saved?.tags)) setTags(saved.tags);
-            if (saved?.view) setView(saved.view);
-            if (saved?.dateWindow) setDateWindow(saved.dateWindow);
-            if (typeof saved?.savedOnly === "boolean") setSavedOnly(saved.savedOnly);
-        } catch {
-            // Ignore malformed local storage entries.
-        }
-    }, []);
 
     useEffect(() => {
         localStorage.setItem(
