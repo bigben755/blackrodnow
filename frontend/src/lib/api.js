@@ -53,6 +53,8 @@ export const api = {
         client.post(`/organisations/${slug}/password/change`, data, { headers: adminCodeHeaders() }).then((r) => r.data),
     adminResetOrgPassword: (slug, data) =>
         client.post(`/admin/organisations/${slug}/password/reset`, data).then((r) => r.data),
+    adminImpersonateOrg: (slug) =>
+        client.post(`/admin/organisations/${slug}/impersonate`, { admin_code: (typeof window !== "undefined" ? (localStorage.getItem(ADMIN_CODE_KEY) || "") : "") }).then((r) => r.data),
     submitOrg: (data) => client.post("/organisations", data).then((r) => r.data),
     patchOrg: (slug, patch) => client.patch(`/organisations/${slug}`, patch, { headers: orgAuthHeaders(slug) }).then((r) => r.data),
     claimOrg: (slug, data) => client.post(`/organisations/${slug}/claim`, data).then((r) => r.data),

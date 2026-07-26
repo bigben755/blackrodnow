@@ -1058,6 +1058,28 @@ async def reset_org_password(slug: str, body: Dict[str, str]):
     return {"ok": True, "slug": slug}
 
 
+@api.post("/admin/organisations/{slug}/impersonate")
+async def admin_impersonate_org(slug: str, body: Dict[str, str]):
+    """Super admin exchanges the admin launch code for an organisation access
+    token so they can operate an organisation dashboard on the owner's behalf
+    (e.g. help non-technical orgs set up). The returned token is a synthetic
+    value the frontend passes via X-Org-Auth; because auth is currently
+    stubbed permissively, presence of the token is sufficient to signal an
+    admin-impersonation session to the client."""
+    org = await _find_org(slug)
+    admin_code = (body.get("admin_code") or "").strip()
+    if not hmac.compare_digest(admin_code, ADMIN_LAUNCH_CODE):
+        raise HTTPException(403, "Invalid admin code")
+    token = f"admin-impersonate:{slug}:{new_token()}"
+    return {
+        "ok": True,
+        "slug": slug,
+        "org_name": org.get("name", ""),
+        "token": token,
+        "mode": "impersonate",
+    }
+
+
 # ─────────── Events ───────────
 @api.get("/events")
 async def list_events(upcoming_only: bool = False, include_pending: bool = False):

@@ -262,6 +262,7 @@ export default function OrgDashboard() {
 
     return (
         <div data-testid="org-dashboard" className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
+            <ImpersonationBanner selectedOrgSlug={selectedOrgSlug} orgName={org?.name} />
             {/* Header */}
             <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4 mb-8">
                 <div className="flex items-start gap-4">
@@ -1030,3 +1031,34 @@ function ContactAdminDialog({ open, onClose, fromOrgSlug, fromEmail, fromName })
         </Dialog>
     );
 }
+
+function ImpersonationBanner({ selectedOrgSlug, orgName }) {
+    const { impersonatingOrgSlug, stopImpersonation } = useApp();
+    if (!impersonatingOrgSlug || impersonatingOrgSlug !== selectedOrgSlug) return null;
+    return (
+        <div
+            data-testid="impersonation-banner"
+            className="mb-6 rounded-2xl border-2 border-primary/40 bg-primary/10 text-foreground px-5 py-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3"
+        >
+            <div className="flex items-center gap-3">
+                <Sparkles className="h-4 w-4 text-primary" />
+                <div className="text-sm">
+                    <div className="font-semibold">You&apos;re viewing as {orgName || selectedOrgSlug}</div>
+                    <div className="text-xs text-muted-foreground">Site admin impersonation — actions here appear as if from this organisation.</div>
+                </div>
+            </div>
+            <button
+                type="button"
+                data-testid="stop-impersonation-btn"
+                onClick={() => {
+                    stopImpersonation();
+                    toast.success("Returned to admin");
+                }}
+                className="self-start sm:self-auto px-4 py-2 rounded-full bg-primary text-primary-foreground text-xs font-semibold whitespace-nowrap"
+            >
+                Return to admin
+            </button>
+        </div>
+    );
+}
+

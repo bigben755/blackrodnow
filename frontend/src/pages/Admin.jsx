@@ -6,8 +6,10 @@ import { Stat, CategoryBadge, formatDate, formatTime } from "@/components/Cards"
 import {
     CalendarDays, Building2, Inbox, Users, Star, Check, X, Trash2, BarChart3, Mail,
     Send, Edit3, Eye, MessageSquare, Bell, Pencil, UploadCloud, FileText, Sparkles, RefreshCw, Newspaper, HandHeart,
+    LogIn, MapPin,
 } from "lucide-react";
 import { toast } from "sonner";
+import { useNavigate } from "react-router-dom";
 import {
     Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter,
 } from "@/components/ui/dialog";
@@ -20,6 +22,7 @@ export default function Admin() {
         setOrgStatus, deleteOrg,
         role,
         adminCodeSession,
+        impersonateOrg,
     } = useApp();
 
     const [requests, setRequests] = useState([]);
@@ -29,6 +32,17 @@ export default function Admin() {
     const [selectedOrgSlugs, setSelectedOrgSlugs] = useState([]);
     const [selectedRequestIds, setSelectedRequestIds] = useState([]);
     const [activeTarget, setActiveTarget] = useState(null);
+    const navigate = useNavigate();
+
+    const loginAsOrg = async (slug, name) => {
+        try {
+            await impersonateOrg(slug);
+            toast.success(`Logged in as ${name}`);
+            navigate("/organisation-dashboard");
+        } catch (error) {
+            toast.error(error?.response?.data?.detail || "Impersonation failed. Check admin code.");
+        }
+    };
 
     useEffect(() => {
         localStorage.setItem("rn-admin-queue-filter", queueFilter);
@@ -524,13 +538,21 @@ export default function Admin() {
                             </div>
                             <div className="shrink-0 flex items-center gap-1">
                                 <button
+                                    data-testid={`impersonate-org-${o.slug}`}
+                                    onClick={() => loginAsOrg(o.slug, o.name)}
+                                    className="inline-flex items-center gap-1 px-3 py-1.5 rounded-full bg-primary text-primary-foreground text-[11px] font-semibold uppercase tracking-wider"
+                                    title={`Log in as ${o.name}`}
+                                >
+                                    <LogIn className="h-3 w-3" /> Log in as
+                                </button>
+                                <button
                                     onClick={() => resetOrgPassword(o.slug, o.name)}
                                     className="inline-flex items-center gap-1 px-3 py-1.5 rounded-full border border-border text-[11px] font-semibold uppercase tracking-wider"
                                     title="Reset organisation password"
                                 >
                                     <RefreshCw className="h-3 w-3" /> Reset pwd
                                 </button>
-                                <Link to={`/edit-organisation/${o.slug}`} data-testid={`edit-org-${o.slug}`} className="inline-flex items-center gap-1 px-3 py-1.5 rounded-full bg-primary text-primary-foreground text-[11px] font-semibold uppercase tracking-wider"><Edit3 className="h-3 w-3" /> Edit</Link>
+                                <Link to={`/edit-organisation/${o.slug}`} data-testid={`edit-org-${o.slug}`} className="inline-flex items-center gap-1 px-3 py-1.5 rounded-full border border-border text-[11px] font-semibold uppercase tracking-wider"><Edit3 className="h-3 w-3" /> Edit</Link>
                             </div>
                         </div>
                     ))}
@@ -1445,33 +1467,91 @@ function BulkDocumentImportCard({ orgs }) {
 }
 
 function QuickAddContentCard({ orgs, onCreated }) {
+    const [eventOpen, setEventOpen] = useState(false);
     const [feedOpen, setFeedOpen] = useState(false);
     const [volOpen, setVolOpen] = useState(false);
+    const [orgOpen, setOrgOpen] = useState(false);
+    const [venueOpen, setVenueOpen] = useState(false);
     const [busy, setBusy] = useState(false);
+    const firstOrgSlug = orgs[0]?.slug || "";
+    const [eventForm, setEventForm] = useState({
+        title: "", orgSlug: firstOrgSlug, category: "Community",
+        date: "", start: "", end: "",
+        venue: "", address: "",
+        description: "", cost: "Free", age: "All ages",
+        accessibility: "", booking: "",
+        contactEmail: "", contactPhone: "", image: "",
+        status: "approved",
+    });
     const [feedForm, setFeedForm] = useState({
-        orgSlug: orgs[0]?.slug || "",
-        type: "update",
-        title: "",
-        body: "",
-        image: "",
+        orgSlug: firstOrgSlug, type: "update", title: "", body: "", image: "",
     });
     const [volForm, setVolForm] = useState({
-        orgSlug: orgs[0]?.slug || "",
-        title: "",
-        description: "",
-        age: "",
-        time: "",
-        skills: "",
+        orgSlug: firstOrgSlug, title: "", description: "",
+        age: "", time: "", skills: "",
+    });
+    const [orgForm, setOrgForm] = useState({
+        name: "", category: "Community groups", short: "", about: "",
+        logo: "✨", cover: "", brandColor: "#0052FF",
+        email: "", phone: "", website: "",
+        facebook: "", instagram: "", tiktok: "", linkedin: "",
+        address: "", meeting: "",
+    });
+    const [venueForm, setVenueForm] = useState({
+        name: "", address: "", facilities: "",
+        accessibility: "", capacity: 0, booking: "", image: "",
     });
 
     useEffect(() => {
-        if (!feedForm.orgSlug && orgs[0]?.slug) {
-            setFeedForm((prev) => ({ ...prev, orgSlug: orgs[0].slug }));
+        const slug = orgs[0]?.slug || "";
+        if (!slug) return;
+        setEventForm((prev) => (prev.orgSlug ? prev : { ...prev, orgSlug: slug }));
+        setFeedForm((prev) => (prev.orgSlug ? prev : { ...prev, orgSlug: slug }));
+        setVolForm((prev) => (prev.orgSlug ? prev : { ...prev, orgSlug: slug }));
+    }, [orgs]);
+
+    const createEvent = async () => {
+        if (!eventForm.title || !eventForm.orgSlug || !eventForm.date) {
+            return toast.error("Title, organisation and date are required");
         }
-        if (!volForm.orgSlug && orgs[0]?.slug) {
-            setVolForm((prev) => ({ ...prev, orgSlug: orgs[0].slug }));
+        setBusy(true);
+        try {
+            const startISO = new Date(`${eventForm.date}T${eventForm.start || "10:00"}`).toISOString();
+            const endISO = new Date(`${eventForm.date}T${eventForm.end || eventForm.start || "11:00"}`).toISOString();
+            await api.createEvent({
+                title: eventForm.title,
+                orgSlug: eventForm.orgSlug,
+                category: eventForm.category,
+                start: startISO,
+                end: endISO,
+                venue: eventForm.venue,
+                address: eventForm.address,
+                description: eventForm.description,
+                cost: eventForm.cost,
+                age: eventForm.age,
+                accessibility: eventForm.accessibility,
+                booking: eventForm.booking,
+                contactEmail: eventForm.contactEmail,
+                contactPhone: eventForm.contactPhone,
+                image: eventForm.image || "https://images.unsplash.com/photo-1533174072545-7a4b6ad7a6c3?w=1200&q=80",
+                status: eventForm.status,
+            });
+            toast.success("Event published");
+            setEventForm((prev) => ({
+                ...prev,
+                title: "", date: "", start: "", end: "",
+                venue: "", address: "", description: "",
+                accessibility: "", booking: "", contactEmail: "",
+                contactPhone: "", image: "",
+            }));
+            setEventOpen(false);
+            onCreated?.();
+        } catch (error) {
+            toast.error(error?.response?.data?.detail || "Failed to publish event");
+        } finally {
+            setBusy(false);
         }
-    }, [orgs, feedForm.orgSlug, volForm.orgSlug]);
+    };
 
     const createFeedPost = async () => {
         if (!feedForm.orgSlug || !feedForm.title || !feedForm.body) {
@@ -1497,7 +1577,11 @@ function QuickAddContentCard({ orgs, onCreated }) {
         }
         setBusy(true);
         try {
-            await api.createVolunteer(volForm);
+            const payload = {
+                id: `vol-${Date.now()}`,
+                ...volForm,
+            };
+            await api.createVolunteer(payload);
             toast.success("Volunteering opportunity published");
             setVolForm((prev) => ({ ...prev, title: "", description: "", age: "", time: "", skills: "" }));
             setVolOpen(false);
@@ -1509,23 +1593,187 @@ function QuickAddContentCard({ orgs, onCreated }) {
         }
     };
 
+    const createOrgQuick = async () => {
+        if (!orgForm.name || !orgForm.short) {
+            return toast.error("Name and short description are required");
+        }
+        const slug = orgForm.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
+        setBusy(true);
+        try {
+            const created = await api.submitOrg({
+                slug,
+                name: orgForm.name,
+                category: orgForm.category,
+                short: orgForm.short,
+                about: orgForm.about || orgForm.short,
+                does: orgForm.about || orgForm.short,
+                forWho: "",
+                meeting: orgForm.meeting,
+                address: orgForm.address,
+                location: "Blackrod",
+                email: orgForm.email,
+                phone: orgForm.phone,
+                website: orgForm.website,
+                socials: {
+                    facebook: orgForm.facebook,
+                    instagram: orgForm.instagram,
+                    tiktok: orgForm.tiktok,
+                    linkedin: orgForm.linkedin,
+                },
+                brandColor: orgForm.brandColor,
+                logo: orgForm.logo || "✨",
+                cover: orgForm.cover,
+            });
+            await api.setOrgStatus(created.slug, "approved");
+            toast.success("Organisation published");
+            setOrgForm({
+                name: "", category: "Community groups", short: "", about: "",
+                logo: "✨", cover: "", brandColor: "#0052FF",
+                email: "", phone: "", website: "",
+                facebook: "", instagram: "", tiktok: "", linkedin: "",
+                address: "", meeting: "",
+            });
+            setOrgOpen(false);
+            onCreated?.();
+        } catch (error) {
+            toast.error(error?.response?.data?.detail || "Failed to create organisation");
+        } finally {
+            setBusy(false);
+        }
+    };
+
+    const createVenue = async () => {
+        if (!venueForm.name || !venueForm.address) {
+            return toast.error("Venue name and address are required");
+        }
+        setBusy(true);
+        try {
+            const facilities = venueForm.facilities
+                .split(/[,\n]/)
+                .map((v) => v.trim())
+                .filter(Boolean);
+            await api.createVenue({
+                id: `ven-${Date.now()}`,
+                name: venueForm.name,
+                address: venueForm.address,
+                facilities,
+                accessibility: venueForm.accessibility,
+                capacity: Number(venueForm.capacity) || 0,
+                booking: venueForm.booking,
+                image: venueForm.image || "https://images.unsplash.com/photo-1571260899304-425eee4c7efc?w=1200&q=80",
+            });
+            toast.success("Venue published");
+            setVenueForm({
+                name: "", address: "", facilities: "",
+                accessibility: "", capacity: 0, booking: "", image: "",
+            });
+            setVenueOpen(false);
+            onCreated?.();
+        } catch (error) {
+            toast.error(error?.response?.data?.detail || "Failed to publish venue");
+        } finally {
+            setBusy(false);
+        }
+    };
+
     return (
         <div className="rounded-[2rem] border border-border bg-surface p-6 sm:p-8">
             <div className="flex items-start justify-between gap-3 flex-wrap">
                 <div>
                     <h2 className="font-display font-black text-2xl">Quick add content</h2>
-                    <p className="text-sm text-muted-foreground mt-1">Create items across all main categories without leaving the admin dashboard.</p>
+                    <p className="text-sm text-muted-foreground mt-1">Create items across all main categories without leaving the admin dashboard. Fields match each destination page so posts display fully-populated.</p>
                 </div>
                 <span className="px-3 py-1 rounded-full bg-primary/10 text-primary text-[11px] font-bold uppercase tracking-wider">Events · Organisations · Local feed · Volunteering · Venues</span>
             </div>
 
-            <div className="mt-4 grid sm:grid-cols-2 xl:grid-cols-4 gap-3">
-                <Link to="/submit-event" className="rounded-3xl border border-border bg-background p-4 hover:border-primary/50 transition-colors" data-testid="admin-quick-add-event">
-                    <div className="h-9 w-9 rounded-2xl bg-primary/10 text-primary grid place-items-center"><CalendarDays className="h-4 w-4" /></div>
-                    <div className="font-semibold mt-3">Add event</div>
-                    <p className="text-xs text-muted-foreground mt-1">Open the event submission form prepped for admin publishing.</p>
-                </Link>
+            <div className="mt-4 grid sm:grid-cols-2 xl:grid-cols-5 gap-3">
+                {/* Add Event */}
+                <Dialog open={eventOpen} onOpenChange={setEventOpen}>
+                    <DialogTrigger asChild>
+                        <button type="button" className="text-left rounded-3xl border border-border bg-background p-4 hover:border-primary/50 transition-colors" data-testid="admin-quick-add-event">
+                            <div className="h-9 w-9 rounded-2xl bg-primary/10 text-primary grid place-items-center"><CalendarDays className="h-4 w-4" /></div>
+                            <div className="font-semibold mt-3">Add event</div>
+                            <p className="text-xs text-muted-foreground mt-1">Publish an event straight into the calendar.</p>
+                        </button>
+                    </DialogTrigger>
+                    <DialogContent className="sm:max-w-2xl max-h-[85vh] overflow-y-auto">
+                        <DialogHeader><DialogTitle>Create event</DialogTitle></DialogHeader>
+                        <div className="grid gap-3">
+                            <Field label="Title">
+                                <input data-testid="qc-ev-title" value={eventForm.title} onChange={(e) => setEventForm((p) => ({ ...p, title: e.target.value }))} className={inp} />
+                            </Field>
+                            <div className="grid sm:grid-cols-2 gap-3">
+                                <Field label="Organisation">
+                                    <select data-testid="qc-ev-org" value={eventForm.orgSlug} onChange={(e) => setEventForm((p) => ({ ...p, orgSlug: e.target.value }))} className={inp}>
+                                        {orgs.map((o) => <option key={o.slug} value={o.slug}>{o.name}</option>)}
+                                    </select>
+                                </Field>
+                                <Field label="Category">
+                                    <input value={eventForm.category} onChange={(e) => setEventForm((p) => ({ ...p, category: e.target.value }))} className={inp} placeholder="Community, Sports…" />
+                                </Field>
+                            </div>
+                            <div className="grid sm:grid-cols-3 gap-3">
+                                <Field label="Date">
+                                    <input data-testid="qc-ev-date" type="date" value={eventForm.date} onChange={(e) => setEventForm((p) => ({ ...p, date: e.target.value }))} className={inp} />
+                                </Field>
+                                <Field label="Start">
+                                    <input type="time" value={eventForm.start} onChange={(e) => setEventForm((p) => ({ ...p, start: e.target.value }))} className={inp} />
+                                </Field>
+                                <Field label="End">
+                                    <input type="time" value={eventForm.end} onChange={(e) => setEventForm((p) => ({ ...p, end: e.target.value }))} className={inp} />
+                                </Field>
+                            </div>
+                            <div className="grid sm:grid-cols-2 gap-3">
+                                <Field label="Venue">
+                                    <input value={eventForm.venue} onChange={(e) => setEventForm((p) => ({ ...p, venue: e.target.value }))} className={inp} />
+                                </Field>
+                                <Field label="Address">
+                                    <input value={eventForm.address} onChange={(e) => setEventForm((p) => ({ ...p, address: e.target.value }))} className={inp} />
+                                </Field>
+                            </div>
+                            <Field label="Description">
+                                <textarea rows={4} value={eventForm.description} onChange={(e) => setEventForm((p) => ({ ...p, description: e.target.value }))} className={inp} />
+                            </Field>
+                            <div className="grid sm:grid-cols-2 gap-3">
+                                <Field label="Cost">
+                                    <input value={eventForm.cost} onChange={(e) => setEventForm((p) => ({ ...p, cost: e.target.value }))} className={inp} />
+                                </Field>
+                                <Field label="Age suitability">
+                                    <input value={eventForm.age} onChange={(e) => setEventForm((p) => ({ ...p, age: e.target.value }))} className={inp} />
+                                </Field>
+                            </div>
+                            <Field label="Accessibility">
+                                <input value={eventForm.accessibility} onChange={(e) => setEventForm((p) => ({ ...p, accessibility: e.target.value }))} className={inp} />
+                            </Field>
+                            <div className="grid sm:grid-cols-2 gap-3">
+                                <Field label="Contact email">
+                                    <input type="email" value={eventForm.contactEmail} onChange={(e) => setEventForm((p) => ({ ...p, contactEmail: e.target.value }))} className={inp} />
+                                </Field>
+                                <Field label="Contact phone">
+                                    <input value={eventForm.contactPhone} onChange={(e) => setEventForm((p) => ({ ...p, contactPhone: e.target.value }))} className={inp} />
+                                </Field>
+                            </div>
+                            <Field label="Booking link">
+                                <input type="url" value={eventForm.booking} onChange={(e) => setEventForm((p) => ({ ...p, booking: e.target.value }))} className={inp} placeholder="https://" />
+                            </Field>
+                            <Field label="Image URL">
+                                <input value={eventForm.image} onChange={(e) => setEventForm((p) => ({ ...p, image: e.target.value }))} className={inp} placeholder="https://" />
+                            </Field>
+                            <Field label="Publish status">
+                                <select value={eventForm.status} onChange={(e) => setEventForm((p) => ({ ...p, status: e.target.value }))} className={inp}>
+                                    <option value="approved">Publish now (approved)</option>
+                                    <option value="pending">Save as pending</option>
+                                </select>
+                            </Field>
+                        </div>
+                        <DialogFooter>
+                            <button type="button" onClick={() => setEventOpen(false)} className="px-4 py-2 rounded-full border border-border text-sm font-semibold">Cancel</button>
+                            <button type="button" data-testid="qc-ev-submit" disabled={busy} onClick={createEvent} className="px-4 py-2 rounded-full bg-primary text-primary-foreground text-sm font-semibold disabled:opacity-60">Publish event</button>
+                        </DialogFooter>
+                    </DialogContent>
+                </Dialog>
 
+                {/* Add Feed post */}
                 <Dialog open={feedOpen} onOpenChange={setFeedOpen}>
                     <DialogTrigger asChild>
                         <button type="button" className="text-left rounded-3xl border border-border bg-background p-4 hover:border-primary/50 transition-colors" data-testid="admin-quick-add-feed">
@@ -1535,9 +1783,7 @@ function QuickAddContentCard({ orgs, onCreated }) {
                         </button>
                     </DialogTrigger>
                     <DialogContent className="sm:max-w-xl">
-                        <DialogHeader>
-                            <DialogTitle>Create feed post</DialogTitle>
-                        </DialogHeader>
+                        <DialogHeader><DialogTitle>Create feed post</DialogTitle></DialogHeader>
                         <div className="grid gap-3">
                             <Field label="Organisation">
                                 <select value={feedForm.orgSlug} onChange={(e) => setFeedForm((prev) => ({ ...prev, orgSlug: e.target.value }))} className={inp}>
@@ -1552,7 +1798,7 @@ function QuickAddContentCard({ orgs, onCreated }) {
                                 </select>
                             </Field>
                             <Field label="Title">
-                                <input value={feedForm.title} onChange={(e) => setFeedForm((prev) => ({ ...prev, title: e.target.value }))} className={inp} />
+                                <input data-testid="qc-feed-title" value={feedForm.title} onChange={(e) => setFeedForm((prev) => ({ ...prev, title: e.target.value }))} className={inp} />
                             </Field>
                             <Field label="Message">
                                 <textarea rows={4} value={feedForm.body} onChange={(e) => setFeedForm((prev) => ({ ...prev, body: e.target.value }))} className={inp} />
@@ -1568,6 +1814,7 @@ function QuickAddContentCard({ orgs, onCreated }) {
                     </DialogContent>
                 </Dialog>
 
+                {/* Add Volunteering */}
                 <Dialog open={volOpen} onOpenChange={setVolOpen}>
                     <DialogTrigger asChild>
                         <button type="button" className="text-left rounded-3xl border border-border bg-background p-4 hover:border-primary/50 transition-colors" data-testid="admin-quick-add-volunteer">
@@ -1577,9 +1824,7 @@ function QuickAddContentCard({ orgs, onCreated }) {
                         </button>
                     </DialogTrigger>
                     <DialogContent className="sm:max-w-xl">
-                        <DialogHeader>
-                            <DialogTitle>Create volunteering opportunity</DialogTitle>
-                        </DialogHeader>
+                        <DialogHeader><DialogTitle>Create volunteering opportunity</DialogTitle></DialogHeader>
                         <div className="grid gap-3">
                             <Field label="Organisation">
                                 <select value={volForm.orgSlug} onChange={(e) => setVolForm((prev) => ({ ...prev, orgSlug: e.target.value }))} className={inp}>
@@ -1594,10 +1839,10 @@ function QuickAddContentCard({ orgs, onCreated }) {
                             </Field>
                             <div className="grid sm:grid-cols-3 gap-3">
                                 <Field label="Time">
-                                    <input value={volForm.time} onChange={(e) => setVolForm((prev) => ({ ...prev, time: e.target.value }))} className={inp} />
+                                    <input value={volForm.time} onChange={(e) => setVolForm((prev) => ({ ...prev, time: e.target.value }))} className={inp} placeholder="e.g. Sat 10-12" />
                                 </Field>
                                 <Field label="Age">
-                                    <input value={volForm.age} onChange={(e) => setVolForm((prev) => ({ ...prev, age: e.target.value }))} className={inp} />
+                                    <input value={volForm.age} onChange={(e) => setVolForm((prev) => ({ ...prev, age: e.target.value }))} className={inp} placeholder="14+, 18+, DofE" />
                                 </Field>
                                 <Field label="Skills">
                                     <input value={volForm.skills} onChange={(e) => setVolForm((prev) => ({ ...prev, skills: e.target.value }))} className={inp} />
@@ -1611,11 +1856,124 @@ function QuickAddContentCard({ orgs, onCreated }) {
                     </DialogContent>
                 </Dialog>
 
-                <Link to="/add-organisation" className="rounded-3xl border border-border bg-background p-4 hover:border-primary/50 transition-colors" data-testid="admin-quick-add-org">
-                    <div className="h-9 w-9 rounded-2xl bg-primary/10 text-primary grid place-items-center"><Building2 className="h-4 w-4" /></div>
-                    <div className="font-semibold mt-3">Add organisation</div>
-                    <p className="text-xs text-muted-foreground mt-1">Open the organisation form and submit directly from admin flow.</p>
-                </Link>
+                {/* Add Organisation */}
+                <Dialog open={orgOpen} onOpenChange={setOrgOpen}>
+                    <DialogTrigger asChild>
+                        <button type="button" className="text-left rounded-3xl border border-border bg-background p-4 hover:border-primary/50 transition-colors" data-testid="admin-quick-add-org">
+                            <div className="h-9 w-9 rounded-2xl bg-primary/10 text-primary grid place-items-center"><Building2 className="h-4 w-4" /></div>
+                            <div className="font-semibold mt-3">Add organisation</div>
+                            <p className="text-xs text-muted-foreground mt-1">Create and approve an organisation in one step.</p>
+                        </button>
+                    </DialogTrigger>
+                    <DialogContent className="sm:max-w-2xl max-h-[85vh] overflow-y-auto">
+                        <DialogHeader><DialogTitle>Create organisation</DialogTitle></DialogHeader>
+                        <div className="grid gap-3">
+                            <Field label="Name">
+                                <input data-testid="qc-org-name" value={orgForm.name} onChange={(e) => setOrgForm((p) => ({ ...p, name: e.target.value }))} className={inp} />
+                            </Field>
+                            <div className="grid sm:grid-cols-2 gap-3">
+                                <Field label="Category">
+                                    <input value={orgForm.category} onChange={(e) => setOrgForm((p) => ({ ...p, category: e.target.value }))} className={inp} placeholder="Community groups, Sports, Faith…" />
+                                </Field>
+                                <Field label="Brand colour">
+                                    <input type="color" value={orgForm.brandColor} onChange={(e) => setOrgForm((p) => ({ ...p, brandColor: e.target.value }))} className="h-10 w-full rounded-2xl border border-border bg-background" />
+                                </Field>
+                            </div>
+                            <Field label="Short description">
+                                <input value={orgForm.short} onChange={(e) => setOrgForm((p) => ({ ...p, short: e.target.value }))} className={inp} placeholder="One line summary" />
+                            </Field>
+                            <Field label="Full description">
+                                <textarea rows={4} value={orgForm.about} onChange={(e) => setOrgForm((p) => ({ ...p, about: e.target.value }))} className={inp} />
+                            </Field>
+                            <div className="grid sm:grid-cols-2 gap-3">
+                                <Field label="Logo (emoji)">
+                                    <input value={orgForm.logo} onChange={(e) => setOrgForm((p) => ({ ...p, logo: e.target.value }))} className={inp} placeholder="⚽" />
+                                </Field>
+                                <Field label="Cover image URL">
+                                    <input value={orgForm.cover} onChange={(e) => setOrgForm((p) => ({ ...p, cover: e.target.value }))} className={inp} placeholder="https://" />
+                                </Field>
+                            </div>
+                            <div className="grid sm:grid-cols-2 gap-3">
+                                <Field label="Email">
+                                    <input type="email" value={orgForm.email} onChange={(e) => setOrgForm((p) => ({ ...p, email: e.target.value }))} className={inp} />
+                                </Field>
+                                <Field label="Phone">
+                                    <input value={orgForm.phone} onChange={(e) => setOrgForm((p) => ({ ...p, phone: e.target.value }))} className={inp} />
+                                </Field>
+                            </div>
+                            <Field label="Website">
+                                <input type="url" value={orgForm.website} onChange={(e) => setOrgForm((p) => ({ ...p, website: e.target.value }))} className={inp} placeholder="https://" />
+                            </Field>
+                            <div className="grid sm:grid-cols-2 gap-3">
+                                <Field label="Facebook URL">
+                                    <input value={orgForm.facebook} onChange={(e) => setOrgForm((p) => ({ ...p, facebook: e.target.value }))} className={inp} placeholder="https://facebook.com/…" />
+                                </Field>
+                                <Field label="Instagram URL">
+                                    <input value={orgForm.instagram} onChange={(e) => setOrgForm((p) => ({ ...p, instagram: e.target.value }))} className={inp} />
+                                </Field>
+                                <Field label="TikTok URL">
+                                    <input value={orgForm.tiktok} onChange={(e) => setOrgForm((p) => ({ ...p, tiktok: e.target.value }))} className={inp} />
+                                </Field>
+                                <Field label="LinkedIn URL">
+                                    <input value={orgForm.linkedin} onChange={(e) => setOrgForm((p) => ({ ...p, linkedin: e.target.value }))} className={inp} />
+                                </Field>
+                            </div>
+                            <Field label="Address">
+                                <input value={orgForm.address} onChange={(e) => setOrgForm((p) => ({ ...p, address: e.target.value }))} className={inp} />
+                            </Field>
+                            <Field label="Meeting / opening times">
+                                <input value={orgForm.meeting} onChange={(e) => setOrgForm((p) => ({ ...p, meeting: e.target.value }))} className={inp} placeholder="e.g. Tuesdays 7pm" />
+                            </Field>
+                        </div>
+                        <DialogFooter>
+                            <button type="button" onClick={() => setOrgOpen(false)} className="px-4 py-2 rounded-full border border-border text-sm font-semibold">Cancel</button>
+                            <button type="button" data-testid="qc-org-submit" disabled={busy} onClick={createOrgQuick} className="px-4 py-2 rounded-full bg-primary text-primary-foreground text-sm font-semibold disabled:opacity-60">Publish organisation</button>
+                        </DialogFooter>
+                    </DialogContent>
+                </Dialog>
+
+                {/* Add Venue */}
+                <Dialog open={venueOpen} onOpenChange={setVenueOpen}>
+                    <DialogTrigger asChild>
+                        <button type="button" className="text-left rounded-3xl border border-border bg-background p-4 hover:border-primary/50 transition-colors" data-testid="admin-quick-add-venue">
+                            <div className="h-9 w-9 rounded-2xl bg-accent/10 text-accent grid place-items-center"><MapPin className="h-4 w-4" /></div>
+                            <div className="font-semibold mt-3">Add venue</div>
+                            <p className="text-xs text-muted-foreground mt-1">Add a bookable venue to the Spaces to hire page.</p>
+                        </button>
+                    </DialogTrigger>
+                    <DialogContent className="sm:max-w-2xl max-h-[85vh] overflow-y-auto">
+                        <DialogHeader><DialogTitle>Create venue</DialogTitle></DialogHeader>
+                        <div className="grid gap-3">
+                            <Field label="Name">
+                                <input data-testid="qc-venue-name" value={venueForm.name} onChange={(e) => setVenueForm((p) => ({ ...p, name: e.target.value }))} className={inp} />
+                            </Field>
+                            <Field label="Address">
+                                <input value={venueForm.address} onChange={(e) => setVenueForm((p) => ({ ...p, address: e.target.value }))} className={inp} />
+                            </Field>
+                            <Field label="Facilities (comma or newline separated)">
+                                <textarea rows={2} value={venueForm.facilities} onChange={(e) => setVenueForm((p) => ({ ...p, facilities: e.target.value }))} className={inp} placeholder="Main hall, Kitchen, Outdoor pitches" />
+                            </Field>
+                            <div className="grid sm:grid-cols-2 gap-3">
+                                <Field label="Capacity">
+                                    <input type="number" min="0" value={venueForm.capacity} onChange={(e) => setVenueForm((p) => ({ ...p, capacity: e.target.value }))} className={inp} />
+                                </Field>
+                                <Field label="Accessibility">
+                                    <input value={venueForm.accessibility} onChange={(e) => setVenueForm((p) => ({ ...p, accessibility: e.target.value }))} className={inp} placeholder="Step-free, hearing loop…" />
+                                </Field>
+                            </div>
+                            <Field label="Booking (URL or mailto:)">
+                                <input value={venueForm.booking} onChange={(e) => setVenueForm((p) => ({ ...p, booking: e.target.value }))} className={inp} placeholder="https:// or mailto:" />
+                            </Field>
+                            <Field label="Image URL">
+                                <input value={venueForm.image} onChange={(e) => setVenueForm((p) => ({ ...p, image: e.target.value }))} className={inp} placeholder="https://" />
+                            </Field>
+                        </div>
+                        <DialogFooter>
+                            <button type="button" onClick={() => setVenueOpen(false)} className="px-4 py-2 rounded-full border border-border text-sm font-semibold">Cancel</button>
+                            <button type="button" data-testid="qc-venue-submit" disabled={busy} onClick={createVenue} className="px-4 py-2 rounded-full bg-primary text-primary-foreground text-sm font-semibold disabled:opacity-60">Publish venue</button>
+                        </DialogFooter>
+                    </DialogContent>
+                </Dialog>
             </div>
         </div>
     );

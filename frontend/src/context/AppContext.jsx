@@ -42,6 +42,7 @@ export function AppProvider({ children }) {
     const [ready, setReady] = useState(false);
     // Active org (for org dashboard)
     const [activeOrgSlug, setActiveOrgSlug] = useState(() => localStorage.getItem("rn-active-org") || "");
+    const [impersonatingOrgSlug, setImpersonatingOrgSlug] = useState(() => localStorage.getItem("rn-impersonating-org") || "");
     const [orgTokens, setOrgTokens] = useState(() => {
         if (typeof window === "undefined") return {};
         try {
@@ -74,6 +75,11 @@ export function AppProvider({ children }) {
     useEffect(() => {
         if (activeOrgSlug) localStorage.setItem("rn-active-org", activeOrgSlug);
     }, [activeOrgSlug]);
+
+    useEffect(() => {
+        if (impersonatingOrgSlug) localStorage.setItem("rn-impersonating-org", impersonatingOrgSlug);
+        else localStorage.removeItem("rn-impersonating-org");
+    }, [impersonatingOrgSlug]);
 
     useEffect(() => {
         localStorage.setItem("rn-org-tokens", JSON.stringify(orgTokens));
@@ -127,6 +133,29 @@ export function AppProvider({ children }) {
             return next;
         });
     }, []);
+
+    const impersonateOrg = useCallback(async (slug) => {
+        if (!slug) throw new Error("No organisation selected");
+        const res = await api.adminImpersonateOrg(slug);
+        setOrgTokens((current) => ({ ...current, [slug]: res?.token || "" }));
+        setActiveOrgSlug(slug);
+        setImpersonatingOrgSlug(slug);
+        setRoleState("org");
+        return res;
+    }, []);
+
+    const stopImpersonation = useCallback(() => {
+        const slug = impersonatingOrgSlug;
+        setImpersonatingOrgSlug("");
+        if (slug) {
+            setOrgTokens((current) => {
+                const next = { ...current };
+                delete next[slug];
+                return next;
+            });
+        }
+        setRoleState("admin");
+    }, [impersonatingOrgSlug]);
 
     const startDemo = useCallback((roleHint = "guest") => {
         setDemoRole(roleHint);
@@ -313,6 +342,7 @@ export function AppProvider({ children }) {
             notifPrefs, setNotifPrefs,
             activeOrgSlug, setActiveOrgSlug,
             orgTokens, hasOrgAccess, getOrgToken, unlockOrgAccess, clearOrgAccess,
+            impersonatingOrgSlug, impersonateOrg, stopImpersonation,
             demoActive,
             demoRole,
             demoStepIndex,
@@ -350,6 +380,9 @@ export function AppProvider({ children }) {
             getOrgToken,
             unlockOrgAccess,
             clearOrgAccess,
+            impersonatingOrgSlug,
+            impersonateOrg,
+            stopImpersonation,
             demoActive,
             demoRole,
             demoStepIndex,

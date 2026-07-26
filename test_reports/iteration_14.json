@@ -1,0 +1,44 @@
+{
+  "summary": "Tested Super Admin impersonation + Quick Add content dialogs (events/venues/orgs) — new feature set on top of MVP. Backend fully green (8/8). Frontend: 5 Quick Add tiles present; created event, venue, and organisation via dialogs — all persisted, appear on public pages, correct toasts fire. Impersonation button per-org present, backend token exchange works, state (role, orgTokens, impersonatingOrgSlug, activeOrgSlug) all update correctly, banner renders on /organisation-dashboard with correct text 'You\\'re viewing as Blackrod Town Council', and Return-to-admin correctly hides banner + reverts role to Site Admin + clears rn-impersonating-org localStorage. FOUND ONE BUG: clicking 'Log in as' from /admin lands the user on '/' (Home) instead of '/organisation-dashboard'. State is correct so manual nav to org dashboard shows the banner, but the automatic redirect fails because /admin's RequireRole re-renders with the new role='org' and emits <Navigate to='/'/> which races/wins against the imperative navigate('/organisation-dashboard').",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "Admin.jsx loginAsOrg (impersonation flow)",
+        "issue": "After clicking [data-testid=impersonate-org-{slug}] the user is redirected to '/' instead of '/organisation-dashboard'. Impersonation state (role, orgTokens, impersonatingOrgSlug, activeOrgSlug) IS correctly set; toast 'Logged in as {name}' fires. Root cause: impersonateOrg() calls setRoleState('org') synchronously before navigate('/organisation-dashboard'). Because Admin is wrapped in RequireRole allowed=['admin'], the /admin route re-renders with role='org' and returns <Navigate to='/' replace /> which beats the imperative navigate. Verified via frameNavigated events: /admin → /organisation-dashboard → / → / (2 immediate redirects to root). Manual navigation to /organisation-dashboard shows the banner correctly (org name + 'Return to admin' button both present).",
+        "selector": "[data-testid^=\"impersonate-org-\"]",
+        "priority": "HIGH",
+        "suggested_fix": "In /app/frontend/src/pages/Admin.jsx loginAsOrg: call navigate('/organisation-dashboard') FIRST, then await impersonateOrg(slug). Or in AppContext.jsx impersonateOrg: move setRoleState('org') to be called AFTER a microtask (or expose a two-phase API so the caller navigates before role flips). Simplest patch: reorder to `navigate('/organisation-dashboard'); await impersonateOrg(slug); toast.success(...)`."
+      }
+    ],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_impersonation_quickcreate.py",
+    "/app/test_reports/pytest/iter14_results.xml"
+  ],
+  "action_items": [
+    "Fix Admin.jsx loginAsOrg redirect race so clicking 'Log in as' lands on /organisation-dashboard (banner is functional, only the auto-nav is broken)."
+  ],
+  "critical_code_review_comments": [
+    "Admin.jsx is now 2201 lines — well above the 700-line guidance. Consider extracting QuickAddContentCard, BroadcastCard, TriageQueue etc. into separate files.",
+    "adminUnlocked is intentionally NOT persisted (session only) but rn-admin-code IS persisted. After a full page reload the admin code is available in localStorage yet adminUnlocked=false and role auto-resets to 'guest' (AppContext line 71-73). Consider seeding adminUnlocked=true when rn-admin-code === REACT_APP_ADMIN_LAUNCH_CODE to survive refreshes — otherwise every reload forces the launcher through the modal again.",
+    "impersonateOrg tightly couples state mutation + navigation. The current shape (setRoleState inside impersonateOrg + imperative navigate at call site) creates the RequireRole race described above. Prefer either (a) navigate first then set role, or (b) return the token from impersonateOrg and let the caller drive state + navigation."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_impersonation_quickcreate.py (new)"
+  ],
+  "success_rate": {"backend": "100% (8/8 pytest)", "frontend": "90% — 5/5 quick-add tiles work end-to-end (event, venue, org verified via API + public page), impersonation state + banner + return-to-admin all work; only the auto-navigation on impersonate click is broken (lands on / instead of /organisation-dashboard)"},
+  "test_credentials": "Admin launch code Blackr0dN0w!& (from /app/memory/test_credentials.md, verified working).",
+  "seed_data_creation": "Created TEST_QCEv_*, TEST_QCVenue_*, TEST_QCOrg_* records via the Quick Add UI + several TEST_* records via pytest. These remain in the DB (no cleanup step ran).",
+  "retest_needed": true,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Backend impersonation endpoint fully green (200 with token / 403 wrong code / 404 unknown slug). Quick Add POST /api/venues, /api/volunteers, /api/events, /api/organisations + admin approve flow all work. On the frontend, the only remaining bug is the redirect race in Admin.jsx `loginAsOrg` — verify by clicking [data-testid=impersonate-org-<slug>] on /admin and asserting page.url ends with '/organisation-dashboard' (currently ends with '/'). Banner + return-to-admin themselves are correct once you land on /organisation-dashboard (SPA-navigate there via [data-testid=goto-org-dashboard] after clicking impersonate to reproduce the working state).",
+  "rca_of_the_issue": {
+    "bug": "'Log in as' does not navigate to /organisation-dashboard",
+    "reproduction": "1) Unlock admin with Blackr0dN0w!&. 2) Set role to Site Admin. 3) Visit /admin. 4) Click [data-testid=impersonate-org-blackrod-town-council]. 5) Observe URL ends at '/' (Home), NOT '/organisation-dashboard'.",
+    "root_cause": "Admin.jsx `loginAsOrg` calls `await impersonateOrg(slug)` which synchronously flips role from 'admin' to 'org' via setRoleState. The Admin route is wrapped in RequireRole allowed=['admin']; when role becomes 'org' React re-renders /admin, RequireRole returns <Navigate to='/' replace/>, and this Navigate is committed before the subsequent imperative `navigate('/organisation-dashboard')`. Instrumented framenavigated shows: /admin → /organisation-dashboard → / → / .",
+    "mitigation": "Reorder in Admin.jsx: navigate('/organisation-dashboard') FIRST, then await impersonateOrg(slug), then toast. Alternatively decouple state mutation from navigation inside impersonateOrg."
+  }
+}

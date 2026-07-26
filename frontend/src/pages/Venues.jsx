@@ -1,12 +1,13 @@
 import React from "react";
 import { useApp } from "@/context/AppContext";
 import { VenueCard } from "@/components/Cards";
-import { VENUES } from "@/data/mockData";
+import { VENUES as SEED_VENUES } from "@/data/mockData";
 
 export default function Venues() {
-    const { events } = useApp();
+    const { events, venues } = useApp();
+    const list = venues && venues.length ? venues : SEED_VENUES;
     const countAtVenue = (name) =>
-        events.filter((e) => e.status === "approved" && e.venue?.toLowerCase().includes(name.split(" ")[0].toLowerCase())).length;
+        events.filter((e) => e.status === "approved" && e.venue?.toLowerCase().includes((name.split(" ")[0] || "").toLowerCase())).length;
 
     return (
         <div data-testid="venues-page" className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
@@ -20,7 +21,7 @@ export default function Venues() {
                 </p>
             </div>
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
-                {VENUES.map((v) => (
+                {list.map((v) => (
                     <VenueCard key={v.id} venue={v} eventCount={countAtVenue(v.name)} />
                 ))}
             </div>
