@@ -309,6 +309,10 @@ export default function Admin() {
             </section>
 
             <section className="mt-8">
+                <SiteModeCard />
+            </section>
+
+            <section className="mt-8">
                 <QuickAddContentCard orgs={orgs} onCreated={refresh} />
             </section>
 
@@ -1467,6 +1471,126 @@ function BulkDocumentImportCard({ orgs }) {
         </div>
     );
 }
+
+function SiteModeCard() {
+    const { siteSettings, setSiteSettings } = useApp();
+    const [busy, setBusy] = useState(false);
+    const [launchAt, setLaunchAt] = useState(siteSettings?.launch_at || "");
+    const [teaser, setTeaser] = useState(siteSettings?.teaser || "");
+    const comingSoon = !!siteSettings?.coming_soon;
+
+    useEffect(() => {
+        setLaunchAt(siteSettings?.launch_at || "");
+        setTeaser(siteSettings?.teaser || "");
+    }, [siteSettings?.launch_at, siteSettings?.teaser]);
+
+    const patch = async (updates) => {
+        setBusy(true);
+        try {
+            const res = await api.updateSiteSettings(updates);
+            setSiteSettings(res);
+            toast.success("Site mode updated");
+        } catch (error) {
+            toast.error(error?.response?.data?.detail || "Could not update site mode");
+        } finally {
+            setBusy(false);
+        }
+    };
+
+    const toISOFromLocal = (value) => {
+        if (!value) return "";
+        try {
+            const [datePart, timePart] = value.split("T");
+            const [y, m, d] = datePart.split("-").map(Number);
+            const [hh, mm] = (timePart || "09:00").split(":").map(Number);
+            const iso = new Date(Date.UTC(y, m - 1, d, hh, mm, 0)).toISOString();
+            return iso;
+        } catch {
+            return "";
+        }
+    };
+
+    // Convert an ISO string to a value the datetime-local input expects.
+    const localValue = React.useMemo(() => {
+        if (!launchAt) return "";
+        try {
+            const d = new Date(launchAt);
+            const pad = (n) => String(n).padStart(2, "0");
+            return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}T${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`;
+        } catch {
+            return "";
+        }
+    }, [launchAt]);
+
+    return (
+        <div className="rounded-[2rem] border border-border bg-surface p-6 sm:p-8" data-testid="site-mode-card">
+            <div className="flex items-start justify-between gap-3 flex-wrap">
+                <div>
+                    <h2 className="font-display font-black text-2xl">Site mode</h2>
+                    <p className="text-sm text-muted-foreground mt-1">Control what the public sees. When Coming Soon is on, guests see the branded launch page; admins and org accounts still see the full site.</p>
+                </div>
+                <span
+                    className={`px-3 py-1 rounded-full text-[11px] font-bold uppercase tracking-wider ${comingSoon ? "bg-yellow-400/20 text-yellow-600 dark:text-yellow-300" : "bg-emerald-400/20 text-emerald-700 dark:text-emerald-300"}`}
+                >
+                    {comingSoon ? "Coming Soon" : "Public / Live"}
+                </span>
+            </div>
+
+            <div className="mt-4 grid md:grid-cols-3 gap-3">
+                <div className="rounded-3xl border border-border bg-background p-4">
+                    <div className="text-xs uppercase tracking-wider text-muted-foreground">Current status</div>
+                    <div className="mt-1 font-semibold text-sm">{comingSoon ? "Public sees the Coming Soon page." : "Site is live to the public."}</div>
+                    <button
+                        type="button"
+                        data-testid="site-mode-toggle"
+                        disabled={busy}
+                        onClick={() => patch({ coming_soon: !comingSoon })}
+                        className={`mt-3 inline-flex items-center gap-2 px-4 py-2 rounded-full text-xs font-black uppercase tracking-wider disabled:opacity-60 ${comingSoon ? "bg-primary text-primary-foreground" : "border border-border"}`}
+                    >
+                        {comingSoon ? "Go live now" : "Return to Coming Soon"}
+                    </button>
+                </div>
+                <div className="rounded-3xl border border-border bg-background p-4">
+                    <div className="text-xs uppercase tracking-wider text-muted-foreground">Launch date &amp; time (UK)</div>
+                    <input
+                        type="datetime-local"
+                        data-testid="site-mode-launch-at"
+                        value={localValue}
+                        onChange={(e) => setLaunchAt(toISOFromLocal(e.target.value))}
+                        className="mt-2 w-full px-3 py-2 rounded-2xl border border-border bg-surface text-sm"
+                    />
+                    <button
+                        type="button"
+                        disabled={busy || !launchAt}
+                        onClick={() => patch({ launch_at: launchAt })}
+                        className="mt-3 inline-flex items-center gap-2 px-4 py-2 rounded-full bg-primary text-primary-foreground text-xs font-black uppercase tracking-wider disabled:opacity-60"
+                    >
+                        Save launch date
+                    </button>
+                </div>
+                <div className="rounded-3xl border border-border bg-background p-4">
+                    <div className="text-xs uppercase tracking-wider text-muted-foreground">Teaser copy</div>
+                    <textarea
+                        rows={3}
+                        data-testid="site-mode-teaser"
+                        value={teaser}
+                        onChange={(e) => setTeaser(e.target.value)}
+                        className="mt-2 w-full px-3 py-2 rounded-2xl border border-border bg-surface text-sm"
+                    />
+                    <button
+                        type="button"
+                        disabled={busy || !teaser.trim()}
+                        onClick={() => patch({ teaser: teaser.trim() })}
+                        className="mt-3 inline-flex items-center gap-2 px-4 py-2 rounded-full bg-primary text-primary-foreground text-xs font-black uppercase tracking-wider disabled:opacity-60"
+                    >
+                        Save teaser
+                    </button>
+                </div>
+            </div>
+        </div>
+    );
+}
+
 
 function QuickAddContentCard({ orgs, onCreated }) {
     const [eventOpen, setEventOpen] = useState(false);

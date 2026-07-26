@@ -782,6 +782,64 @@ async def org_analytics(slug: str):
     return await _build_org_analytics(slug)
 
 
+# ─────────── Site settings (public: coming-soon flag + launch date) ───────────
+_SITE_SETTINGS_ID = "site"
+
+
+async def _get_site_settings() -> Dict[str, Any]:
+    doc = await db.site_settings.find_one({"_id": _SITE_SETTINGS_ID}) or {}
+    return {
+        "coming_soon": bool(doc.get("coming_soon", False)),
+        "launch_at": doc.get("launch_at", "2026-09-12T09:00:00+00:00"),
+        "teaser": doc.get(
+            "teaser",
+            "A new community hub for what's on, what's new, and what's next in Blackrod.",
+        ),
+        "updated_at": doc.get("updated_at"),
+    }
+
+
+@api.get("/site/settings")
+async def get_site_settings():
+    return await _get_site_settings()
+
+
+class SiteSettingsPatch(BaseModel):
+    coming_soon: Optional[bool] = None
+    launch_at: Optional[str] = None
+    teaser: Optional[str] = None
+
+
+@api.post("/admin/site/settings")
+async def patch_site_settings(
+    patch: SiteSettingsPatch,
+    request: Request,
+    authorization: Optional[str] = Header(None),
+    admin_code: Optional[str] = Header(None, alias="X-Admin-Code"),
+):
+    # Accept either admin JWT or legacy launch code.
+    ok = False
+    from auth import read_admin_from_request as _read_admin
+    if _read_admin(request, authorization):
+        ok = True
+    elif admin_code and hmac.compare_digest(admin_code, ADMIN_LAUNCH_CODE):
+        ok = True
+    if not ok:
+        raise HTTPException(403, "Admin authentication required")
+    updates = {k: v for k, v in patch.model_dump(exclude_none=True).items()}
+    if not updates:
+        return await _get_site_settings()
+    updates["updated_at"] = now_iso()
+    await db.site_settings.update_one(
+        {"_id": _SITE_SETTINGS_ID},
+        {"$set": updates},
+        upsert=True,
+    )
+    return await _get_site_settings()
+
+
+
+
 # ─────────── Seed (frontend bootstraps once from mockData) ───────────
 class SeedPayload(BaseModel):
     organisations: List[Dict[str, Any]] = []
@@ -1035,6 +1093,24 @@ async def verify_org_password(slug: str, req: OrgPasswordVerifyReq):
     doc = await _get_org_password_doc(slug)
     ok = _password_matches(doc, (req.password or "").strip())
     return {"ok": ok}
+
+
+@api.post("/organisations/{slug}/auth/login")
+async def org_auth_login(slug: str, req: OrgPasswordVerifyReq):
+    """Password → per-org access token. Frontend stores under `rn-org-tokens`
+    and sends as X-Org-Auth on protected calls."""
+    org = await _find_org(slug)
+    doc = await _get_org_password_doc(slug)
+    if not _password_matches(doc, (req.password or "").strip()):
+        raise HTTPException(401, "Invalid organisation password")
+    # Token is opaque — the permissive middleware only checks presence today.
+    token = f"org:{slug}:{new_token()}"
+    return {
+        "ok": True,
+        "slug": slug,
+        "org_name": org.get("name", ""),
+        "token": token,
+    }
 
 
 @api.post("/organisations/{slug}/password/change")

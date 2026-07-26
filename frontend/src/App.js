@@ -5,6 +5,7 @@ import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { Toaster } from "sonner";
 import { AppProvider, useApp } from "@/context/AppContext";
 import Layout from "@/components/Layout";
+import ComingSoon from "@/pages/ComingSoon";
 
 import Home from "@/pages/Home";
 import Events from "@/pages/Events";
@@ -33,70 +34,94 @@ function RequireRole({ allowed, children }) {
     return children;
 }
 
+// Public visitors see the branded Coming Soon page.
+// Site admins + org admins (logged-in users with a real role) get the full site
+// so they can preview, populate and edit content ahead of launch.
+function ComingSoonGate({ children }) {
+    const { siteSettings, role, hasOrgAccess, activeOrgSlug } = useApp();
+    const bypassEnv = String(process.env.REACT_APP_COMING_SOON_BYPASS || "").toLowerCase() === "true";
+    const hasAnyOrgAccess = React.useMemo(() => {
+        try {
+            const raw = localStorage.getItem("rn-org-tokens");
+            const parsed = raw ? JSON.parse(raw) : {};
+            return parsed && typeof parsed === "object" && Object.keys(parsed).length > 0;
+        } catch {
+            return false;
+        }
+    }, []);
+    const authed = role === "admin" || role === "org" || hasOrgAccess?.(activeOrgSlug) || hasAnyOrgAccess;
+    if (siteSettings?.coming_soon && !authed && !bypassEnv) {
+        return <ComingSoon />;
+    }
+    return children;
+}
+
 export default function App() {
     return (
         <AppProvider>
             <BrowserRouter>
-                <Layout>
-                    <Routes>
-                        <Route path="/" element={<Home />} />
-                        <Route path="/events" element={<Events />} />
-                        <Route path="/saved-events" element={<SavedEvents />} />
-                        <Route path="/events/:id" element={<EventDetail />} />
+                <ComingSoonGate>
+                    <Layout>
+                        <Routes>
+                            <Route path="/" element={<Home />} />
+                            <Route path="/events" element={<Events />} />
+                            <Route path="/saved-events" element={<SavedEvents />} />
+                            <Route path="/events/:id" element={<EventDetail />} />
 
-                        <Route path="/organisations" element={<Organisations />} />
-                        <Route
-                            path="/organisations/:slug"
-                            element={<OrganisationDetail />}
-                        />
+                            <Route path="/organisations" element={<Organisations />} />
+                            <Route
+                                path="/organisations/:slug"
+                                element={<OrganisationDetail />}
+                            />
 
-                        <Route path="/submit-event" element={<SubmitEvent />} />
-                        <Route
-                            path="/edit-event/:id"
-                            element={(
-                                <RequireRole allowed={["admin", "org"]}>
-                                    <EventEdit />
-                                </RequireRole>
-                            )}
-                        />
-                        <Route path="/add-organisation" element={<AddOrganisation />} />
-                        <Route path="/local-feed" element={<LocalFeed />} />
-                        <Route path="/venues" element={<Venues />} />
-                        <Route path="/volunteering" element={<Volunteering />} />
-                        <Route path="/notifications" element={<Notifications />} />
+                            <Route path="/submit-event" element={<SubmitEvent />} />
+                            <Route
+                                path="/edit-event/:id"
+                                element={(
+                                    <RequireRole allowed={["admin", "org"]}>
+                                        <EventEdit />
+                                    </RequireRole>
+                                )}
+                            />
+                            <Route path="/add-organisation" element={<AddOrganisation />} />
+                            <Route path="/local-feed" element={<LocalFeed />} />
+                            <Route path="/venues" element={<Venues />} />
+                            <Route path="/volunteering" element={<Volunteering />} />
+                            <Route path="/notifications" element={<Notifications />} />
 
-                        <Route
-                            path="/admin"
-                            element={(
-                                <RequireRole allowed={["admin"]}>
-                                    <Admin />
-                                </RequireRole>
-                            )}
-                        />
-                        <Route
-                            path="/organisation-dashboard"
-                            element={(
-                                <RequireRole allowed={["admin", "org"]}>
-                                    <OrgDashboard />
-                                </RequireRole>
-                            )}
-                        />
+                            <Route
+                                path="/admin"
+                                element={(
+                                    <RequireRole allowed={["admin"]}>
+                                        <Admin />
+                                    </RequireRole>
+                                )}
+                            />
+                            <Route
+                                path="/organisation-dashboard"
+                                element={(
+                                    <RequireRole allowed={["admin", "org"]}>
+                                        <OrgDashboard />
+                                    </RequireRole>
+                                )}
+                            />
 
-                        <Route path="/faq" element={<FAQ />} />
-                        <Route path="/help" element={<FAQ />} />
-                        <Route path="/contact" element={<Contact />} />
-                        <Route path="/preferences/:token" element={<Preferences />} />
-                        <Route path="/unsubscribe/:token" element={<Unsubscribe />} />
-                        <Route
-                            path="/edit-organisation/:slug"
-                            element={(
-                                <RequireRole allowed={["admin", "org"]}>
-                                    <OrgProfileEdit />
-                                </RequireRole>
-                            )}
-                        />
-                    </Routes>
-                </Layout>
+                            <Route path="/faq" element={<FAQ />} />
+                            <Route path="/help" element={<FAQ />} />
+                            <Route path="/contact" element={<Contact />} />
+                            <Route path="/preferences/:token" element={<Preferences />} />
+                            <Route path="/unsubscribe/:token" element={<Unsubscribe />} />
+                            <Route
+                                path="/edit-organisation/:slug"
+                                element={(
+                                    <RequireRole allowed={["admin", "org"]}>
+                                        <OrgProfileEdit />
+                                    </RequireRole>
+                                )}
+                            />
+                        </Routes>
+                    </Layout>
+                </ComingSoonGate>
 
                 <Toaster richColors closeButton position="top-right" />
             </BrowserRouter>

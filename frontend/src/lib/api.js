@@ -60,6 +60,11 @@ export const api = {
         client.post("/auth/admin/login", { email, password }).then((r) => r.data),
     authMe: () => client.get("/auth/me").then((r) => r.data),
 
+    // Site settings (coming-soon gate)
+    getSiteSettings: () => client.get("/site/settings").then((r) => r.data),
+    updateSiteSettings: (patch) =>
+        client.post("/admin/site/settings", patch).then((r) => r.data),
+
     // Meta
     stats: () => client.get("/admin/stats").then((r) => r.data),
     isSeeded: () => client.get("/admin/seeded").then((r) => r.data),

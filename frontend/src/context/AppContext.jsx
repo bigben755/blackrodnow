@@ -44,6 +44,14 @@ export function AppProvider({ children }) {
                 if (payload?.exp && payload.exp * 1000 > Date.now() && payload?.role === "admin") return "admin";
             }
         } catch { /* ignore */ }
+        // If any org token is stored + a previously-stored role of "org",
+        // rehydrate the org role too so refresh doesn't dump the user back to guest.
+        try {
+            const raw = localStorage.getItem("rn-org-tokens");
+            const tokens = raw ? JSON.parse(raw) : {};
+            const storedRole = localStorage.getItem("rn-role");
+            if (storedRole === "org" && tokens && Object.keys(tokens).length) return "org";
+        } catch { /* ignore */ }
         return "guest";
     });
 
@@ -219,9 +227,15 @@ export function AppProvider({ children }) {
         setDemoStepIndex((current) => (current - 1 + size) % size);
     }, []);
 
+    const [siteSettings, setSiteSettings] = useState({
+        coming_soon: false,
+        launch_at: "2026-09-12T09:00:00+00:00",
+        teaser: "A new community hub for what's on, what's new, and what's next in Blackrod.",
+    });
+
     // ─────────── Bootstrap: seed if empty, then load ───────────
     const refresh = useCallback(async () => {
-        const [orgsR, evR, feedR, vR, volR, fR, sR] = await Promise.all([
+        const [orgsR, evR, feedR, vR, volR, fR, sR, siteR] = await Promise.all([
             api.orgs({ include_pending: true }).catch(() => []),
             api.events({ include_pending: true }).catch(() => []),
             api.feed().catch(() => []),
@@ -229,6 +243,7 @@ export function AppProvider({ children }) {
             api.volunteers().catch(() => []),
             api.follows().catch(() => ({ orgs: [], categories: [] })),
             api.stats().catch(() => ({})),
+            api.getSiteSettings().catch(() => null),
         ]);
 
         const apiUnavailable =
@@ -266,6 +281,7 @@ export function AppProvider({ children }) {
         setVolunteerOpps(volR);
         setFollows({ orgs: fR.orgs || [], categories: fR.categories || [] });
         setStats((prev) => ({ ...prev, ...sR }));
+        if (siteR) setSiteSettings(siteR);
     }, []);
 
     useEffect(() => {
@@ -380,6 +396,7 @@ export function AppProvider({ children }) {
             follows, toggleFollowOrg, toggleFollowCategory, isFollowingOrg, isFollowingCategory,
             savedEventIds, isEventSaved, toggleSaveEvent,
             stats, refresh,
+            siteSettings, setSiteSettings,
             notifPrefs, setNotifPrefs,
             activeOrgSlug, setActiveOrgSlug,
             orgTokens, hasOrgAccess, getOrgToken, unlockOrgAccess, clearOrgAccess,
@@ -433,6 +450,8 @@ export function AppProvider({ children }) {
             nextDemoStep,
             prevDemoStep,
             refresh,
+            siteSettings,
+            setSiteSettings,
         ],
     );
 

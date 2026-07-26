@@ -1,0 +1,23 @@
+{
+  "summary": "Iter16 — Coming Soon launch gate: end-to-end tested BOTH backend and frontend. Backend: 8/8 pytest tests pass covering GET /api/site/settings (public defaults), POST /api/admin/site/settings (403 unauth, 200 with JWT, 200 with legacy X-Admin-Code), POST /api/organisations/{slug}/auth/login (200 with correct pw, 401 with wrong), /api/subscribe, /api/web-wizard/enquiry. Frontend: fresh unauth visitor sees ComingSoon at /, /events, /admin (gate works on all routes). All required data-testids present (cs-countdown + days/hours/mins/secs unit blocks, cs-subscribe-input/submit, cs-admin-login-open/dialog/email/password/submit, cs-org-login-open/dialog/slug/password/submit, cs-webwizard-open/dialog/wiz-name/email/details/submit). Subscribe → success toast; Wizard → toast 'Thanks — your Web Design Wizard enquiry has been sent' + dialog closes. Admin login from CS: dialog opens → creds accepted → dialog closes → CS unmounts → home-page renders → rn-admin-jwt + rn-role='admin' stored → PERSISTS across hard reload (CS stays hidden). Org login from CS: dialog opens → select blackrod-town-council → password → routed to /organisation-dashboard, org-dashboard visible, rn-role='org' + rn-org-tokens persist across reload. Admin site-mode-card toggle: badge flips 'Coming Soon' ↔ 'Public / Live', /api/site/settings.coming_soon flips accordingly. Final state left with coming_soon=true (launch-ready) as required.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_iter16_coming_soon.py",
+    "/app/test_reports/pytest/iter16_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Review request document referenced slug 'rodlife-events' for the org auth endpoint, but that slug does not exist in the seeded DB — it's the deployment subdomain. Test uses 'blackrod-town-council' which is the actual seeded org matching the frontend UI test. Main agent should correct the problem statement or seed 'rodlife-events' if that org is intended.",
+    "server.py still 3800+ lines; Admin.jsx still ~2300 lines — split recommended (carried from iter14/15).",
+    "ComingSoon.jsx has a legacy-code short-circuit that bypasses backend auth if REACT_APP_ADMIN_LAUNCH_CODE is present in the client env. This works but the launch code is bundled into the frontend JS, so it's discoverable by anyone. Consider removing legacy client-side path pre-launch, or at least documenting the risk."
+  ],
+  "updated_files": ["/app/backend/tests/test_iter16_coming_soon.py"],
+  "success_rate": {"backend": "100% (8/8)", "frontend": "100% (all CS gate + login + wizard + subscribe + site-mode toggle flows pass)"},
+  "test_credentials": "admin@blackrodnow.co.uk / BlackrodAdmin!2026 verified. Org blackrod-town-council / Organisat10n!& verified.",
+  "seed_data_creation": "TEST_iter16_ui@example.com subscriber, TEST_wiz_ui wizard enquiry, TEST_iter16_cs@example.com subscriber (pytest). All prefixed with TEST_ for cleanup.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Coming Soon feature is fully green. Site is left in coming_soon=true (launch-ready). Note: review request referenced 'rodlife-events' as an org slug but that's the deploy subdomain — real seeded org for testing is 'blackrod-town-council'. If future tests need org auth against 'rodlife-events', that org must be seeded first.",
+  "rca_of_the_issue": "N/A — no bugs found."
+}
