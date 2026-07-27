@@ -69,6 +69,26 @@ export default function Admin() {
         (e) => e.status === "pending" && !e.is_recurrence_instance
     );
     const pendingOrgs = orgs.filter((o) => o.status === "pending");
+
+    // Search + filter state for the Manage events table.
+    const [eventSearch, setEventSearch] = useState("");
+    const [eventOrgFilter, setEventOrgFilter] = useState("");
+    const [eventCategoryFilter, setEventCategoryFilter] = useState("");
+    const filteredApprovedEvents = React.useMemo(() => {
+        const needle = eventSearch.trim().toLowerCase();
+        const rows = approvedEvents.filter((e) => {
+            if (eventOrgFilter && e.orgSlug !== eventOrgFilter) return false;
+            if (eventCategoryFilter && e.category !== eventCategoryFilter) return false;
+            if (!needle) return true;
+            const hay = [e.title, e.venue, e.address, e.description, e.orgSlug, e.category]
+                .filter(Boolean)
+                .join(" ")
+                .toLowerCase();
+            return hay.includes(needle);
+        });
+        return rows.sort((a, b) => (a.start || "").localeCompare(b.start || ""));
+    }, [approvedEvents, eventSearch, eventOrgFilter, eventCategoryFilter]);
+
     const analytics = stats?.analytics || {};
     const siteOverview = analytics.overview || {};
     const siteEngagement = analytics.engagement || {};
@@ -433,12 +453,61 @@ export default function Admin() {
             </section>
 
             <section className="mt-10">
-                <h2 className="font-display font-bold text-xl mb-3">
-                    Manage events{" "}
-                    <span className="text-muted-foreground text-base font-normal">
-                        ({approvedEvents.length})
-                    </span>
-                </h2>
+                <div className="flex items-center justify-between gap-3 mb-3 flex-wrap">
+                    <h2 className="font-display font-bold text-xl">
+                        Manage events{" "}
+                        <span className="text-muted-foreground text-base font-normal">
+                            ({approvedEvents.length})
+                        </span>
+                    </h2>
+                    <div className="flex items-center gap-2 flex-wrap">
+                        <input
+                            data-testid="admin-events-search"
+                            type="search"
+                            value={eventSearch}
+                            onChange={(e) => setEventSearch(e.target.value)}
+                            placeholder="Search title, venue, description…"
+                            className="px-3 py-2 rounded-full border border-border bg-background text-sm w-56"
+                        />
+                        <select
+                            data-testid="admin-events-org-filter"
+                            value={eventOrgFilter}
+                            onChange={(e) => setEventOrgFilter(e.target.value)}
+                            className="px-3 py-2 rounded-full border border-border bg-background text-sm"
+                        >
+                            <option value="">All organisations</option>
+                            {orgs
+                                .filter((o) => o.status !== "rejected")
+                                .sort((a, b) => (a.name || "").localeCompare(b.name || ""))
+                                .map((o) => (
+                                    <option key={o.slug} value={o.slug}>{o.name}</option>
+                                ))}
+                        </select>
+                        <select
+                            data-testid="admin-events-category-filter"
+                            value={eventCategoryFilter}
+                            onChange={(e) => setEventCategoryFilter(e.target.value)}
+                            className="px-3 py-2 rounded-full border border-border bg-background text-sm"
+                        >
+                            <option value="">All categories</option>
+                            {[...new Set(approvedEvents.map((e) => e.category).filter(Boolean))]
+                                .sort()
+                                .map((cat) => (
+                                    <option key={cat} value={cat}>{cat}</option>
+                                ))}
+                        </select>
+                        {(eventSearch || eventOrgFilter || eventCategoryFilter) && (
+                            <button
+                                type="button"
+                                data-testid="admin-events-clear-filters"
+                                onClick={() => { setEventSearch(""); setEventOrgFilter(""); setEventCategoryFilter(""); }}
+                                className="text-xs uppercase tracking-wider font-bold text-primary hover:underline"
+                            >
+                                Clear
+                            </button>
+                        )}
+                    </div>
+                </div>
                 <div className="rounded-3xl border border-border bg-surface overflow-hidden">
                     <div className="max-h-[65vh] overflow-y-auto">
                         <table className="w-full text-sm">
@@ -451,9 +520,7 @@ export default function Admin() {
                                 </tr>
                             </thead>
                             <tbody>
-                                {[...approvedEvents]
-                                    .sort((a, b) => (a.start || "").localeCompare(b.start || ""))
-                                    .map((e) => (
+                                {filteredApprovedEvents.map((e) => (
                                     <tr key={e.id} className="border-t border-border" data-testid={`admin-manage-event-row-${e.id}`}>
                                         <td className="px-4 py-3 font-medium">
                                             <Link to={`/events/${e.id}`} className="hover:text-primary">{e.title}</Link>
@@ -462,6 +529,9 @@ export default function Admin() {
                                                     Repeats {e.recurrence.freq}
                                                 </span>
                                             )}
+                                            <div className="text-[11px] text-muted-foreground truncate">
+                                                {orgs.find((o) => o.slug === e.orgSlug)?.name || e.orgSlug}
+                                            </div>
                                         </td>
                                         <td className="px-4 py-3 text-muted-foreground hidden sm:table-cell">{formatDate(e.start)}</td>
                                         <td className="px-4 py-3 hidden md:table-cell"><CategoryBadge category={e.category} /></td>
@@ -474,10 +544,10 @@ export default function Admin() {
                                         </td>
                                     </tr>
                                 ))}
-                                {approvedEvents.length === 0 && (
+                                {filteredApprovedEvents.length === 0 && (
                                     <tr>
                                         <td colSpan={4} className="px-4 py-8 text-center text-muted-foreground text-sm">
-                                            No approved events yet.
+                                            {approvedEvents.length === 0 ? "No approved events yet." : "No events match your filters."}
                                         </td>
                                     </tr>
                                 )}
@@ -2439,7 +2509,12 @@ function NotifyOrgCard({ orgs }) {
 function ScheduledBroadcastsCard() {
     const [items, setItems] = useState([]);
     const [busy, setBusy] = useState(false);
+    const [previewBusy, setPreviewBusy] = useState(false);
     const [form, setForm] = useState({ to: "", subject: "", body: "", scheduled_for: "" });
+    const [previewTo, setPreviewTo] = useState(() => {
+        if (typeof window === "undefined") return "";
+        return localStorage.getItem("blackrod_preview_to") || "";
+    });
 
     const load = async () => {
         try {
@@ -2479,6 +2554,34 @@ function ScheduledBroadcastsCard() {
         }
     };
 
+    const sendPreview = async () => {
+        if (!form.subject.trim() || !form.body.trim()) {
+            return toast.error("Add a subject and body before previewing");
+        }
+        if (!previewTo.trim()) {
+            return toast.error("Enter your email address to receive the preview");
+        }
+        setPreviewBusy(true);
+        try {
+            const res = await api.previewBroadcast({
+                subject: form.subject,
+                body: form.body,
+                preview_to: previewTo.trim(),
+            });
+            localStorage.setItem("blackrod_preview_to", previewTo.trim());
+            toast.success(
+                res.mocked
+                    ? `Preview simulated to ${previewTo} (add RESEND_API_KEY to actually send)`
+                    : `Preview sent to ${previewTo}`,
+                { description: "Check your inbox before scheduling the real send." }
+            );
+        } catch (error) {
+            toast.error(error?.response?.data?.detail || "Could not send preview");
+        } finally {
+            setPreviewBusy(false);
+        }
+    };
+
     return (
         <div data-testid="scheduled-broadcasts-card" className="rounded-3xl border border-border bg-surface p-6">
             <div className="flex items-start justify-between gap-3 flex-wrap">
@@ -2498,6 +2601,33 @@ function ScheduledBroadcastsCard() {
                     <button type="button" data-testid="sched-submit" disabled={busy} onClick={submit} className="px-4 py-2 rounded-full bg-primary text-primary-foreground text-xs font-black uppercase tracking-wider disabled:opacity-60">
                         Schedule
                     </button>
+                </div>
+                <div className="rounded-2xl border border-dashed border-border bg-muted/40 p-3">
+                    <div className="text-[10px] font-black uppercase tracking-wider text-primary">
+                        Send preview to just me first
+                    </div>
+                    <p className="text-xs text-muted-foreground mt-1">
+                        Get a copy in your own inbox before it goes to the full list — catches typos, broken links, and rogue merge fields.
+                    </p>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                        <input
+                            type="email"
+                            data-testid="sched-preview-to"
+                            value={previewTo}
+                            onChange={(e) => setPreviewTo(e.target.value)}
+                            placeholder="your.email@blackrodnow.co.uk"
+                            className="flex-1 min-w-[220px] px-3 py-2 rounded-2xl border border-border bg-background text-sm"
+                        />
+                        <button
+                            type="button"
+                            data-testid="sched-preview-send"
+                            onClick={sendPreview}
+                            disabled={previewBusy}
+                            className="px-4 py-2 rounded-full border-2 border-primary text-primary text-xs font-black uppercase tracking-wider hover:bg-primary hover:text-primary-foreground disabled:opacity-60"
+                        >
+                            {previewBusy ? "Sending…" : "Send preview to me"}
+                        </button>
+                    </div>
                 </div>
             </div>
 

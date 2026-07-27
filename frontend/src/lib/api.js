@@ -94,6 +94,8 @@ export const api = {
         client.get("/admin/broadcasts/scheduled").then((r) => r.data),
     cancelScheduledBroadcast: (id) =>
         client.delete(`/admin/broadcasts/scheduled/${id}`).then((r) => r.data),
+    previewBroadcast: (payload) =>
+        client.post("/admin/broadcasts/preview", payload).then((r) => r.data),
     submitReport: (payload) =>
         client.post("/reports", payload).then((r) => r.data),
     listReports: (status = "open") =>

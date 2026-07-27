@@ -5111,6 +5111,51 @@ async def schedule_broadcast(
     return {k: v for k, v in doc.items() if k != "_id"}
 
 
+class BroadcastPreviewReq(BaseModel):
+    """Send a one-off preview of a broadcast to a single address (usually the
+    admin's own inbox) before scheduling — the classic "email it to me first"
+    safety check."""
+    subject: str
+    body: str
+    from_email: Optional[str] = None
+    from_name: Optional[str] = None
+    preview_to: str  # single email address
+
+
+@api.post("/admin/broadcasts/preview")
+async def broadcast_preview(
+    req: BroadcastPreviewReq,
+    request: Request,
+    authorization: Optional[str] = Header(None),
+    admin_code: Optional[str] = Header(None, alias="X-Admin-Code"),
+):
+    ok = read_admin_from_request(request, authorization) is not None or (
+        admin_code and hmac.compare_digest(admin_code, ADMIN_LAUNCH_CODE)
+    )
+    if not ok:
+        raise HTTPException(403, "Admin authentication required")
+    if not req.subject.strip() or not req.body.strip() or not req.preview_to.strip():
+        raise HTTPException(400, "subject, body and preview_to are required")
+    addr = req.preview_to.strip()
+    if not EMAIL_RE.match(addr):
+        raise HTTPException(400, "preview_to must be a valid email address")
+    from_addr = req.from_email or SENDER_EMAIL
+    # Prepend a small "PREVIEW" banner so it's obvious in the inbox.
+    preview_body = "🔍 PREVIEW — this email has been sent only to you.\n\n" + req.body
+    html = _render_admin_email_html(f"[PREVIEW] {req.subject}", preview_body, from_addr)
+    result = await asyncio.to_thread(
+        resend_send, addr, f"[PREVIEW] {req.subject}", html,
+        from_addr, req.from_name or SENDER_NAME, None, None,
+    )
+    await _record_analytics_event("admin_email_send", entity_type="site", count=1 if result.get("ok") else 0)
+    return {
+        "ok": bool(result.get("ok")),
+        "mocked": bool(result.get("mocked")),
+        "preview_to": addr,
+        "id": result.get("id"),
+    }
+
+
 @api.get("/admin/broadcasts/scheduled")
 async def list_scheduled_broadcasts(
     request: Request,
