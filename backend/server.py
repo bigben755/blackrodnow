@@ -4360,29 +4360,32 @@ async def _parse_text_to_response(text: str, hint: Optional[str] = None) -> Pars
         return ParseResponse(items=[_fallback_parse(text)])
 
 
+def _decode_bulk_sources(raw: Optional[str]) -> list[str]:
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+        if isinstance(parsed, str):
+            parsed = [parsed]
+        if isinstance(parsed, list):
+            return [str(item).strip() for item in parsed if str(item).strip()]
+    except Exception:
+        pass
+    return [part.strip() for part in re.split(r"\n{2,}|\r\n{2,}|\n", raw) if part.strip()]
+
+
 async def _admin_parse_documents(
-    files: Optional[List[UploadFile]] = None,
+    file_sources: Optional[list[tuple]] = None,
     source_org_slug: Optional[str] = None,
     urls_json: Optional[str] = None,
     texts_json: Optional[str] = None,
+    progress_cb=None,
+    total_timeout: Optional[int] = None,
 ) -> BulkParseResponse:
-    file_list = list(files or [])
+    file_list = list(file_sources or [])
 
-    def _decode_sources(raw: Optional[str]) -> list[str]:
-        if not raw:
-            return []
-        try:
-            parsed = json.loads(raw)
-            if isinstance(parsed, str):
-                parsed = [parsed]
-            if isinstance(parsed, list):
-                return [str(item).strip() for item in parsed if str(item).strip()]
-        except Exception:
-            pass
-        return [part.strip() for part in re.split(r"\n{2,}|\r\n{2,}|\n", raw) if part.strip()]
-
-    url_list = _decode_sources(urls_json)
-    text_list = _decode_sources(texts_json)
+    url_list = _decode_bulk_sources(urls_json)
+    text_list = _decode_bulk_sources(texts_json)
     if len(file_list) + len(url_list) + len(text_list) > MAX_BULK_PARSE_FILES:
         raise HTTPException(400, f"Upload at most {MAX_BULK_PARSE_FILES} total sources per bulk parse request")
 
@@ -4394,7 +4397,14 @@ async def _admin_parse_documents(
     if source_org_slug:
         source_org = await _find_org(source_org_slug)
     documents: list[ParsedDocument] = []
-    deadline = asyncio.get_running_loop().time() + BULK_PARSE_TOTAL_TIMEOUT_SECONDS
+    deadline = asyncio.get_running_loop().time() + (total_timeout or BULK_PARSE_TOTAL_TIMEOUT_SECONDS)
+
+    async def _notify(current: str = ""):
+        if progress_cb:
+            try:
+                await progress_cb(len(documents), current)
+            except Exception:
+                pass
 
     def _bulk_timeout_document(filename: str, source_type: str, warnings: list[str]) -> ParsedDocument:
         return ParsedDocument(
@@ -4458,26 +4468,22 @@ async def _admin_parse_documents(
             items=items,
         )
 
-    for index, file in enumerate(file_list):
-        filename = file.filename or "file"
+    for index, (filename, content_type, data) in enumerate(file_list):
+        await _notify(filename)
         remaining = deadline - asyncio.get_running_loop().time()
         if remaining <= BULK_PARSE_TIMEOUT_SAFETY_SECONDS:
-            timeout_warning = [f"Bulk parse timed out after {BULK_PARSE_TOTAL_TIMEOUT_SECONDS}s"]
-            for remaining_file in file_list[index:]:
-                remaining_name = remaining_file.filename or "file"
-                documents.append(_bulk_timeout_document(remaining_name, "timed_out", timeout_warning))
+            timeout_warning = [f"Bulk parse timed out after {total_timeout or BULK_PARSE_TOTAL_TIMEOUT_SECONDS}s"]
+            for remaining_name, _, _ in file_list[index:]:
+                documents.append(_bulk_timeout_document(remaining_name or "file", "timed_out", timeout_warning))
             break
 
-        data = await file.read()
         if not data:
             documents.append(ParsedDocument(filename=filename, source_type="empty", text_excerpt="", warnings=["Empty file"], items=[_fallback_parse("")]))
             continue
-        if len(data) > MAX_UPLOAD_BYTES:
-            raise HTTPException(413, f"File too large (max 10 MB): {filename}")
         extraction_timeout = max(1, min(BULK_PARSE_EXTRACTION_TIMEOUT_SECONDS, int(max(1, remaining - BULK_PARSE_TIMEOUT_SAFETY_SECONDS))))
         try:
             text, source_type, warnings = await asyncio.wait_for(
-                asyncio.to_thread(_extract_document_text, filename, file.content_type or "application/octet-stream", data),
+                asyncio.to_thread(_extract_document_text, filename, content_type or "application/octet-stream", data),
                 timeout=extraction_timeout,
             )
         except asyncio.TimeoutError:
@@ -4492,8 +4498,9 @@ async def _admin_parse_documents(
     for index, url in enumerate(url_list):
         remaining = deadline - asyncio.get_running_loop().time()
         filename = urlparse(url).netloc or "link"
+        await _notify(filename)
         if remaining <= BULK_PARSE_TIMEOUT_SAFETY_SECONDS:
-            timeout_warning = [f"Bulk parse timed out after {BULK_PARSE_TOTAL_TIMEOUT_SECONDS}s"]
+            timeout_warning = [f"Bulk parse timed out after {total_timeout or BULK_PARSE_TOTAL_TIMEOUT_SECONDS}s"]
             for remaining_url in url_list[index:]:
                 remaining_name = urlparse(remaining_url).netloc or "link"
                 documents.append(_bulk_timeout_document(remaining_name, "timed_out", timeout_warning))
@@ -4517,15 +4524,54 @@ async def _admin_parse_documents(
     for index, text_source in enumerate(text_list):
         remaining = deadline - asyncio.get_running_loop().time()
         filename = f"pasted-text-{index + 1}.txt"
+        await _notify(filename)
         if remaining <= BULK_PARSE_TIMEOUT_SAFETY_SECONDS:
-            timeout_warning = [f"Bulk parse timed out after {BULK_PARSE_TOTAL_TIMEOUT_SECONDS}s"]
+            timeout_warning = [f"Bulk parse timed out after {total_timeout or BULK_PARSE_TOTAL_TIMEOUT_SECONDS}s"]
             for remaining_offset, _ in enumerate(text_list[index:], start=index):
                 remaining_name = f"pasted-text-{remaining_offset + 1}.txt"
                 documents.append(_bulk_timeout_document(remaining_name, "timed_out", timeout_warning))
             break
 
         documents.append(await _finalize_source(filename, "text", text_source, []))
+    await _notify("")
     return BulkParseResponse(documents=documents, mocked=not EMERGENT_LLM_KEY)
+
+
+async def _read_upload_sources(files: List[UploadFile]) -> list[tuple]:
+    file_sources: list[tuple] = []
+    for file in files or []:
+        filename = file.filename or "file"
+        data = await file.read()
+        if len(data) > MAX_UPLOAD_BYTES:
+            raise HTTPException(413, f"File too large (max 10 MB): {filename}")
+        file_sources.append((filename, file.content_type or "application/octet-stream", data))
+    return file_sources
+
+
+async def _run_parse_job(job_id: str, file_sources: list, source_org_slug: Optional[str], urls_json: Optional[str], texts_json: Optional[str], total: int):
+    async def progress(done: int, current: str):
+        await db.parse_jobs.update_one({"id": job_id}, {"$set": {"done": done, "current": current, "updated_at": now_iso()}})
+
+    try:
+        timeout = max(BULK_PARSE_TOTAL_TIMEOUT_SECONDS, 90 * max(1, total))
+        result = await _admin_parse_documents(
+            file_sources,
+            source_org_slug=source_org_slug,
+            urls_json=urls_json,
+            texts_json=texts_json,
+            progress_cb=progress,
+            total_timeout=timeout,
+        )
+        await db.parse_jobs.update_one(
+            {"id": job_id},
+            {"$set": {"status": "done", "done": total, "current": "", "result": result.model_dump(), "updated_at": now_iso()}},
+        )
+    except Exception as exc:
+        logger.exception("Parse job %s failed: %s", job_id, exc)
+        await db.parse_jobs.update_one(
+            {"id": job_id},
+            {"$set": {"status": "failed", "error": str(exc), "updated_at": now_iso()}},
+        )
 
 
 @api.post("/parse-content", response_model=ParseResponse)
@@ -4540,7 +4586,46 @@ async def admin_parse_documents(
     urls_json: Optional[str] = Form(None),
     texts_json: Optional[str] = Form(None),
 ):
-    return await _admin_parse_documents(files or [], source_org_slug=source_org_slug, urls_json=urls_json, texts_json=texts_json)
+    file_sources = await _read_upload_sources(files)
+    return await _admin_parse_documents(file_sources, source_org_slug=source_org_slug, urls_json=urls_json, texts_json=texts_json)
+
+
+@api.post("/admin/documents/parse-jobs")
+async def admin_create_parse_job(
+    files: List[UploadFile] = File(default=[]),
+    source_org_slug: Optional[str] = Form(None),
+    urls_json: Optional[str] = Form(None),
+    texts_json: Optional[str] = Form(None),
+):
+    file_sources = await _read_upload_sources(files)
+    url_count = len(_decode_bulk_sources(urls_json))
+    text_count = len(_decode_bulk_sources(texts_json))
+    total = len(file_sources) + url_count + text_count
+    if total == 0:
+        raise HTTPException(400, "Add files, links or pasted text first")
+    if total > MAX_BULK_PARSE_FILES:
+        raise HTTPException(400, f"Upload at most {MAX_BULK_PARSE_FILES} total sources per bulk parse request")
+    job_id = new_id()
+    await db.parse_jobs.insert_one({
+        "id": job_id,
+        "status": "processing",
+        "total": total,
+        "done": 0,
+        "current": "",
+        "error": None,
+        "created_at": now_iso(),
+        "updated_at": now_iso(),
+    })
+    asyncio.create_task(_run_parse_job(job_id, file_sources, source_org_slug, urls_json, texts_json, total))
+    return {"job_id": job_id, "total": total, "status": "processing"}
+
+
+@api.get("/admin/documents/parse-jobs/{job_id}")
+async def admin_get_parse_job(job_id: str):
+    job = await db.parse_jobs.find_one({"id": job_id}, {"_id": 0})
+    if not job:
+        raise HTTPException(404, "Parse job not found")
+    return job
 
 
 # ─────────── Newsletter & broadcast ───────────

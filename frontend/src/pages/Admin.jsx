@@ -732,6 +732,7 @@ function BulkDocumentImportCard({ orgs }) {
     const [textSources, setTextSources] = useState("");
     const [sourceOrgSlug, setSourceOrgSlug] = useState("");
     const [busy, setBusy] = useState(false);
+    const [parseProgress, setParseProgress] = useState(null);
     const [result, setResult] = useState(null);
     const [reviewDocs, setReviewDocs] = useState([]);
     const [confirmPost, setConfirmPost] = useState(null);
@@ -1237,17 +1238,38 @@ function BulkDocumentImportCard({ orgs }) {
             .filter(Boolean);
         if (!files.length && !links.length && !textBlocks.length) return toast.error("Add files, links or pasted text first");
         setBusy(true);
+        setParseProgress(null);
         try {
-            const res = await api.adminParseDocuments(files, sourceOrgSlug, { links, textBlocks });
+            const job = await api.createParseJob(files, sourceOrgSlug, { links, textBlocks });
+            setParseProgress({ done: 0, total: job.total, current: "" });
+            const startedAt = Date.now();
+            let res = null;
+            while (Date.now() - startedAt < 15 * 60 * 1000) {
+                await new Promise((resolve) => setTimeout(resolve, 2500));
+                let status;
+                try {
+                    status = await api.getParseJob(job.job_id);
+                } catch {
+                    continue;
+                }
+                setParseProgress({ done: status.done || 0, total: status.total || job.total, current: status.current || "" });
+                if (status.status === "failed") throw new Error(status.error || "Bulk parse failed");
+                if (status.status === "done") {
+                    res = status.result;
+                    break;
+                }
+            }
+            if (!res) throw new Error("Parsing took too long — please try fewer sources at once");
             setResult(res);
             setReviewDocs(normalizeDocs(res.documents || []));
             setSelectedReviewIds([]);
             setBatchReport(null);
             toast.success(`Parsed ${res.documents.length} document${res.documents.length !== 1 ? "s" : ""}`);
         } catch (error) {
-            toast.error(error?.response?.data?.detail || "Bulk parse failed");
+            toast.error(error?.response?.data?.detail || error?.message || "Bulk parse failed");
         } finally {
             setBusy(false);
+            setParseProgress(null);
         }
     };
 
@@ -1311,7 +1333,7 @@ function BulkDocumentImportCard({ orgs }) {
                             data-testid="admin-bulk-parse-btn"
                         >
                             {busy ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
-                            Parse documents
+                            {busy && parseProgress ? `Parsing ${Math.min(parseProgress.done + 1, parseProgress.total)}/${parseProgress.total}…` : "Parse documents"}
                         </button>
                         <button
                             onClick={clear}
@@ -1341,6 +1363,24 @@ function BulkDocumentImportCard({ orgs }) {
                             />
                         </Field>
                     </div>
+                    {busy && parseProgress && (
+                        <div className="mt-4 rounded-2xl border border-border bg-surface px-4 py-3" data-testid="parse-progress-panel">
+                            <div className="flex items-center justify-between gap-3 text-xs font-semibold">
+                                <span className="flex items-center gap-2">
+                                    <RefreshCw className="h-3.5 w-3.5 animate-spin text-primary" />
+                                    {parseProgress.current ? `Working on: ${parseProgress.current}` : "Preparing sources…"}
+                                </span>
+                                <span className="text-muted-foreground">{Math.min(parseProgress.done, parseProgress.total)} of {parseProgress.total} done</span>
+                            </div>
+                            <div className="mt-2 h-2 rounded-full bg-muted overflow-hidden">
+                                <div
+                                    className="h-full bg-primary rounded-full transition-all duration-500"
+                                    style={{ width: `${Math.max(5, Math.round((parseProgress.done / Math.max(1, parseProgress.total)) * 100))}%` }}
+                                />
+                            </div>
+                            <p className="mt-2 text-[11px] text-muted-foreground">Parsing runs in the background — safe from timeouts, even with large uploads.</p>
+                        </div>
+                    )}
                     {files.length > 0 && (
                         <ul className="mt-4 grid gap-2 text-sm">
                             {files.map((file) => (

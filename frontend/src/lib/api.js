@@ -220,6 +220,20 @@ export const api = {
             })
             .then((r) => r.data);
     },
+    createParseJob: (files, sourceOrgSlug = "", options = {}) => {
+        const fd = new FormData();
+        files.forEach((file) => fd.append("files", file));
+        if (sourceOrgSlug) fd.append("source_org_slug", sourceOrgSlug);
+        if (options.links?.length) fd.append("urls_json", JSON.stringify(options.links));
+        if (options.textBlocks?.length) fd.append("texts_json", JSON.stringify(options.textBlocks));
+        return client
+            .post("/admin/documents/parse-jobs", fd, {
+                headers: { "Content-Type": "multipart/form-data" },
+                timeout: 120000,
+            })
+            .then((r) => r.data);
+    },
+    getParseJob: (jobId) => client.get(`/admin/documents/parse-jobs/${jobId}`).then((r) => r.data),
     deleteDoc: (slug, id) =>
         client.delete(`/organisations/${slug}/documents/${id}`, { headers: orgAuthHeaders(slug) }).then((r) => r.data),
     docDownloadUrl: (id) => `${API}/documents/${id}/download`,

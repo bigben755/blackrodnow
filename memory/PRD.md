@@ -108,6 +108,15 @@ A modern community website for Blackrod, Bolton showcasing local events, clubs, 
   - Available in Org Dashboard → Profile & branding AND Super Admin → edit any org
   - Verified: 14/14 backend pytest + full frontend E2E (testing agent iteration_3)
 
+## Implemented (June 2026)
+- **Background parse jobs (Cloudflare timeout fix, Jun 2026).** Bulk document parsing (`/admin` → Bulk document import) no longer runs as one long HTTP request (which hit Cloudflare's ~100s limit on production blackrodnow.com). New flow:
+  - `POST /api/admin/documents/parse-jobs` → reads files, creates `parse_jobs` doc, spawns asyncio task, returns `{job_id, total}` instantly.
+  - `GET /api/admin/documents/parse-jobs/{job_id}` → `{status: processing|done|failed, done, total, current, result}`.
+  - Job deadline: `max(BULK_PARSE_TOTAL_TIMEOUT_SECONDS, 90s × source count)` — generous since no HTTP timeout applies.
+  - Frontend (`Admin.jsx` parse()) polls every 2.5s (15 min cap), shows live progress bar panel (`data-testid="parse-progress-panel"`) with "X of Y done" + current source name.
+  - Legacy synchronous `POST /api/admin/documents/parse` kept for compat.
+  - Verified E2E via screenshot tool (progress panel → results) + parser regression pytest (11 passed). USER MUST REDEPLOY for the fix to reach production.
+
 ## Tests
 - `/app/backend/tests/test_org_images.py` — new (14 cases: multipart upload, exact size validation via Pillow, WebP handling, replace, 400/413 rejections, delete flow).
 - `/app/backend/tests/backend_test.py` — 17/17 regression pass.
