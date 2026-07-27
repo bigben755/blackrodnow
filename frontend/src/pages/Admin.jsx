@@ -987,6 +987,10 @@ function BulkDocumentImportCard({ orgs }) {
                     contactPhone: "",
                     image: "",
                     status: "approved",
+                    recurrence: buildRecurrencePayload(
+                        draft.recurrence_freq || "none",
+                        draft.recurrence_until || ""
+                    ),
                 };
                 if (draft.action === "update_event" && draft.matched_event_id) {
                     await api.updateEvent(draft.matched_event_id, payload);
@@ -1376,17 +1380,59 @@ function BulkDocumentImportCard({ orgs }) {
                                                         <textarea rows={3} value={item.draft.description || ""} onChange={(e) => updateItem(doc.filename, item.reviewId, { description: e.target.value })} className={inp} />
                                                     </Field>
                                                     {item.suggested_type === "event" ? (
-                                                        <div className="grid sm:grid-cols-3 gap-3">
-                                                            <Field label="Date">
-                                                                <input type="date" value={item.draft.date || ""} onChange={(e) => updateItem(doc.filename, item.reviewId, { date: e.target.value })} className={inp} />
-                                                            </Field>
-                                                            <Field label="Start">
-                                                                <input type="time" value={item.draft.start_time || ""} onChange={(e) => updateItem(doc.filename, item.reviewId, { start_time: e.target.value })} className={inp} />
-                                                            </Field>
-                                                            <Field label="End">
-                                                                <input type="time" value={item.draft.end_time || ""} onChange={(e) => updateItem(doc.filename, item.reviewId, { end_time: e.target.value })} className={inp} />
-                                                            </Field>
-                                                        </div>
+                                                        <>
+                                                            <div className="grid sm:grid-cols-3 gap-3">
+                                                                <Field label="Date">
+                                                                    <input type="date" value={item.draft.date || ""} onChange={(e) => updateItem(doc.filename, item.reviewId, { date: e.target.value })} className={inp} />
+                                                                </Field>
+                                                                <Field label="Start">
+                                                                    <input type="time" value={item.draft.start_time || ""} onChange={(e) => updateItem(doc.filename, item.reviewId, { start_time: e.target.value })} className={inp} />
+                                                                </Field>
+                                                                <Field label="End">
+                                                                    <input type="time" value={item.draft.end_time || ""} onChange={(e) => updateItem(doc.filename, item.reviewId, { end_time: e.target.value })} className={inp} />
+                                                                </Field>
+                                                            </div>
+                                                            <div className="grid sm:grid-cols-2 gap-3">
+                                                                <Field label={
+                                                                    <span className="inline-flex items-center gap-2">
+                                                                        Repeat
+                                                                        {item.recurrence_freq && item.recurrence_freq !== "none" && (
+                                                                            <span
+                                                                                data-testid={`bulk-item-recurrence-detected-${item.reviewId}`}
+                                                                                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-secondary/25 text-secondary-foreground text-[9px] font-black uppercase tracking-wider"
+                                                                                title={`Detected "${item.recurrence_raw_text || ""}" in the source text`}
+                                                                            >
+                                                                                Auto-detected{item.recurrence_weekday ? ` · ${item.recurrence_weekday}s` : ""}
+                                                                            </span>
+                                                                        )}
+                                                                    </span>
+                                                                }>
+                                                                    <select
+                                                                        data-testid={`bulk-item-recurrence-freq-${item.reviewId}`}
+                                                                        value={item.draft.recurrence_freq || "none"}
+                                                                        onChange={(e) => updateItem(doc.filename, item.reviewId, { recurrence_freq: e.target.value })}
+                                                                        className={inp}
+                                                                    >
+                                                                        <option value="none">Doesn&apos;t repeat</option>
+                                                                        <option value="daily">Every day</option>
+                                                                        <option value="weekly">Every week</option>
+                                                                        <option value="biweekly">Every 2 weeks</option>
+                                                                        <option value="monthly">Every month</option>
+                                                                        <option value="annually">Every year</option>
+                                                                    </select>
+                                                                </Field>
+                                                                <Field label="Repeat until (optional)">
+                                                                    <input
+                                                                        data-testid={`bulk-item-recurrence-until-${item.reviewId}`}
+                                                                        type="date"
+                                                                        value={item.draft.recurrence_until || ""}
+                                                                        onChange={(e) => updateItem(doc.filename, item.reviewId, { recurrence_until: e.target.value })}
+                                                                        disabled={!item.draft.recurrence_freq || item.draft.recurrence_freq === "none"}
+                                                                        className={`${inp} disabled:opacity-60`}
+                                                                    />
+                                                                </Field>
+                                                            </div>
+                                                        </>
                                                     ) : (
                                                         <Field label="Location">
                                                             <input value={item.draft.location || ""} onChange={(e) => updateItem(doc.filename, item.reviewId, { location: e.target.value })} className={inp} />
@@ -1411,6 +1457,15 @@ function BulkDocumentImportCard({ orgs }) {
                                                 {item.location && <span className="px-2.5 py-1 rounded-full bg-muted">{item.location}</span>}
                                                 {item.date && <span className="px-2.5 py-1 rounded-full bg-muted">{item.date}</span>}
                                                 {item.start_time && <span className="px-2.5 py-1 rounded-full bg-muted">{item.start_time}{item.end_time ? `-${item.end_time}` : ""}</span>}
+                                                {item.recurrence_freq && item.recurrence_freq !== "none" && (
+                                                    <span
+                                                        data-testid={`bulk-item-recurrence-chip-${item.reviewId}`}
+                                                        className="px-2.5 py-1 rounded-full bg-secondary/25 text-secondary-foreground font-bold uppercase tracking-wider text-[10px]"
+                                                        title={`Detected "${item.recurrence_raw_text || ""}" in the source text`}
+                                                    >
+                                                        Repeats {item.recurrence_freq}{item.recurrence_weekday ? ` · ${item.recurrence_weekday}s` : ""}
+                                                    </span>
+                                                )}
                                             </div>
                                             {(typeof item.date_confidence === "number" && item.date_confidence < LOW_CONFIDENCE_THRESHOLD) && (
                                                 <p className="mt-2 text-xs text-amber-700 dark:text-amber-400">

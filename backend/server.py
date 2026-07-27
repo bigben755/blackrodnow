@@ -3645,6 +3645,11 @@ class ParsedItem(BaseModel):
     raw_time_text: Optional[str] = None
     date_confidence: Optional[float] = None
     time_confidence: Optional[float] = None
+    # Recurrence detected from the source text — e.g. "Mondays, 10am" ⇒ weekly.
+    recurrence_freq: Optional[Literal["none", "daily", "weekly", "biweekly", "monthly", "annually"]] = None
+    recurrence_weekday: Optional[str] = None  # e.g. "Monday" (informational)
+    recurrence_confidence: Optional[float] = None
+    recurrence_raw_text: Optional[str] = None
 
 
 class ParsedDocument(BaseModel):
@@ -3819,6 +3824,79 @@ def _extract_hhmm_times(text: str) -> tuple[Optional[str], Optional[str], Option
     return None, None, None, None
 
 
+def _detect_recurrence(text: str) -> Optional[dict]:
+    """Detect recurring event patterns from free text.
+
+    Handles the common Blackrod newsletter patterns:
+      - "Mondays, 10am"           → weekly (Monday)
+      - "Every Tuesday"           → weekly (Tuesday)
+      - "Every other Wednesday"   → biweekly (Wednesday)
+      - "Every fortnight"         → biweekly
+      - "Weekly"/"weekly group"   → weekly
+      - "Monthly"                 → monthly
+      - "Daily"                   → daily
+      - "Annual"/"Yearly"         → annually
+
+    Returns a dict {freq, weekday?, confidence, raw_text} or None.
+    """
+    if not text:
+        return None
+    lower = text.lower()
+
+    weekdays = {
+        "monday": "Monday", "mondays": "Monday", "mon": "Monday",
+        "tuesday": "Tuesday", "tuesdays": "Tuesday", "tue": "Tuesday", "tues": "Tuesday",
+        "wednesday": "Wednesday", "wednesdays": "Wednesday", "wed": "Wednesday",
+        "thursday": "Thursday", "thursdays": "Thursday", "thu": "Thursday", "thur": "Thursday", "thurs": "Thursday",
+        "friday": "Friday", "fridays": "Friday", "fri": "Friday",
+        "saturday": "Saturday", "saturdays": "Saturday", "sat": "Saturday",
+        "sunday": "Sundays", "sundays": "Sunday", "sun": "Sunday",
+    }
+
+    # 1) "every other <weekday>" or "every second <weekday>" ⇒ biweekly
+    m = re.search(r"every\s+(?:other|2nd|second)\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)s?\b", lower)
+    if m:
+        wd = weekdays.get(m.group(1))
+        return {"freq": "biweekly", "weekday": wd, "confidence": 0.9, "raw_text": m.group(0)}
+
+    # 2) "every <weekday>" ⇒ weekly
+    m = re.search(r"every\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)s?\b", lower)
+    if m:
+        wd = weekdays.get(m.group(1))
+        return {"freq": "weekly", "weekday": wd, "confidence": 0.95, "raw_text": m.group(0)}
+
+    # 3) plural weekday at the *start of a line or bullet* ("Mondays, 10am")
+    for token, canonical in weekdays.items():
+        if not token.endswith("s"):
+            continue
+        # Match as a standalone word followed by a comma / space / punctuation.
+        pattern = rf"(?m)(?:^|[•*·\-\|]\s*|\s){re.escape(token)}\b[\s,]"
+        if re.search(pattern, lower):
+            return {"freq": "weekly", "weekday": canonical, "confidence": 0.85, "raw_text": token}
+
+    # 4) "every fortnight" / "fortnightly" / "bi-weekly" ⇒ biweekly
+    if re.search(r"\b(fortnightly|every\s+fortnight|bi[- ]?weekly)\b", lower):
+        return {"freq": "biweekly", "weekday": None, "confidence": 0.85, "raw_text": "fortnightly"}
+
+    # 5) "every week" / "weekly" ⇒ weekly (only when clearly a recurring group)
+    if re.search(r"\b(every\s+week|weekly\s+(group|session|meeting|club|meet\s*up|meetup|drop[- ]?in))\b", lower):
+        return {"freq": "weekly", "weekday": None, "confidence": 0.75, "raw_text": "weekly"}
+
+    # 6) "monthly" / "every month" ⇒ monthly
+    if re.search(r"\b(monthly|every\s+month|first\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\s+of\s+(the\s+)?month|last\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\s+of\s+(the\s+)?month)\b", lower):
+        return {"freq": "monthly", "weekday": None, "confidence": 0.8, "raw_text": "monthly"}
+
+    # 7) "daily" / "every day" ⇒ daily
+    if re.search(r"\b(daily|every\s+day)\b", lower):
+        return {"freq": "daily", "weekday": None, "confidence": 0.85, "raw_text": "daily"}
+
+    # 8) "annual" / "yearly" / "every year" ⇒ annually
+    if re.search(r"\b(annual(?:ly)?|yearly|every\s+year)\b", lower):
+        return {"freq": "annually", "weekday": None, "confidence": 0.85, "raw_text": "annual"}
+
+    return None
+
+
 def _normalize_parsed_item(item: ParsedItem, source_text: str) -> ParsedItem:
     merged = "\n".join([item.title or "", item.description or "", source_text or ""]).strip()
     updates: dict[str, Any] = {}
@@ -3851,6 +3929,15 @@ def _normalize_parsed_item(item: ParsedItem, source_text: str) -> ParsedItem:
             updates["raw_time_text"] = f"{item.start_time}-{item.end_time}"
         else:
             updates["raw_time_text"] = item.start_time
+
+    # Recurrence: only auto-detect for events, and only if the AI didn't already return one.
+    if item.suggested_type == "event" and not item.recurrence_freq:
+        rec = _detect_recurrence(merged)
+        if rec:
+            updates["recurrence_freq"] = rec["freq"]
+            updates["recurrence_weekday"] = rec.get("weekday")
+            updates["recurrence_confidence"] = rec.get("confidence")
+            updates["recurrence_raw_text"] = rec.get("raw_text")
 
     if updates:
         return item.model_copy(update=updates)
@@ -4227,6 +4314,8 @@ async def _parse_text_to_response(text: str, hint: Optional[str] = None) -> Pars
         "description (1-3 sentences), social_caption (2-3 emojis, 2-4 hashtags), notification_text (max 90 chars). "
         "Also include action, matched_org_slug, matched_org_name, matched_event_id, matched_event_title, matched_volunteer_id, matched_volunteer_title, matched_venue_id, matched_venue_name and confidence when you can identify the target. "
         "If possible include raw_date_text, raw_time_text, date_confidence, time_confidence and entity_confidence. "
+        "For any recurring events (e.g. 'Mondays, 10am', 'every Tuesday', 'first Sunday of the month', 'weekly drop-in', 'monthly meet-up', 'annual switch-on'), "
+        "also set recurrence_freq to one of 'none', 'daily', 'weekly', 'biweekly', 'monthly' or 'annually', and recurrence_weekday to the canonical weekday name when clear. "
         "Use action values new_event, update_event, new_volunteer, update_volunteer, new_organisation, update_organisation, new_venue, update_venue or unclear. "
         "Warm, modern, youth-friendly tone. Return ONLY the JSON object — no markdown, no prose."
     )

@@ -122,7 +122,20 @@ export default function OrgDashboard() {
     const publishEvent = async (it, { recurrenceFreq = "none", recurrenceUntil = "" } = {}) => {
         let start;
         try {
-            const d = it.date ? new Date(it.date) : new Date(Date.now() + 86400000);
+            let d;
+            if (it.date) {
+                d = new Date(it.date);
+            } else if (it.recurrence_weekday) {
+                // Weekly recurrence with no explicit start date — use the next matching weekday.
+                const weekdayIdx = { Sunday: 0, Monday: 1, Tuesday: 2, Wednesday: 3, Thursday: 4, Friday: 5, Saturday: 6 }[it.recurrence_weekday];
+                d = new Date();
+                if (typeof weekdayIdx === "number") {
+                    const daysAhead = (weekdayIdx - d.getDay() + 7) % 7 || 7;
+                    d.setDate(d.getDate() + daysAhead);
+                }
+            } else {
+                d = new Date(Date.now() + 86400000);
+            }
             if (it.start_time) {
                 const m = /(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i.exec(it.start_time || "");
                 if (m) {
@@ -844,8 +857,10 @@ function NotificationDialog({ notif, org, onClose, onCopy }) {
 
 /* Parsed AI card (single item) */
 function ParsedCard({ it, onPublishEvent, onPublishUpdate, onCopy }) {
-    const [recurrenceFreq, setRecurrenceFreq] = useState("none");
+    const detectedFreq = it.recurrence_freq && it.recurrence_freq !== "none" ? it.recurrence_freq : "none";
+    const [recurrenceFreq, setRecurrenceFreq] = useState(detectedFreq);
     const [recurrenceUntil, setRecurrenceUntil] = useState("");
+    const detectedWeekday = it.recurrence_weekday || null;
     const shareUrl = typeof window !== "undefined"
         ? `${window.location.origin}/events`
         : "https://blackrodnow.local/events";
@@ -879,8 +894,20 @@ function ParsedCard({ it, onPublishEvent, onPublishUpdate, onCopy }) {
             </div>
             {it.suggested_type === "event" && (
                 <div className="mt-3 rounded-2xl bg-background/5 border border-background/20 p-3">
-                    <div className="text-[10px] font-bold uppercase tracking-wider text-background/70 flex items-center gap-1">
-                        <Calendar className="h-3 w-3" /> Repeat this event
+                    <div className="flex items-center justify-between gap-2">
+                        <div className="text-[10px] font-bold uppercase tracking-wider text-background/70 flex items-center gap-1">
+                            <Calendar className="h-3 w-3" /> Repeat this event
+                        </div>
+                        {detectedFreq !== "none" && (
+                            <span
+                                data-testid="parsed-recurrence-detected"
+                                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-secondary/25 text-secondary-foreground text-[9px] font-black uppercase tracking-wider"
+                                title={`Detected "${it.recurrence_raw_text || ""}" in the source text`}
+                            >
+                                <Sparkles className="h-2.5 w-2.5" /> Auto-detected
+                                {detectedWeekday ? ` · ${detectedWeekday}s` : ""}
+                            </span>
+                        )}
                     </div>
                     <div className="mt-2 grid sm:grid-cols-2 gap-2">
                         <select
