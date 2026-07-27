@@ -59,8 +59,15 @@ export default function Admin() {
         api.orgEditRequests("pending").then(setRequests).catch(() => setRequests([]));
     }, []);
 
-    const approvedEvents = events.filter((e) => e.status === "approved");
-    const pendingEvents = events.filter((e) => e.status === "pending");
+    // Manage table shows the real event records only — virtual recurring
+    // instances share the same parent record so editing/deleting a virtual
+    // clone would fail. Skipping them keeps every real event visible.
+    const approvedEvents = events.filter(
+        (e) => e.status === "approved" && !e.is_recurrence_instance
+    );
+    const pendingEvents = events.filter(
+        (e) => e.status === "pending" && !e.is_recurrence_instance
+    );
     const pendingOrgs = orgs.filter((o) => o.status === "pending");
     const analytics = stats?.analytics || {};
     const siteOverview = analytics.overview || {};
@@ -426,34 +433,57 @@ export default function Admin() {
             </section>
 
             <section className="mt-10">
-                <h2 className="font-display font-bold text-xl mb-3">Manage events</h2>
+                <h2 className="font-display font-bold text-xl mb-3">
+                    Manage events{" "}
+                    <span className="text-muted-foreground text-base font-normal">
+                        ({approvedEvents.length})
+                    </span>
+                </h2>
                 <div className="rounded-3xl border border-border bg-surface overflow-hidden">
-                    <table className="w-full text-sm">
-                        <thead className="bg-muted text-xs uppercase tracking-wider text-muted-foreground">
-                            <tr>
-                                <th className="text-left px-4 py-3">Event</th>
-                                <th className="text-left px-4 py-3 hidden sm:table-cell">Date</th>
-                                <th className="text-left px-4 py-3 hidden md:table-cell">Category</th>
-                                <th className="text-right px-4 py-3">Actions</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {approvedEvents.slice(0, 30).map((e) => (
-                                <tr key={e.id} className="border-t border-border">
-                                    <td className="px-4 py-3 font-medium"><Link to={`/events/${e.id}`} className="hover:text-primary">{e.title}</Link></td>
-                                    <td className="px-4 py-3 text-muted-foreground hidden sm:table-cell">{formatDate(e.start)}</td>
-                                    <td className="px-4 py-3 hidden md:table-cell"><CategoryBadge category={e.category} /></td>
-                                    <td className="px-4 py-3">
-                                        <div className="flex gap-1 justify-end">
-                                            <Link to={`/edit-event/${e.id}`} data-testid={`admin-edit-approved-${e.id}`} className="h-8 w-8 grid place-items-center rounded-full bg-muted hover:bg-primary hover:text-primary-foreground" title="Edit event"><Pencil className="h-3.5 w-3.5" /></Link>
-                                            <button data-testid={`feature-event-${e.id}`} onClick={async () => { await toggleEventFeatured(e.id); toast.success(e.featured ? "Unfeatured" : "Featured"); }} className={`h-8 w-8 grid place-items-center rounded-full ${e.featured ? "bg-secondary text-secondary-foreground" : "bg-muted"}`} title={e.featured ? "Unfeature" : "Feature on homepage"}><Star className="h-3.5 w-3.5" /></button>
-                                            <button data-testid={`delete-event-${e.id}`} onClick={async () => { await deleteEvent(e.id); toast.info("Event deleted"); }} className="h-8 w-8 grid place-items-center rounded-full bg-muted hover:bg-destructive hover:text-destructive-foreground" title="Delete"><Trash2 className="h-3.5 w-3.5" /></button>
-                                        </div>
-                                    </td>
+                    <div className="max-h-[65vh] overflow-y-auto">
+                        <table className="w-full text-sm">
+                            <thead className="bg-muted text-xs uppercase tracking-wider text-muted-foreground sticky top-0 z-10">
+                                <tr>
+                                    <th className="text-left px-4 py-3">Event</th>
+                                    <th className="text-left px-4 py-3 hidden sm:table-cell">Date</th>
+                                    <th className="text-left px-4 py-3 hidden md:table-cell">Category</th>
+                                    <th className="text-right px-4 py-3">Actions</th>
                                 </tr>
-                            ))}
-                        </tbody>
-                    </table>
+                            </thead>
+                            <tbody>
+                                {[...approvedEvents]
+                                    .sort((a, b) => (a.start || "").localeCompare(b.start || ""))
+                                    .map((e) => (
+                                    <tr key={e.id} className="border-t border-border" data-testid={`admin-manage-event-row-${e.id}`}>
+                                        <td className="px-4 py-3 font-medium">
+                                            <Link to={`/events/${e.id}`} className="hover:text-primary">{e.title}</Link>
+                                            {e.recurrence && e.recurrence.freq && e.recurrence.freq !== "none" && (
+                                                <span className="ml-2 inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-secondary/25 text-secondary-foreground text-[9px] font-black uppercase tracking-wider">
+                                                    Repeats {e.recurrence.freq}
+                                                </span>
+                                            )}
+                                        </td>
+                                        <td className="px-4 py-3 text-muted-foreground hidden sm:table-cell">{formatDate(e.start)}</td>
+                                        <td className="px-4 py-3 hidden md:table-cell"><CategoryBadge category={e.category} /></td>
+                                        <td className="px-4 py-3">
+                                            <div className="flex gap-1 justify-end">
+                                                <Link to={`/edit-event/${e.id}`} data-testid={`admin-edit-approved-${e.id}`} className="h-8 w-8 grid place-items-center rounded-full bg-muted hover:bg-primary hover:text-primary-foreground" title="Edit event"><Pencil className="h-3.5 w-3.5" /></Link>
+                                                <button data-testid={`feature-event-${e.id}`} onClick={async () => { await toggleEventFeatured(e.id); toast.success(e.featured ? "Unfeatured" : "Featured"); }} className={`h-8 w-8 grid place-items-center rounded-full ${e.featured ? "bg-secondary text-secondary-foreground" : "bg-muted"}`} title={e.featured ? "Unfeature" : "Feature on homepage"}><Star className="h-3.5 w-3.5" /></button>
+                                                <button data-testid={`delete-event-${e.id}`} onClick={async () => { await deleteEvent(e.id); toast.info("Event deleted"); }} className="h-8 w-8 grid place-items-center rounded-full bg-muted hover:bg-destructive hover:text-destructive-foreground" title="Delete"><Trash2 className="h-3.5 w-3.5" /></button>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                ))}
+                                {approvedEvents.length === 0 && (
+                                    <tr>
+                                        <td colSpan={4} className="px-4 py-8 text-center text-muted-foreground text-sm">
+                                            No approved events yet.
+                                        </td>
+                                    </tr>
+                                )}
+                            </tbody>
+                        </table>
+                    </div>
                 </div>
             </section>
 
