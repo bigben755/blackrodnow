@@ -109,6 +109,7 @@ A modern community website for Blackrod, Bolton showcasing local events, clubs, 
   - Verified: 14/14 backend pytest + full frontend E2E (testing agent iteration_3)
 
 ## Implemented (June 2026)
+- **Event image drag-and-drop + URL (Jun 2026).** New reusable `EventImageInput` component (dropzone + click-to-browse + URL paste + live preview + remove) wired into Submit Event (`se-image-*`), Admin Quick Create (`admin-event-image-*`) and Event Edit (`ee-image-*`). Backend: `POST /api/uploads/event-image` (PNG/JPG/WebP, 5MB max, resized to ≤1600px JPEG, object storage) served via `GET /api/event-images/{name}`. Stored as absolute URL in `event.image`. Verified via curl + E2E screenshot.
 - **Background parse jobs (Cloudflare timeout fix, Jun 2026).** Bulk document parsing (`/admin` → Bulk document import) no longer runs as one long HTTP request (which hit Cloudflare's ~100s limit on production blackrodnow.com). New flow:
   - `POST /api/admin/documents/parse-jobs` → reads files, creates `parse_jobs` doc, spawns asyncio task, returns `{job_id, total}` instantly.
   - `GET /api/admin/documents/parse-jobs/{job_id}` → `{status: processing|done|failed, done, total, current, result}`.

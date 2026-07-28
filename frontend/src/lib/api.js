@@ -234,6 +234,16 @@ export const api = {
             .then((r) => r.data);
     },
     getParseJob: (jobId) => client.get(`/admin/documents/parse-jobs/${jobId}`).then((r) => r.data),
+    uploadEventImage: (file) => {
+        const fd = new FormData();
+        fd.append("file", file);
+        return client
+            .post("/uploads/event-image", fd, {
+                headers: { "Content-Type": "multipart/form-data" },
+                timeout: 60000,
+            })
+            .then((r) => ({ ...r.data, absoluteUrl: `${process.env.REACT_APP_BACKEND_URL}${r.data.url}` }));
+    },
     deleteDoc: (slug, id) =>
         client.delete(`/organisations/${slug}/documents/${id}`, { headers: orgAuthHeaders(slug) }).then((r) => r.data),
     docDownloadUrl: (id) => `${API}/documents/${id}/download`,

@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { useNavigate } from "react-router-dom";
+import EventImageInput from "@/components/EventImageInput";
 import {
     Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter,
 } from "@/components/ui/dialog";
@@ -2095,8 +2096,13 @@ function QuickAddContentCard({ orgs, onCreated }) {
                             <Field label="Booking link">
                                 <input type="url" value={eventForm.booking} onChange={(e) => setEventForm((p) => ({ ...p, booking: e.target.value }))} className={inp} placeholder="https://" />
                             </Field>
-                            <Field label="Image URL">
-                                <input value={eventForm.image} onChange={(e) => setEventForm((p) => ({ ...p, image: e.target.value }))} className={inp} placeholder="https://" />
+                            <Field label="Event image">
+                                <EventImageInput
+                                    value={eventForm.image}
+                                    onChange={(url) => setEventForm((p) => ({ ...p, image: url }))}
+                                    testIdPrefix="admin-event-image"
+                                    inputClassName={inp}
+                                />
                             </Field>
                             <Field label="Publish status">
                                 <select value={eventForm.status} onChange={(e) => setEventForm((p) => ({ ...p, status: e.target.value }))} className={inp}>

@@ -3613,6 +3613,52 @@ async def get_org_cover(slug: str):
     return _serve_org_image(org.get("cover_path"), "image/jpeg")
 
 
+# ─────────── Event image uploads ───────────
+EVENT_IMAGE_MAX_WIDTH = 1600
+
+
+def _process_and_upload_event_image(data: bytes) -> str:
+    img = _open_image(data)
+    if img.mode == "RGBA":
+        bg = Image.new("RGB", img.size, (255, 255, 255))
+        bg.paste(img, mask=img.split()[-1])
+        img = bg
+    elif img.mode != "RGB":
+        img = img.convert("RGB")
+    if img.width > EVENT_IMAGE_MAX_WIDTH:
+        ratio = EVENT_IMAGE_MAX_WIDTH / img.width
+        img = img.resize((EVENT_IMAGE_MAX_WIDTH, max(1, int(img.height * ratio))), Image.Resampling.LANCZOS)
+    buf = BytesIO()
+    img.save(buf, format="JPEG", quality=85, optimize=True, progressive=True)
+    name = f"{uuid.uuid4()}.jpg"
+    put_object(f"{APP_NAME}/event-images/{name}", buf.getvalue(), "image/jpeg")
+    return name
+
+
+@api.post("/uploads/event-image")
+async def upload_event_image(file: UploadFile = File(...)):
+    data = await file.read()
+    _validate_image_upload(file, data)
+    try:
+        name = _process_and_upload_event_image(data)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"Upload failed: {e}")
+    return {"ok": True, "url": f"/api/event-images/{name}"}
+
+
+@api.get("/event-images/{name}")
+async def get_event_image(name: str):
+    if not re.fullmatch(r"[a-f0-9\-]{36}\.jpg", name):
+        raise HTTPException(404, "Image not found")
+    try:
+        data, _ = get_object(f"{APP_NAME}/event-images/{name}")
+    except Exception:
+        raise HTTPException(404, "Image not found")
+    return Response(content=data, media_type="image/jpeg", headers={"Cache-Control": "public, max-age=86400"})
+
+
 # ─────────── AI parse (multi-event) ───────────
 class ParseRequest(BaseModel):
     text: str

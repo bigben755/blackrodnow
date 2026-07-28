@@ -2,10 +2,11 @@ import React, { useEffect, useState } from "react";
 import { useApp } from "@/context/AppContext";
 import { CATEGORIES } from "@/data/mockData";
 import NewsletterSection from "@/components/NewsletterSection";
-import { CheckCircle2, Calendar, Image as ImageIcon, ArrowRight } from "lucide-react";
+import { CheckCircle2, Calendar, ArrowRight } from "lucide-react";
 import { toast } from "sonner";
 import { useNavigate } from "react-router-dom";
 import RecurrenceFields, { buildRecurrencePayload } from "@/components/RecurrenceFields";
+import EventImageInput from "@/components/EventImageInput";
 
 const initial = {
     title: "",
@@ -212,11 +213,13 @@ export default function SubmitEvent() {
                         <input data-testid="se-phone" value={form.contactPhone} onChange={set("contactPhone")} className={inp} />
                     </Field>
                 </div>
-                <Field label="Image URL (flyer)">
-                    <div className="relative">
-                        <ImageIcon className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                        <input data-testid="se-image" value={form.image} onChange={set("image")} className={`${inp} pl-9`} placeholder="https://" />
-                    </div>
+                <Field label="Event image (flyer)">
+                    <EventImageInput
+                        value={form.image}
+                        onChange={(url) => setForm((f) => ({ ...f, image: url }))}
+                        testIdPrefix="se-image"
+                        inputClassName={inp}
+                    />
                 </Field>
 
                 <RecurrenceFields

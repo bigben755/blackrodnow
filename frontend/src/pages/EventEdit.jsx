@@ -5,6 +5,7 @@ import { useNavigate, useParams, Link } from "react-router-dom";
 import { ArrowLeft, Calendar, Loader2, Save, ShieldCheck, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import RecurrenceFields from "@/components/RecurrenceFields";
+import EventImageInput from "@/components/EventImageInput";
 
 /**
  * Edit an existing event. Accessible to org admins (their own events) and
@@ -214,8 +215,13 @@ export default function EventEdit() {
                     <Field label="Contact email"><input data-testid="ee-email" type="email" value={form.contactEmail} onChange={set("contactEmail")} className={inp} /></Field>
                     <Field label="Contact phone"><input data-testid="ee-phone" value={form.contactPhone} onChange={set("contactPhone")} className={inp} /></Field>
                 </div>
-                <Field label="Poster / image URL">
-                    <input data-testid="ee-image" value={form.image} onChange={set("image")} className={inp} placeholder="https://" />
+                <Field label="Poster / image">
+                    <EventImageInput
+                        value={form.image}
+                        onChange={(url) => setForm((f) => ({ ...f, image: url }))}
+                        testIdPrefix="ee-image"
+                        inputClassName={inp}
+                    />
                 </Field>
 
                 {/* Recurrence — one entry that repeats (great for weekly clubs / bingo / prayer) */}
