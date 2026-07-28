@@ -212,6 +212,7 @@ AnalyticsKind = Literal[
     "org_view",
     "event_view",
     "share_click",
+    "broadcast_preview",
     "share_pack_email",
     "newsletter_send",
     "broadcast_send",
@@ -1369,9 +1370,8 @@ def _abs_base_url(req: _Req) -> str:
 
 @api.get("/events/{event_id}/og", response_class=_HTMLResp)
 async def event_og_page(event_id: str, request: _Req):
-    e = await db.events.find_one({"id": event_id}, {"_id": 0})
-    if not e:
-        raise HTTPException(404, "Event not found")
+    # Support recurring virtual instance ids (parent__YYYY-MM-DD) too.
+    e = await _fetch_event_for_poster(event_id)
 
     org = await db.orgs.find_one({"slug": e.get("orgSlug")}, {"_id": 0}) or {}
     base = _abs_base_url(request)
@@ -2447,7 +2447,7 @@ async def admin_impact_pdf(
 
 
 # ─────────── Auto-generated poster (per event) ───────────
-def _draw_event_poster_png(event: dict, size: int = 1080) -> bytes:
+def _draw_event_poster_png(event: dict, size: int = 1080, site_url: Optional[str] = None) -> bytes:
     from io import BytesIO
     from PIL import Image, ImageDraw, ImageFont
     import qrcode
@@ -2539,7 +2539,7 @@ def _draw_event_poster_png(event: dict, size: int = 1080) -> bytes:
         chip_x += w + 12
 
     # QR code linking to the event page
-    site_url = (os.environ.get("PUBLIC_URL") or PUBLIC_URL).rstrip("/")
+    site_url = (site_url or os.environ.get("PUBLIC_URL") or PUBLIC_URL).rstrip("/")
     event_url = f"{site_url}/events/{event.get('id')}" if event.get("id") else site_url
     qr = qrcode.QRCode(border=2, box_size=8)
     qr.add_data(event_url)
@@ -2557,14 +2557,14 @@ def _draw_event_poster_png(event: dict, size: int = 1080) -> bytes:
     return buf.getvalue()
 
 
-def _draw_event_poster_pdf(event: dict) -> bytes:
+def _draw_event_poster_pdf(event: dict, site_url: Optional[str] = None) -> bytes:
     """A4 poster — reuse the PNG as a full-bleed image inside a PDF."""
     from io import BytesIO
     from reportlab.lib.pagesizes import A4
     from reportlab.pdfgen import canvas
     from reportlab.lib.utils import ImageReader
     from PIL import Image
-    png = _draw_event_poster_png(event, size=1600)
+    png = _draw_event_poster_png(event, size=1600, site_url=site_url)
     img = Image.open(BytesIO(png))
     buf = BytesIO()
     c = canvas.Canvas(buf, pagesize=A4)
@@ -2595,11 +2595,16 @@ async def _fetch_event_for_poster(event_id: str) -> dict:
     return ev
 
 
+def _safe_ascii_filename(title: Optional[str], ext: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", (title or "event").encode("ascii", "ignore").decode().lower()).strip("-")[:40]
+    return f"blackrod-now-{slug or 'event'}.{ext}"
+
+
 @api.get("/events/{event_id}/poster.png")
-async def event_poster_png(event_id: str):
+async def event_poster_png(event_id: str, request: Request):
     ev = await _fetch_event_for_poster(event_id)
-    png = await asyncio.to_thread(_draw_event_poster_png, ev)
-    fname = f"blackrod-now-{(ev.get('title') or 'event').lower().replace(' ','-')[:40]}.png"
+    png = await asyncio.to_thread(_draw_event_poster_png, ev, 1080, _abs_base_url(request))
+    fname = _safe_ascii_filename(ev.get("title"), "png")
     return Response(
         content=png,
         media_type="image/png",
@@ -2608,10 +2613,10 @@ async def event_poster_png(event_id: str):
 
 
 @api.get("/events/{event_id}/poster.pdf")
-async def event_poster_pdf(event_id: str):
+async def event_poster_pdf(event_id: str, request: Request):
     ev = await _fetch_event_for_poster(event_id)
-    pdf = await asyncio.to_thread(_draw_event_poster_pdf, ev)
-    fname = f"blackrod-now-{(ev.get('title') or 'event').lower().replace(' ','-')[:40]}.pdf"
+    pdf = await asyncio.to_thread(_draw_event_poster_pdf, ev, _abs_base_url(request))
+    fname = _safe_ascii_filename(ev.get("title"), "pdf")
     return Response(
         content=pdf,
         media_type="application/pdf",
@@ -2638,8 +2643,8 @@ def _humanize_event_when(ev: dict) -> str:
     return dt.strftime("%a %d %b · %H:%M").lstrip("0")
 
 
-def _event_public_link(ev: dict) -> str:
-    return f"{PUBLIC_URL.rstrip('/')}/events/{ev.get('id')}"
+def _event_public_link(ev: dict, base: Optional[str] = None) -> str:
+    return f"{(base or PUBLIC_URL).rstrip('/')}/events/{ev.get('id')}"
 
 
 def _event_hashtags(ev: dict) -> List[str]:
@@ -2666,7 +2671,7 @@ def _event_hashtags(ev: dict) -> List[str]:
     return out[:6]
 
 
-def _template_caption(ev: dict, tone: str = "friendly") -> str:
+def _template_caption(ev: dict, tone: str = "friendly", base: Optional[str] = None) -> str:
     """Deterministic, no-LLM caption generator using event fields."""
     title = (ev.get("title") or "Our next event").strip()
     when = _humanize_event_when(ev)
@@ -2679,7 +2684,7 @@ def _template_caption(ev: dict, tone: str = "friendly") -> str:
     blurb = re.split(r"(?<=[.!?])\s+", desc, 1)[0].strip() if desc else ""
     if len(blurb) > 180:
         blurb = blurb[:177].rstrip() + "…"
-    link = _event_public_link(ev)
+    link = _event_public_link(ev, base)
     hashtags = " ".join(_event_hashtags(ev))
 
     if tone == "punchy":
@@ -2731,11 +2736,11 @@ def _template_caption(ev: dict, tone: str = "friendly") -> str:
     return "\n\n".join(x for x in [header, meta, body, footer] if x)
 
 
-async def _ai_caption(ev: dict, org: Optional[dict], tone: str) -> str:
+async def _ai_caption(ev: dict, org: Optional[dict], tone: str, base: Optional[str] = None) -> str:
     """Optional AI polish using Emergent LLM Key (Claude). Falls back to
     template if key missing or the call fails."""
     if not EMERGENT_LLM_KEY:
-        return _template_caption(ev, tone)
+        return _template_caption(ev, tone, base)
     try:
         from emergentintegrations.llm.chat import LlmChat, UserMessage
         tone_hint = {
@@ -2761,7 +2766,7 @@ async def _ai_caption(ev: dict, org: Optional[dict], tone: str) -> str:
             "description": (ev.get("description") or "")[:600],
             "organiser": (org or {}).get("name"),
             "category": ev.get("category"),
-            "link": _event_public_link(ev),
+            "link": _event_public_link(ev, base),
             "hashtags_suggested": _event_hashtags(ev),
         }
         chat = LlmChat(
@@ -2776,18 +2781,19 @@ async def _ai_caption(ev: dict, org: Optional[dict], tone: str) -> str:
             text = re.sub(r"^```(?:\w+)?", "", text).strip()
             text = re.sub(r"```$", "", text).strip()
         # Sanity check — ensure link is present, otherwise re-append
-        link = _event_public_link(ev)
+        link = _event_public_link(ev, base)
         if link not in text:
             text = text.rstrip() + f"\n\n🔗 {link}"
         return text
     except Exception as exc:
         logger.warning(f"AI caption fallback (template) — {exc}")
-        return _template_caption(ev, tone)
+        return _template_caption(ev, tone, base)
 
 
 @api.get("/events/{event_id}/social-bundle")
 async def event_social_bundle(
     event_id: str,
+    request: Request,
     tone: str = "friendly",
     ai: bool = False,
 ):
@@ -2796,16 +2802,17 @@ async def event_social_bundle(
     dashboard and event detail pages.
     """
     tone = tone if tone in _TONE_CHOICES else "friendly"
+    base = _abs_base_url(request)
     ev = await _fetch_event_for_poster(event_id)
     org = None
     if ev.get("orgSlug"):
         org = await db.orgs.find_one({"slug": ev["orgSlug"]}, {"_id": 0})
     if ai:
-        caption = await _ai_caption(ev, org, tone)
+        caption = await _ai_caption(ev, org, tone, base)
     else:
-        caption = _template_caption(ev, tone)
+        caption = _template_caption(ev, tone, base)
     hashtags = _event_hashtags(ev)
-    link = _event_public_link(ev)
+    link = _event_public_link(ev, base)
     return {
         "event_id": ev.get("id"),
         "title": ev.get("title"),
@@ -2815,9 +2822,9 @@ async def event_social_bundle(
         "caption_with_link": caption if link in caption else f"{caption}\n\n{link}",
         "hashtags": hashtags,
         "link": link,
-        "og_url": f"{PUBLIC_URL.rstrip('/')}/api/events/{ev.get('id')}/og",
-        "poster_png": f"{PUBLIC_URL.rstrip('/')}/api/events/{ev.get('id')}/poster.png",
-        "poster_pdf": f"{PUBLIC_URL.rstrip('/')}/api/events/{ev.get('id')}/poster.pdf",
+        "og_url": f"{base}/api/events/{ev.get('id')}/og",
+        "poster_png": f"{base}/api/events/{ev.get('id')}/poster.png",
+        "poster_pdf": f"{base}/api/events/{ev.get('id')}/poster.pdf",
     }
 
 
@@ -4840,6 +4847,34 @@ async def _run_parse_job(job_id: str, file_sources: list, source_org_slug: Optio
 @api.post("/parse-content", response_model=ParseResponse)
 async def parse_content(req: ParseRequest):
     return await _parse_text_to_response(req.text, hint=req.hint)
+
+
+@api.get("/admin/documents/template.xlsx")
+async def bulk_import_template():
+    """Blank spreadsheet template matching the structured parser's columns."""
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Events"
+    headers = ["Organisation", "Title", "Date", "Time/s", "Venue", "Category", "Fee", "URL", "Booking info"]
+    ws.append(headers)
+    for cell in ws[1]:
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = PatternFill(start_color="0052FF", end_color="0052FF", fill_type="solid")
+    ws.append(["Blackrod Library", "Summer Craft Morning", "2026-07-21", "10am-12pm", "Blackrod Library", "Family", "Free", "https://example.org/craft", "Just turn up"])
+    ws.append(["St Katharine's Church", "Heritage Talk", "05/08/2026", "7:30pm", "Church Hall", "Heritage", "£3", "", "Book via 01204 000000"])
+    widths = [24, 30, 14, 14, 24, 16, 10, 30, 26]
+    for i, w in enumerate(widths, start=1):
+        ws.column_dimensions[ws.cell(row=1, column=i).column_letter].width = w
+    buf = BytesIO()
+    wb.save(buf)
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="blackrod-now-events-template.xlsx"'},
+    )
 
 
 @api.post("/admin/documents/parse", response_model=BulkParseResponse)

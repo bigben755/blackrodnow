@@ -65,7 +65,7 @@ def test_recurrence_expansion(admin_headers, freq, min_instances):
         matches = [e for e in events if e.get("id") == eid or e.get("parent_id") == eid]
         assert len(matches) >= min_instances, f"{freq}: got {len(matches)}"
     finally:
-        requests.delete(f"{API}/events/{eid}", headers=admin_headers, timeout=15)
+        requests.delete(f"{API}/admin/events/{eid}", headers=admin_headers, timeout=15)
 
 
 def test_none_creates_single_instance(admin_headers):
@@ -76,4 +76,4 @@ def test_none_creates_single_instance(admin_headers):
         matches = [e for e in events if e.get("id") == eid or e.get("parent_id") == eid]
         assert len(matches) == 1
     finally:
-        requests.delete(f"{API}/events/{eid}", headers=admin_headers, timeout=15)
+        requests.delete(f"{API}/admin/events/{eid}", headers=admin_headers, timeout=15)

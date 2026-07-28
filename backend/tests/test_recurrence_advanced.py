@@ -63,7 +63,7 @@ def test_weekly_interval_3(admin_headers):
         d1 = datetime.fromisoformat(matches[1]["start"])
         assert (d1 - d0).days == 21, f"expected 21-day gap, got {(d1 - d0).days}"
     finally:
-        requests.delete(f"{API}/events/{eid}", headers=admin_headers, timeout=15)
+        requests.delete(f"{API}/admin/events/{eid}", headers=admin_headers, timeout=15)
 
 
 def test_monthly_weekday(admin_headers):
@@ -77,7 +77,7 @@ def test_monthly_weekday(admin_headers):
             assert d.weekday() == start.weekday(), f"weekday mismatch on {m['start']}"
             assert (d.day - 1) // 7 + 1 in (nth, nth - 1), f"nth mismatch on {m['start']}"
     finally:
-        requests.delete(f"{API}/events/{eid}", headers=admin_headers, timeout=15)
+        requests.delete(f"{API}/admin/events/{eid}", headers=admin_headers, timeout=15)
 
 
 def test_extra_dates_only(admin_headers):
@@ -93,7 +93,7 @@ def test_extra_dates_only(admin_headers):
         for m in matches:
             assert m["start"][11:16] == matches[0]["start"][11:16]
     finally:
-        requests.delete(f"{API}/events/{eid}", headers=admin_headers, timeout=15)
+        requests.delete(f"{API}/admin/events/{eid}", headers=admin_headers, timeout=15)
 
 
 def test_weekly_plus_extra_date(admin_headers):
@@ -106,7 +106,7 @@ def test_weekly_plus_extra_date(admin_headers):
         assert extra in dates, "extra date missing from weekly expansion"
         assert len(matches) >= 5  # ~4 weekly + 1 extra
     finally:
-        requests.delete(f"{API}/events/{eid}", headers=admin_headers, timeout=15)
+        requests.delete(f"{API}/admin/events/{eid}", headers=admin_headers, timeout=15)
 
 
 def test_virtual_instance_detail_fetch(admin_headers):
@@ -118,4 +118,4 @@ def test_virtual_instance_detail_fetch(admin_headers):
         assert r.status_code == 200, r.text
         assert r.json()["start"][:10] == extra
     finally:
-        requests.delete(f"{API}/events/{eid}", headers=admin_headers, timeout=15)
+        requests.delete(f"{API}/admin/events/{eid}", headers=admin_headers, timeout=15)

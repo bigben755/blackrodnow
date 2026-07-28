@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { useApp } from "@/context/AppContext";
-import { api } from "@/lib/api";
+import { api, API } from "@/lib/api";
 import { Stat, CategoryBadge, formatDate, formatTime } from "@/components/Cards";
 import {
     CalendarDays, Building2, Inbox, Users, Star, Check, X, Trash2, BarChart3, Mail,
@@ -1347,6 +1347,15 @@ function BulkDocumentImportCard({ orgs }) {
                         >
                             Clear
                         </button>
+                        <a
+                            href={`${API}/admin/documents/template.xlsx`}
+                            download
+                            data-testid="admin-bulk-template-link"
+                            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-full border border-border text-xs font-semibold hover:bg-muted"
+                            title="Blank Excel template with the exact columns the parser understands"
+                        >
+                            <FileText className="h-3.5 w-3.5" /> Download spreadsheet template
+                        </a>
                     </div>
                     <div className="mt-4 grid gap-3">
                         <Field label="Page links or Facebook URLs, one per line">

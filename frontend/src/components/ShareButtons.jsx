@@ -64,11 +64,17 @@ export default function ShareButtons({
             label: "Facebook",
             icon: Facebook,
             className: "bg-[#1877F2] text-white hover:brightness-110",
-            // NOTE: the `quote` param was deprecated by Facebook in 2017 and now
-            // triggers "must use a domain you own" errors — the sharer only
-            // reads OG tags from the URL, which we set in index.html.
-            onClick: () => {
+            // NOTE: Facebook's sharer cannot pre-fill text (deprecated in 2017) —
+            // so we auto-copy the caption first, then open the composer with the
+            // link attached. Users just paste (Ctrl/Cmd+V) into the post box.
+            onClick: async () => {
                 trackShare("facebook");
+                if (text) {
+                    try {
+                        await navigator.clipboard.writeText(text);
+                        toast.success("Caption copied — paste it into your Facebook post", { duration: 6000 });
+                    } catch { /* clipboard blocked — still open the sharer */ }
+                }
                 open(`https://www.facebook.com/sharer/sharer.php?u=${enc(socialUrl)}`);
             },
         },
@@ -76,8 +82,14 @@ export default function ShareButtons({
             label: "LinkedIn",
             icon: Linkedin,
             className: "bg-[#0A66C2] text-white hover:brightness-110",
-            onClick: () => {
+            onClick: async () => {
                 trackShare("linkedin");
+                if (text) {
+                    try {
+                        await navigator.clipboard.writeText(text);
+                        toast.success("Caption copied — paste it into your LinkedIn post", { duration: 6000 });
+                    } catch { /* clipboard blocked — still open the sharer */ }
+                }
                 open(`https://www.linkedin.com/sharing/share-offsite/?url=${enc(socialUrl)}`);
             },
         },
