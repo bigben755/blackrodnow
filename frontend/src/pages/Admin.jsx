@@ -525,9 +525,13 @@ export default function Admin() {
                                     <tr key={e.id} className="border-t border-border" data-testid={`admin-manage-event-row-${e.id}`}>
                                         <td className="px-4 py-3 font-medium">
                                             <Link to={`/events/${e.id}`} className="hover:text-primary">{e.title}</Link>
-                                            {e.recurrence && e.recurrence.freq && e.recurrence.freq !== "none" && (
+                                            {e.recurrence && ((e.recurrence.freq && e.recurrence.freq !== "none") || e.recurrence.extra_dates?.length > 0) && (
                                                 <span className="ml-2 inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-secondary/25 text-secondary-foreground text-[9px] font-black uppercase tracking-wider">
-                                                    Repeats {e.recurrence.freq}
+                                                    {e.recurrence.freq === "monthly_weekday"
+                                                        ? "Repeats monthly (same weekday)"
+                                                        : e.recurrence.freq && e.recurrence.freq !== "none"
+                                                            ? `Repeats ${e.recurrence.interval > 1 ? `every ${e.recurrence.interval} ` : ""}${e.recurrence.freq}`
+                                                            : `+${e.recurrence.extra_dates.length} extra date${e.recurrence.extra_dates.length > 1 ? "s" : ""}`}
                                                 </span>
                                             )}
                                             <div className="text-[11px] text-muted-foreground truncate">
@@ -1819,7 +1823,7 @@ function QuickAddContentCard({ orgs, onCreated }) {
         accessibility: "", booking: "",
         contactEmail: "", contactPhone: "", image: "",
         status: "approved",
-        recurrenceFreq: "none", recurrenceUntil: "",
+        recurrenceFreq: "none", recurrenceUntil: "", recurrenceInterval: 1, recurrenceExtraDates: [],
     });
     const [feedForm, setFeedForm] = useState({
         orgSlug: firstOrgSlug, type: "update", title: "", body: "", image: "",
@@ -1873,7 +1877,10 @@ function QuickAddContentCard({ orgs, onCreated }) {
                 contactPhone: eventForm.contactPhone,
                 image: eventForm.image || "https://images.unsplash.com/photo-1533174072545-7a4b6ad7a6c3?w=1200&q=80",
                 status: eventForm.status,
-                recurrence: buildRecurrencePayload(eventForm.recurrenceFreq, eventForm.recurrenceUntil),
+                recurrence: buildRecurrencePayload(eventForm.recurrenceFreq, eventForm.recurrenceUntil, {
+                    interval: eventForm.recurrenceInterval,
+                    extraDates: eventForm.recurrenceExtraDates,
+                }),
             });
             toast.success("Event published");
             setEventForm((prev) => ({
@@ -1882,7 +1889,7 @@ function QuickAddContentCard({ orgs, onCreated }) {
                 venue: "", address: "", description: "",
                 accessibility: "", booking: "", contactEmail: "",
                 contactPhone: "", image: "",
-                recurrenceFreq: "none", recurrenceUntil: "",
+                recurrenceFreq: "none", recurrenceUntil: "", recurrenceInterval: 1, recurrenceExtraDates: [],
             }));
             setEventOpen(false);
             onCreated?.();
@@ -2113,8 +2120,13 @@ function QuickAddContentCard({ orgs, onCreated }) {
                             <RecurrenceFields
                                 freq={eventForm.recurrenceFreq}
                                 until={eventForm.recurrenceUntil}
+                                interval={eventForm.recurrenceInterval}
+                                extraDates={eventForm.recurrenceExtraDates}
                                 onFreqChange={(v) => setEventForm((p) => ({ ...p, recurrenceFreq: v }))}
                                 onUntilChange={(v) => setEventForm((p) => ({ ...p, recurrenceUntil: v }))}
+                                onIntervalChange={(v) => setEventForm((p) => ({ ...p, recurrenceInterval: v }))}
+                                onExtraDatesChange={(v) => setEventForm((p) => ({ ...p, recurrenceExtraDates: v }))}
+                                startDate={eventForm.date}
                                 testIdPrefix="qc-ev-recurrence"
                                 inputClassName={inp}
                             />

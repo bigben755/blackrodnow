@@ -576,10 +576,12 @@ class Organisation(BaseModel):
 
 
 class EventRecurrence(BaseModel):
-    """Simple daily / weekly / biweekly / monthly / annually recurrence with an end cap."""
-    freq: Literal["none", "daily", "weekly", "biweekly", "monthly", "annually"] = "none"
+    """Recurrence with optional custom interval, nth-weekday-of-month mode and extra one-off dates."""
+    freq: Literal["none", "daily", "weekly", "biweekly", "monthly", "monthly_weekday", "annually"] = "none"
+    interval: Optional[int] = None  # every N units (1-12) for daily/weekly/monthly/monthly_weekday
     until: Optional[str] = None  # ISO date/datetime — inclusive upper bound
     count: Optional[int] = None  # OR a maximum number of instances (capped at 60)
+    extra_dates: List[str] = []  # additional one-off YYYY-MM-DD dates the event also happens on
 
 
 class Event(BaseModel):
@@ -1190,12 +1192,26 @@ async def admin_impersonate_org(
 
 
 # ─────────── Events ───────────
+def _nth_weekday_of_month(year: int, month: int, weekday: int, nth: int, template: datetime) -> datetime:
+    """Date of the nth <weekday> in a month (falls back to the last occurrence),
+    keeping time-of-day/tz from `template`."""
+    first = template.replace(year=year, month=month, day=1)
+    offset = (weekday - first.weekday()) % 7
+    day = 1 + offset + (nth - 1) * 7
+    days_in_month = ((first.replace(month=month % 12 + 1, year=year + (1 if month == 12 else 0), day=1)) - timedelta(days=1)).day
+    while day > days_in_month:
+        day -= 7
+    return first.replace(day=day)
+
+
 def _expand_recurring_event(ev: Dict[str, Any], horizon_days: int = 180) -> List[Dict[str, Any]]:
     """Return a list of virtual instances of a recurring event within
     `horizon_days` from now. The original event is included as instance #0.
     Non-recurring events are returned as-is."""
     rec = ev.get("recurrence")
-    if not rec or (rec.get("freq") or "none") == "none":
+    freq = (rec or {}).get("freq") or "none"
+    extra_dates = (rec or {}).get("extra_dates") or []
+    if not rec or (freq == "none" and not extra_dates):
         return [ev]
     try:
         start = datetime.fromisoformat((ev.get("start") or "").replace("Z", "+00:00"))
@@ -1203,40 +1219,70 @@ def _expand_recurring_event(ev: Dict[str, Any], horizon_days: int = 180) -> List
     except Exception:
         return [ev]
     duration = end - start
-    freq = rec.get("freq")
-    step = {
-        "daily": timedelta(days=1),
-        "weekly": timedelta(days=7),
-        "biweekly": timedelta(days=14),
-        "monthly": timedelta(days=30),  # approximation; MVP
-    }.get(freq)
-    if freq == "annually":
-        # Use ~365-day step; leap years drift by 1 day but MVP is fine.
-        step = timedelta(days=365)
-    if not step:
-        return [ev]
     horizon = datetime.now(timezone.utc) + timedelta(days=horizon_days)
+    if start.tzinfo is None:
+        horizon = horizon.replace(tzinfo=None)
     try:
         until = datetime.fromisoformat(rec.get("until").replace("Z", "+00:00")) if rec.get("until") else horizon
     except Exception:
         until = horizon
     upper = min(until, horizon)
     max_count = min(int(rec.get("count") or 60), 60)
+    try:
+        interval = max(1, min(int(rec.get("interval") or 1), 12))
+    except Exception:
+        interval = 1
+
+    occurrences: List[datetime] = []
+    base_days = {"daily": 1, "weekly": 7, "biweekly": 14, "monthly": 30, "annually": 365}.get(freq)
+    if base_days:
+        step = timedelta(days=base_days * interval)
+        cur, n = start, 0
+        while cur <= upper and n < max_count:
+            occurrences.append(cur)
+            cur += step
+            n += 1
+    elif freq == "monthly_weekday":
+        weekday = start.weekday()
+        nth = (start.day - 1) // 7 + 1
+        year, month = start.year, start.month
+        cur, n = start, 0
+        while cur <= upper and n < max_count:
+            occurrences.append(cur)
+            n += 1
+            total = year * 12 + (month - 1) + interval
+            year, month = total // 12, total % 12 + 1
+            try:
+                cur = _nth_weekday_of_month(year, month, weekday, nth, start)
+            except Exception:
+                break
+    else:
+        occurrences.append(start)
+
+    seen = {o.date() for o in occurrences}
+    for raw in extra_dates:
+        try:
+            d = datetime.fromisoformat(str(raw)[:10]).date()
+            occ = start.replace(year=d.year, month=d.month, day=d.day)
+        except Exception:
+            continue
+        if occ.date() in seen or occ > horizon:
+            continue
+        seen.add(occ.date())
+        occurrences.append(occ)
+    occurrences.sort()
+
     out: List[Dict[str, Any]] = []
-    cur = start
-    n = 0
-    while cur <= upper and n < max_count:
+    for occ in occurrences:
         instance = {**ev}
-        instance["start"] = cur.isoformat()
-        instance["end"] = (cur + duration).isoformat()
-        if n > 0:
-            instance["id"] = f"{ev['id']}__{cur.date().isoformat()}"
+        instance["start"] = occ.isoformat()
+        instance["end"] = (occ + duration).isoformat()
+        if occ != start:
+            instance["id"] = f"{ev['id']}__{occ.date().isoformat()}"
             instance["parent_id"] = ev["id"]
             instance["is_recurrence_instance"] = True
         out.append(instance)
-        cur += step
-        n += 1
-    return out
+    return out or [ev]
 
 
 @api.get("/events")

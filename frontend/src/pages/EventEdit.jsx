@@ -4,7 +4,7 @@ import { CATEGORIES } from "@/data/mockData";
 import { useNavigate, useParams, Link } from "react-router-dom";
 import { ArrowLeft, Calendar, Loader2, Save, ShieldCheck, Trash2 } from "lucide-react";
 import { toast } from "sonner";
-import RecurrenceFields from "@/components/RecurrenceFields";
+import RecurrenceFields, { buildRecurrencePayload } from "@/components/RecurrenceFields";
 import EventImageInput from "@/components/EventImageInput";
 
 /**
@@ -50,6 +50,8 @@ export default function EventEdit() {
             status: event.status || "pending",
             recurrenceFreq: event.recurrence?.freq || "none",
             recurrenceUntil: event.recurrence?.until ? String(event.recurrence.until).slice(0, 10) : "",
+            recurrenceInterval: event.recurrence?.interval || 1,
+            recurrenceExtraDates: (event.recurrence?.extra_dates || []).map((d) => String(d).slice(0, 10)),
         });
     }, [event]);
 
@@ -105,14 +107,10 @@ export default function EventEdit() {
                 contactEmail: form.contactEmail,
                 contactPhone: form.contactPhone,
                 image: form.image,
-                recurrence: form.recurrenceFreq && form.recurrenceFreq !== "none"
-                    ? {
-                        freq: form.recurrenceFreq,
-                        until: form.recurrenceUntil
-                            ? new Date(`${form.recurrenceUntil}T23:59:59`).toISOString()
-                            : null,
-                    }
-                    : null,
+                recurrence: buildRecurrencePayload(form.recurrenceFreq, form.recurrenceUntil, {
+                    interval: form.recurrenceInterval,
+                    extraDates: form.recurrenceExtraDates,
+                }),
                 ...(role === "admin" ? { status: form.status } : {}),
             }, event.orgSlug);
             toast.success("Event updated");
@@ -228,8 +226,13 @@ export default function EventEdit() {
                 <RecurrenceFields
                     freq={form.recurrenceFreq}
                     until={form.recurrenceUntil}
+                    interval={form.recurrenceInterval}
+                    extraDates={form.recurrenceExtraDates}
                     onFreqChange={(v) => setForm((f) => ({ ...f, recurrenceFreq: v }))}
                     onUntilChange={(v) => setForm((f) => ({ ...f, recurrenceUntil: v }))}
+                    onIntervalChange={(v) => setForm((f) => ({ ...f, recurrenceInterval: v }))}
+                    onExtraDatesChange={(v) => setForm((f) => ({ ...f, recurrenceExtraDates: v }))}
+                    startDate={form.date}
                     testIdPrefix="ee-recurrence"
                     inputClassName={inp}
                 />

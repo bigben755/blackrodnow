@@ -27,6 +27,8 @@ const initial = {
     image: "",
     recurrenceFreq: "none",
     recurrenceUntil: "",
+    recurrenceInterval: 1,
+    recurrenceExtraDates: [],
     consent: false,
 };
 
@@ -90,7 +92,10 @@ export default function SubmitEvent() {
                 contactEmail: form.contactEmail,
                 contactPhone: form.contactPhone,
                 image: form.image || "https://images.unsplash.com/photo-1533174072545-7a4b6ad7a6c3?w=1200&q=80",
-                recurrence: buildRecurrencePayload(form.recurrenceFreq, form.recurrenceUntil),
+                recurrence: buildRecurrencePayload(form.recurrenceFreq, form.recurrenceUntil, {
+                    interval: form.recurrenceInterval,
+                    extraDates: form.recurrenceExtraDates,
+                }),
             });
             localStorage.removeItem(DRAFT_KEY);
             setSubmitted(true);
@@ -225,8 +230,13 @@ export default function SubmitEvent() {
                 <RecurrenceFields
                     freq={form.recurrenceFreq}
                     until={form.recurrenceUntil}
+                    interval={form.recurrenceInterval}
+                    extraDates={form.recurrenceExtraDates}
                     onFreqChange={(v) => setForm((f) => ({ ...f, recurrenceFreq: v }))}
                     onUntilChange={(v) => setForm((f) => ({ ...f, recurrenceUntil: v }))}
+                    onIntervalChange={(v) => setForm((f) => ({ ...f, recurrenceInterval: v }))}
+                    onExtraDatesChange={(v) => setForm((f) => ({ ...f, recurrenceExtraDates: v }))}
+                    startDate={form.date}
                     testIdPrefix="se-recurrence"
                     inputClassName={inp}
                 />
