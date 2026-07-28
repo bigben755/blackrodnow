@@ -109,6 +109,7 @@ A modern community website for Blackrod, Bolton showcasing local events, clubs, 
   - Verified: 14/14 backend pytest + full frontend E2E (testing agent iteration_3)
 
 ## Implemented (June 2026)
+- **Poster travels with the post (Jun 2026).** PostNowDialog: "Share poster + caption" uses Web Share API Level 2 (`navigator.share({files})`) — on mobile opens native share sheet with the poster PNG + caption attached (button auto-hidden where unsupported via `navigator.canShare`). "Copy poster image" puts the PNG on the clipboard (`ClipboardItem`) for desktop paste-into-composer. Note: FB/LinkedIn web sharer URLs can never carry files (platform restriction) — these are the only compliant paths.
 - **Social sharing + poster fixes & XLSX template (Jun 2026).**
   - Poster 500 fixed: unicode event titles (’ —) broke the Content-Disposition header → `_safe_ascii_filename` sanitizes to ASCII.
   - Blank social posts fixed: `PUBLIC_URL` in backend/.env pointed to the preview domain, so production share links/OG/QR targeted preview. Now: `.env` PUBLIC_URL = https://blackrodnow.com AND social-bundle/poster/OG endpoints derive base URL from the request (`_abs_base_url`) so both environments generate correct links. OG page now supports recurring virtual instance ids.

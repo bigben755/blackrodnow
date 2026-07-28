@@ -2,7 +2,7 @@ import React, { useEffect, useState } from "react";
 import {
     Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription,
 } from "@/components/ui/dialog";
-import { Copy, Download, Loader2, Sparkles, RefreshCw, Rocket } from "lucide-react";
+import { Copy, Download, Loader2, Sparkles, RefreshCw, Rocket, Image as ImageIcon } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 import ShareButtons from "@/components/ShareButtons";
@@ -97,6 +97,42 @@ export default function PostNowDialog({ event, open, onOpenChange }) {
         } catch {
             // Fallback: open in a new tab
             window.open(url, "_blank");
+        }
+    };
+
+    const fetchPosterFile = async () => {
+        const res = await fetch(api.eventPosterPngUrl(event.id));
+        if (!res.ok) throw new Error("poster fetch failed");
+        const blob = await res.blob();
+        const safe = (event.title || "event").toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 40);
+        return new File([blob], `blackrod-now-${safe}.png`, { type: "image/png" });
+    };
+
+    const canNativeFileShare =
+        typeof navigator !== "undefined" && !!navigator.canShare && !!navigator.share;
+
+    const sharePosterNative = async () => {
+        if (!event?.id) return;
+        try {
+            const file = await fetchPosterFile();
+            if (navigator.canShare({ files: [file] })) {
+                await navigator.share({ files: [file], text: caption, title: event?.title });
+            } else {
+                toast.info("This device can't attach files to shares — use \"Copy poster image\" and paste it into your post instead.");
+            }
+        } catch (err) {
+            if (err?.name !== "AbortError") toast.error("Couldn't open the share sheet");
+        }
+    };
+
+    const copyPosterImage = async () => {
+        if (!event?.id) return;
+        try {
+            const file = await fetchPosterFile();
+            await navigator.clipboard.write([new window.ClipboardItem({ "image/png": file })]);
+            toast.success("Poster image copied — paste (Ctrl/Cmd+V) into your post", { duration: 6000 });
+        } catch {
+            toast.error("Couldn't copy the image — use the PNG download instead");
         }
     };
 
@@ -249,6 +285,26 @@ export default function PostNowDialog({ event, open, onOpenChange }) {
                             <div className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground mb-2">
                                 Post to socials
                             </div>
+                            <div className="mb-3 flex flex-wrap gap-2">
+                                {canNativeFileShare && (
+                                    <button
+                                        type="button"
+                                        data-testid="post-now-share-with-poster"
+                                        onClick={sharePosterNative}
+                                        className="inline-flex items-center gap-1.5 px-4 py-2 rounded-full bg-foreground text-background text-xs font-bold hover:brightness-110"
+                                    >
+                                        <Rocket className="h-3.5 w-3.5" /> Share poster + caption
+                                    </button>
+                                )}
+                                <button
+                                    type="button"
+                                    data-testid="post-now-copy-poster-image"
+                                    onClick={copyPosterImage}
+                                    className="inline-flex items-center gap-1.5 px-4 py-2 rounded-full border border-border text-xs font-semibold hover:bg-muted"
+                                >
+                                    <ImageIcon className="h-3.5 w-3.5" /> Copy poster image
+                                </button>
+                            </div>
                             <ShareButtons
                                 text={caption}
                                 url={link}
@@ -269,10 +325,11 @@ export default function PostNowDialog({ event, open, onOpenChange }) {
                                 }}
                             />
                             <p className="mt-2 text-[11px] text-muted-foreground">
-                                Facebook / LinkedIn / X / WhatsApp: opens the composer
-                                with your caption + rich link preview attached.
-                                Instagram: taps to copy caption — paste after uploading
-                                the poster PNG.
+                                On your phone, "Share poster + caption" opens the native share
+                                sheet with the image attached — pick Facebook, WhatsApp or
+                                Instagram and post. On desktop, "Copy poster image" +
+                                "Copy caption" makes it a two-paste job. Facebook / LinkedIn
+                                buttons auto-copy the caption and attach a rich link preview.
                             </p>
                         </div>
                     </div>
