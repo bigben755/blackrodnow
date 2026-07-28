@@ -6,7 +6,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from pathlib import Path
 from pydantic import BaseModel, EmailStr, Field, ConfigDict
 from typing import List, Optional, Literal, Any, Dict
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone, timedelta, date as date_cls, time as time_cls
 from collections import Counter, defaultdict
 from difflib import SequenceMatcher
 import os
@@ -3742,6 +3742,10 @@ class ParsedItem(BaseModel):
     recurrence_weekday: Optional[str] = None  # e.g. "Monday" (informational)
     recurrence_confidence: Optional[float] = None
     recurrence_raw_text: Optional[str] = None
+    # Extra structured fields (filled by the spreadsheet row parser)
+    cost: Optional[str] = None
+    booking: Optional[str] = None
+    url: Optional[str] = None
 
 
 class ParsedDocument(BaseModel):
@@ -3873,28 +3877,26 @@ def _extract_iso_date(text: str) -> tuple[Optional[str], Optional[str], Optional
 
 def _extract_hhmm_times(text: str) -> tuple[Optional[str], Optional[str], Optional[str], Optional[float]]:
     # 11am-4pm / 11:30am to 1pm / 10:00-12:30
-    m = re.search(
+    for m in re.finditer(
         r"\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*(?:-|–|—|to)\s*"
         r"(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b",
         text,
         re.I,
-    )
-    if m:
+    ):
         # Avoid treating date-like numeric spans (e.g. 16-07-26) as time ranges.
         if not any([m.group(2), m.group(3), m.group(5), m.group(6)]):
-            m = None
-        else:
-            h1 = int(m.group(1))
-            mm1 = int(m.group(2) or "0")
-            ampm1 = m.group(3)
-            h2 = int(m.group(4))
-            mm2 = int(m.group(5) or "0")
-            ampm2 = m.group(6)
-            if not ampm1 and ampm2:
-                ampm1 = ampm2
-            start = _format_hhmm(h1, mm1, ampm1)
-            end = _format_hhmm(h2, mm2, ampm2)
-            return start, end, m.group(0), 0.9 if (ampm1 or ampm2) else 0.8
+            continue
+        h1 = int(m.group(1))
+        mm1 = int(m.group(2) or "0")
+        ampm1 = m.group(3)
+        h2 = int(m.group(4))
+        mm2 = int(m.group(5) or "0")
+        ampm2 = m.group(6)
+        if not ampm1 and ampm2:
+            ampm1 = ampm2
+        start = _format_hhmm(h1, mm1, ampm1)
+        end = _format_hhmm(h2, mm2, ampm2)
+        return start, end, m.group(0), 0.9 if (ampm1 or ampm2) else 0.8
 
     # 24h range: 10:00-12:30
     m = re.search(r"\b([01]?\d|2[0-3]):([0-5]\d)\s*(?:-|–|—|to)\s*([01]?\d|2[0-3]):([0-5]\d)\b", text)
@@ -4390,6 +4392,169 @@ def _fallback_document_classify(filename: str, text: str, orgs: list[dict], even
     return [base]
 
 
+# ─────────── Structured spreadsheet (columns → events) ───────────
+SITE_CATEGORIES = [
+    "Family", "Youth", "Sport", "School", "Charity", "Business", "Community",
+    "Music", "Food & Drink", "Volunteering", "Faith", "Heritage", "Health & Wellbeing",
+]
+
+SPREADSHEET_HEADERS = {
+    "organisation": {"organisation", "organization", "org", "group", "club", "host", "provider", "organiser", "organizer"},
+    "title": {"title", "event", "eventtitle", "eventname", "name", "activity", "whatson"},
+    "date": {"date", "dates", "eventdate", "startdate", "day", "when"},
+    "time": {"time", "times", "timings", "starttime", "timeslot"},
+    "venue": {"venue", "location", "where", "address", "place"},
+    "category": {"category", "categories", "type", "cat"},
+    "fee": {"fee", "fees", "cost", "price", "charge", "entry", "entryfee", "admission"},
+    "url": {"url", "link", "website", "web", "webpage", "moreinfo", "infolink"},
+    "booking": {"booking", "bookinginfo", "bookinginformation", "howtobook", "tickets", "bookinglink", "bookingurl"},
+}
+
+
+def _cell_to_str(cell) -> str:
+    if cell is None:
+        return ""
+    if isinstance(cell, datetime):
+        if (cell.hour, cell.minute) != (0, 0):
+            return f"{cell.date().isoformat()} {cell.strftime('%H:%M')}"
+        return cell.date().isoformat()
+    if isinstance(cell, time_cls):
+        return cell.strftime("%H:%M")
+    if isinstance(cell, date_cls):
+        return cell.isoformat()
+    return str(cell).strip()
+
+
+def _spreadsheet_rows(filename: str, data: bytes) -> list[list[str]]:
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    if ext == "csv":
+        sample = data.decode("utf-8", errors="ignore")
+        return [[(c or "").strip() for c in row] for row in csv.reader(sample.splitlines())]
+    from openpyxl import load_workbook
+
+    wb = load_workbook(BytesIO(data), read_only=True, data_only=True)
+    rows: list[list[str]] = []
+    for sheet in wb.worksheets:
+        for row in sheet.iter_rows(values_only=True):
+            rows.append([_cell_to_str(c) for c in row])
+    return rows
+
+
+def _detect_header_map(rows: list[list[str]]) -> tuple[Optional[int], Optional[dict]]:
+    for idx, row in enumerate(rows[:10]):
+        mapping: dict[str, int] = {}
+        for col, cell in enumerate(row):
+            key = re.sub(r"[^a-z]", "", (cell or "").lower())
+            if not key:
+                continue
+            for field, synonyms in SPREADSHEET_HEADERS.items():
+                if key in synonyms and field not in mapping:
+                    mapping[field] = col
+        if "title" in mapping and ("date" in mapping or "organisation" in mapping) and len(mapping) >= 3:
+            return idx, mapping
+    return None, None
+
+
+def _try_structured_spreadsheet(filename: str, data: bytes, orgs: list[dict], events: list[dict]) -> Optional[ParsedDocument]:
+    """Deterministic row-per-event parse for spreadsheets with recognised column
+    headers (Organisation, Title, Date, Time/s, Venue, Category, Fee, URL,
+    Booking info). Returns None when no header row is found so the caller can
+    fall back to the AI text pipeline."""
+    try:
+        rows = _spreadsheet_rows(filename, data)
+    except Exception:
+        return None
+    header_idx, mapping = _detect_header_map(rows)
+    if mapping is None:
+        return None
+
+    items: list[ParsedItem] = []
+    skipped = 0
+    for row in rows[header_idx + 1:]:
+        def get(field: str) -> str:
+            col = mapping.get(field)
+            if col is None or col >= len(row):
+                return ""
+            return (row[col] or "").strip()
+
+        title = get("title")
+        if not title:
+            if any((c or "").strip() for c in row):
+                skipped += 1
+            continue
+        org_name = get("organisation")
+        date_raw = get("date")
+        time_raw = get("time")
+        venue = get("venue")
+        category_raw = get("category")
+        fee = get("fee")
+        url = get("url")
+        booking = get("booking")
+
+        category = "Community"
+        if category_raw:
+            cat_match, cat_score = _best_match(category_raw, [{"name": c} for c in SITE_CATEGORIES], "name")
+            if cat_match and cat_score >= 0.6:
+                category = cat_match["name"]
+
+        desc_parts = [p for p in [
+            f"{title} at {venue}." if venue else f"{title}.",
+            f"Organised by {org_name}." if org_name else "",
+            f"Cost: {fee}." if fee else "",
+            f"Booking: {booking}" if booking else "",
+            f"More info: {url}" if url else "",
+        ] if p]
+
+        item = ParsedItem(
+            suggested_type="event",
+            action="new_event",
+            title=title,
+            date=date_raw or None,
+            start_time=time_raw or None,
+            location=venue or None,
+            category=category,
+            description=" ".join(desc_parts),
+            social_caption=f"📣 {title} — happening in Blackrod. More on Blackrod Now.",
+            notification_text=f"New on Blackrod Now: {title}",
+            confidence=0.9,
+            cost=fee or None,
+            booking=booking or None,
+            url=url or None,
+        )
+        if org_name:
+            org_match, org_score = _best_match(org_name, orgs, "name")
+            if org_match and org_score >= 0.8:
+                item = item.model_copy(update={
+                    "matched_org_slug": org_match.get("slug"),
+                    "matched_org_name": org_match.get("name"),
+                    "entity_confidence": round(org_score, 2),
+                })
+        ev_match, ev_score = _best_match(title, events, "title")
+        if ev_match and ev_score >= 0.85:
+            item = item.model_copy(update={
+                "action": "update_event",
+                "matched_event_id": ev_match.get("id"),
+                "matched_event_title": ev_match.get("title"),
+            })
+        row_text = " | ".join([c for c in row if c])
+        items.append(_normalize_parsed_item(item, row_text))
+        if len(items) >= 100:
+            break
+
+    if not items:
+        return None
+    warnings = [f"Structured spreadsheet detected — parsed {len(items)} event row{'s' if len(items) != 1 else ''} from columns"]
+    if skipped:
+        warnings.append(f"Skipped {skipped} row{'s' if skipped != 1 else ''} with no title")
+    return ParsedDocument(
+        filename=filename,
+        source_type="spreadsheet",
+        text_excerpt=_clean_text_excerpt(" | ".join(rows[header_idx])),
+        warnings=warnings,
+        items=items,
+    )
+
+
 async def _parse_text_to_response(text: str, hint: Optional[str] = None) -> ParseResponse:
     if not text or not text.strip():
         raise HTTPException(400, "Text required")
@@ -4572,6 +4737,12 @@ async def _admin_parse_documents(
         if not data:
             documents.append(ParsedDocument(filename=filename, source_type="empty", text_excerpt="", warnings=["Empty file"], items=[_fallback_parse("")]))
             continue
+        ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+        if ext in {"xlsx", "csv"}:
+            structured = await asyncio.to_thread(_try_structured_spreadsheet, filename, data, orgs, events)
+            if structured:
+                documents.append(structured)
+                continue
         extraction_timeout = max(1, min(BULK_PARSE_EXTRACTION_TIMEOUT_SECONDS, int(max(1, remaining - BULK_PARSE_TIMEOUT_SAFETY_SECONDS))))
         try:
             text, source_type, warnings = await asyncio.wait_for(
