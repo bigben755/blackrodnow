@@ -24,6 +24,7 @@ import {
     Sparkles,
 } from "lucide-react";
 import { toast } from "sonner";
+import SeoJsonLd, { organizationJsonLd } from "@/components/SeoJsonLd";
 import {
     Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
 } from "@/components/ui/dialog";
@@ -158,6 +159,7 @@ export default function OrganisationDetail() {
 
     return (
         <div data-testid={`org-detail-${org.slug}`} className="">
+            <SeoJsonLd id="org" data={organizationJsonLd(org, typeof window !== "undefined" ? window.location.href : "")} />
             {/* Header banner */}
             <div
                 className="relative h-56 sm:h-72 overflow-hidden"

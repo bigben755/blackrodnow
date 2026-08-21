@@ -7989,6 +7989,30 @@ async def admin_check_entity(req: AdminCheckReq):
     return result
 
 
+@api.get("/sitemap.xml")
+async def sitemap_xml(request: Request):
+    base = _abs_base_url(request)
+    static_paths = ["", "/events", "/organisations", "/volunteering", "/venues", "/local-feed", "/submit-event", "/submit-events-list", "/contact", "/faq"]
+    urls: list[str] = [f"<url><loc>{base}{p}</loc><changefreq>daily</changefreq></url>" for p in static_paths]
+    horizon = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+    events = await db.events.find(
+        {"status": "approved"}, {"_id": 0, "id": 1, "start": 1, "recurrence": 1}
+    ).to_list(2000)
+    for e in events:
+        rec = e.get("recurrence") or {}
+        if (e.get("start") or "") < horizon and (rec.get("freq") or "none") == "none" and not rec.get("extra_dates"):
+            continue
+        urls.append(f"<url><loc>{base}/events/{e['id']}</loc><changefreq>weekly</changefreq></url>")
+    orgs = await db.orgs.find({"status": {"$ne": "pending"}}, {"_id": 0, "slug": 1}).to_list(500)
+    for o in orgs:
+        urls.append(f"<url><loc>{base}/organisations/{o['slug']}</loc><changefreq>weekly</changefreq></url>")
+    xml = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">' + "".join(urls) + "</urlset>"
+    )
+    return Response(content=xml, media_type="application/xml", headers={"Cache-Control": "public, max-age=3600"})
+
+
 @api.get("/admin/documents/template.docx")
 async def bulk_import_word_template():
     """Blank Word template matching the labeled-block parser's format."""

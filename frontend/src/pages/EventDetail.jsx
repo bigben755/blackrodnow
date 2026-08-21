@@ -27,6 +27,7 @@ import {
     Rocket,
 } from "lucide-react";
 import { toast } from "sonner";
+import SeoJsonLd, { eventJsonLd } from "@/components/SeoJsonLd";
 
 const SITE_NAME = "RodLife";
 
@@ -281,6 +282,7 @@ export default function EventDetail() {
             data-testid={`event-detail-${event.id}`}
             className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-10"
         >
+            <SeoJsonLd id="event" data={eventJsonLd(event, org, eventUrl, eventImage)} />
             <script
                 type="application/ld+json"
                 dangerouslySetInnerHTML={{
