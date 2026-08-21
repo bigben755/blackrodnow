@@ -7,6 +7,7 @@ import ShareButtons from "@/components/ShareButtons";
 import PostNowDialog from "@/components/PostNowDialog";
 import { ReportButton } from "@/components/ReportButton";
 import { API, api } from "@/lib/api";
+import { resolveEventImage } from "@/lib/eventCategoryImage";
 import {
     CalendarDays,
     MapPin,
@@ -207,6 +208,7 @@ export default function EventDetail() {
     const location = [event.venue, event.address].filter(Boolean).join(", ");
     const facebookPost = buildFacebookPost(event, eventUrl, org);
     const saved = isEventSaved?.(event.id);
+    const eventImage = resolveEventImage(event);
 
     const shareNative = async () => {
         try {
@@ -225,14 +227,9 @@ export default function EventDetail() {
     };
 
     const downloadPoster = async () => {
-        if (!event.image) {
-            toast.info("No event poster is available for this event yet.");
-            return;
-        }
-
-        const imageUrl = event.image.startsWith("http")
-            ? event.image
-            : `${SITE_ORIGIN}${event.image}`;
+        const imageUrl = eventImage.startsWith("http")
+            ? eventImage
+            : `${SITE_ORIGIN}${eventImage}`;
 
         await copyToClipboard(imageUrl, "Poster image link copied");
     };
@@ -246,10 +243,10 @@ export default function EventDetail() {
         endDate: new Date(event.end).toISOString(),
         eventStatus: "https://schema.org/EventScheduled",
         eventAttendanceMode: "https://schema.org/OfflineEventAttendanceMode",
-        image: event.image
-            ? event.image.startsWith("http")
-                ? event.image
-                : `${SITE_ORIGIN}${event.image}`
+        image: eventImage
+            ? eventImage.startsWith("http")
+                ? eventImage
+                : `${SITE_ORIGIN}${eventImage}`
             : undefined,
         url: eventUrl,
         location: {
@@ -300,13 +297,11 @@ export default function EventDetail() {
 
             <div className="rounded-3xl overflow-hidden border border-border bg-surface">
                 <div className="relative aspect-[16/8] bg-muted overflow-hidden">
-                    {event.image && (
-                        <img
-                            src={event.image}
-                            alt={`${event.title} event poster`}
-                            className="absolute inset-0 h-full w-full object-cover"
-                        />
-                    )}
+                    <img
+                        src={eventImage}
+                        alt={`${event.title} event poster`}
+                        className="absolute inset-0 h-full w-full object-cover"
+                    />
 
                     <div className="absolute top-4 left-4 flex gap-2">
                         <CategoryBadge category={event.category} />

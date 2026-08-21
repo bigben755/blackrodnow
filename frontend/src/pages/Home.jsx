@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { useApp } from "@/context/AppContext";
+import { api } from "@/lib/api";
 import { EventCard, OrgCard, VolunteerCard } from "@/components/Cards";
 import NewsletterSection from "@/components/NewsletterSection";
 import {
@@ -8,15 +9,17 @@ import {
     Sparkles,
     Coffee,
     Heart,
+    CalendarDays,
+    Building2,
+    HandHelping,
+    Rocket,
 } from "lucide-react";
 import { toast } from "sonner";
 
 const COMMUNITY_IMAGES = {
-    hero: "https://images.unsplash.com/photo-1511632765486-a01980e01a18?auto=format&fit=crop&w=1200&q=80",
-    familyEvent: "https://images.unsplash.com/photo-1503454537195-1dcabb73ffb9?auto=format&fit=crop&w=900&q=80",
-    localMarket: "https://images.unsplash.com/photo-1488459716781-31db52582fe9?auto=format&fit=crop&w=1200&q=80",
-    volunteers: "https://images.unsplash.com/photo-1559027615-cd4628902d4a?auto=format&fit=crop&w=1200&q=80",
-    localBusiness: "https://images.unsplash.com/photo-1445116572660-236099ec97a0?auto=format&fit=crop&w=1200&q=80",
+    hero: "/blackrod (1).jpg",
+    familyEvent: "/blackrod (2).jpg",
+    localMarket: "/blackrod (3).jpg",
 };
 
 const HERO_SEQUENCE = [
@@ -27,8 +30,7 @@ const HERO_SEQUENCE = [
 ];
 
 export default function Home() {
-    const { events, orgs, volunteerOpps, stats, ready, savedEventIds } = useApp();
-    const subscribers = stats?.subscribers || 0;
+    const { events, orgs, volunteerOpps, ready, savedEventIds } = useApp();
     const [headlineStep, setHeadlineStep] = useState(0);
     const [activeFeed, setActiveFeed] = useState("on");
     const [previousSeenEventIds, setPreviousSeenEventIds] = useState([]);
@@ -175,8 +177,8 @@ export default function Home() {
             <section className="relative overflow-hidden border-b border-border">
                 <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-12 pb-20 lg:pt-20 lg:pb-28 grid lg:grid-cols-12 gap-10 items-center">
                     <div className="lg:col-span-7 fade-in-up">
-                        <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-secondary text-secondary-foreground text-[11px] font-bold tracking-wider uppercase mb-6">
-                            <Sparkles className="h-3.5 w-3.5" /> Made possible by the Community Alliance Fund
+                        <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-primary/10 text-primary text-[11px] font-bold tracking-wider uppercase mb-6">
+                            <Rocket className="h-3.5 w-3.5" /> Launching soon — get listed now
                         </div>
 
                         <h1 className="font-display font-black tracking-tight text-5xl sm:text-6xl lg:text-7xl leading-[0.95] text-foreground">
@@ -208,7 +210,8 @@ export default function Home() {
 
                         <p className="mt-6 max-w-xl text-base sm:text-lg text-muted-foreground leading-relaxed">
                             Blackrod Now brings together local events, groups, clubs, schools, businesses and
-                            community projects in one easy-to-use digital space.
+                            community projects in one easy-to-use digital space — and we&apos;re almost ready
+                            to go live.
                         </p>
 
                         <div className="mt-8 flex flex-wrap gap-3">
@@ -253,15 +256,6 @@ export default function Home() {
                                 </div>
                                 <div className="uppercase tracking-wider">Organisations</div>
                             </div>
-
-                            <div className="h-8 w-px bg-border" />
-
-                            <div>
-                                <div className="font-display font-bold text-2xl text-foreground">
-                                    {subscribers}
-                                </div>
-                                <div className="uppercase tracking-wider">Locals subscribed</div>
-                            </div>
                         </div>
                     </div>
 
@@ -299,6 +293,90 @@ export default function Home() {
                                 className="h-full w-full object-cover"
                             />
                         </div>
+                    </div>
+                </div>
+            </section>
+
+            {/* PRE-LAUNCH ORG REGISTRATION BANNER */}
+            <section className="border-b border-border bg-surface">
+                <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-14 sm:py-18">
+                    <div className="text-center mb-10">
+                        <span className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-primary/10 text-primary text-[11px] font-bold tracking-wider uppercase mb-4">
+                            <Rocket className="h-3.5 w-3.5" /> We&apos;re almost live
+                        </span>
+                        <h2 className="font-display font-black text-3xl sm:text-4xl tracking-tight">
+                            Is your organisation ready to be found?
+                        </h2>
+                        <p className="mt-3 text-base text-muted-foreground max-w-2xl mx-auto">
+                            Register now so you&apos;re visible from day one. Whether you run events, have
+                            space to hire out, or need local volunteers — Blackrod Now is your free
+                            community platform.
+                        </p>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-5 mb-10">
+                        <div className="rounded-3xl border border-border bg-background p-6 flex flex-col gap-3">
+                            <div className="h-11 w-11 rounded-2xl bg-primary/10 flex items-center justify-center">
+                                <CalendarDays className="h-5 w-5 text-primary" />
+                            </div>
+                            <h3 className="font-display font-bold text-lg">You run events</h3>
+                            <p className="text-sm text-muted-foreground flex-1">
+                                Clubs, societies, sports groups, community associations — get your events
+                                in front of everyone in Blackrod automatically.
+                            </p>
+                            <Link
+                                to="/add-organisation"
+                                className="inline-flex items-center gap-1 text-sm font-semibold text-primary"
+                            >
+                                Register your group <ArrowRight className="h-4 w-4" />
+                            </Link>
+                        </div>
+
+                        <div className="rounded-3xl border border-border bg-background p-6 flex flex-col gap-3">
+                            <div className="h-11 w-11 rounded-2xl bg-accent/10 flex items-center justify-center">
+                                <Building2 className="h-5 w-5 text-accent" />
+                            </div>
+                            <h3 className="font-display font-bold text-lg">You hire out a venue</h3>
+                            <p className="text-sm text-muted-foreground flex-1">
+                                Halls, sports facilities, meeting rooms, outdoor spaces — list your venue
+                                so local organisers can find and book you.
+                            </p>
+                            <Link
+                                to="/add-organisation"
+                                className="inline-flex items-center gap-1 text-sm font-semibold text-accent"
+                            >
+                                List your venue <ArrowRight className="h-4 w-4" />
+                            </Link>
+                        </div>
+
+                        <div className="rounded-3xl border border-border bg-background p-6 flex flex-col gap-3">
+                            <div className="h-11 w-11 rounded-2xl bg-secondary/50 flex items-center justify-center">
+                                <HandHelping className="h-5 w-5 text-secondary-foreground" />
+                            </div>
+                            <h3 className="font-display font-bold text-lg">You need volunteers</h3>
+                            <p className="text-sm text-muted-foreground flex-1">
+                                Charities, community projects and local causes — post opportunities and
+                                connect with residents who want to give back.
+                            </p>
+                            <Link
+                                to="/add-organisation"
+                                className="inline-flex items-center gap-1 text-sm font-semibold text-foreground"
+                            >
+                                Post volunteer roles <ArrowRight className="h-4 w-4" />
+                            </Link>
+                        </div>
+                    </div>
+
+                    <div className="text-center">
+                        <Link
+                            to="/add-organisation"
+                            className="inline-flex items-center gap-2 px-7 py-3.5 rounded-full text-sm font-semibold bg-primary text-primary-foreground shadow-lg shadow-primary/30 hover:scale-105 active:scale-95 transition-transform"
+                        >
+                            <Sparkles className="h-4 w-4" /> Register your organisation — it&apos;s free
+                        </Link>
+                        <p className="mt-3 text-xs text-muted-foreground">
+                            Already listed? <Link to="/organisations" className="underline underline-offset-2">Find your page</Link> and claim it.
+                        </p>
                     </div>
                 </div>
             </section>
@@ -447,11 +525,15 @@ export default function Home() {
                     className="rounded-3xl border border-border bg-surface overflow-hidden flex flex-col"
                 >
                     <div className="relative aspect-[16/9] overflow-hidden">
-                        <img
-                            src={COMMUNITY_IMAGES.volunteers}
-                            alt="Local volunteers working together in the community"
-                            className="absolute inset-0 h-full w-full object-cover"
-                        />
+                        {(spotlightOrg.cover_path || spotlightOrg.cover) ? (
+                            <img
+                                src={spotlightOrg.cover_path ? api.orgCoverUrl(spotlightOrg.slug, spotlightOrg.updated_at || "") : spotlightOrg.cover}
+                                alt={spotlightOrg.name}
+                                className="absolute inset-0 h-full w-full object-cover"
+                            />
+                        ) : (
+                            <div className="absolute inset-0" style={{ background: `linear-gradient(135deg, ${spotlightOrg.brandColor || "#0052FF"}CC, ${spotlightOrg.brandColor || "#0052FF"}44)` }} />
+                        )}
 
                         <span className="absolute top-4 left-4 px-3 py-1 rounded-full bg-accent text-accent-foreground text-[10px] font-bold tracking-wider uppercase">
                             Community Spotlight
@@ -476,11 +558,15 @@ export default function Home() {
                     className="rounded-3xl border border-border bg-surface overflow-hidden flex flex-col"
                 >
                     <div className="relative aspect-[16/9] overflow-hidden">
-                        <img
-                            src={COMMUNITY_IMAGES.localBusiness}
-                            alt="Independent local business serving the community"
-                            className="absolute inset-0 h-full w-full object-cover"
-                        />
+                        {(featuredBusiness.cover_path || featuredBusiness.cover) ? (
+                            <img
+                                src={featuredBusiness.cover_path ? api.orgCoverUrl(featuredBusiness.slug, featuredBusiness.updated_at || "") : featuredBusiness.cover}
+                                alt={featuredBusiness.name}
+                                className="absolute inset-0 h-full w-full object-cover"
+                            />
+                        ) : (
+                            <div className="absolute inset-0" style={{ background: `linear-gradient(135deg, ${featuredBusiness.brandColor || "#0052FF"}CC, ${featuredBusiness.brandColor || "#0052FF"}44)` }} />
+                        )}
 
                         <span className="absolute top-4 left-4 px-3 py-1 rounded-full bg-secondary text-secondary-foreground text-[10px] font-bold tracking-wider uppercase inline-flex items-center gap-1">
                             <Coffee className="h-3 w-3" /> Local Business

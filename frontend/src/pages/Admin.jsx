@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { useApp } from "@/context/AppContext";
 import { api, API } from "@/lib/api";
@@ -6,7 +6,7 @@ import { Stat, CategoryBadge, formatDate, formatTime } from "@/components/Cards"
 import {
     CalendarDays, Building2, Inbox, Users, Star, Check, X, Trash2, BarChart3, Mail,
     Send, Edit3, Eye, MessageSquare, Bell, Pencil, UploadCloud, FileText, Sparkles, RefreshCw, Newspaper, HandHeart,
-    LogIn, MapPin,
+    LogIn, MapPin, ShieldCheck, Archive, PauseCircle, UserPlus, Link2, Search,
 } from "lucide-react";
 import { toast } from "sonner";
 import { useNavigate } from "react-router-dom";
@@ -14,7 +14,6 @@ import EventImageInput from "@/components/EventImageInput";
 import {
     Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter,
 } from "@/components/ui/dialog";
-import AdminEmailCompose from "@/components/AdminEmailCompose";
 import RecurrenceFields, { buildRecurrencePayload } from "@/components/RecurrenceFields";
 
 export default function Admin() {
@@ -28,12 +27,24 @@ export default function Admin() {
     } = useApp();
 
     const [requests, setRequests] = useState([]);
+    const [requestNotes, setRequestNotes] = useState({});
     const [queueFilter, setQueueFilter] = useState(() => localStorage.getItem("rn-admin-queue-filter") || "all");
     const [query, setQuery] = useState(() => localStorage.getItem("rn-admin-queue-query") || "");
     const [selectedEventIds, setSelectedEventIds] = useState([]);
     const [selectedOrgSlugs, setSelectedOrgSlugs] = useState([]);
     const [selectedRequestIds, setSelectedRequestIds] = useState([]);
     const [activeTarget, setActiveTarget] = useState(null);
+    const [attention, setAttention] = useState({ counts: {}, attention: {} });
+    const [orgsWithoutAdmins, setOrgsWithoutAdmins] = useState([]);
+    const [claimInvites, setClaimInvites] = useState([]);
+    const [userOverview, setUserOverview] = useState({ users: [], pending_invites: 0, pending_claims: 0, pending_member_invites: 0 });
+    const [memberInvites, setMemberInvites] = useState([]);
+    const [memberOrgSlug, setMemberOrgSlug] = useState("");
+    const [memberRoster, setMemberRoster] = useState({ members: [], invites: [] });
+    const [auditRows, setAuditRows] = useState([]);
+    const [userSearch, setUserSearch] = useState("");
+    const [taxonomy, setTaxonomy] = useState({ event_categories: [], organisation_categories: [] });
+    const [taxonomyBusy, setTaxonomyBusy] = useState(false);
     const navigate = useNavigate();
 
     const loginAsOrg = async (slug, name) => {
@@ -59,6 +70,49 @@ export default function Admin() {
     useEffect(() => {
         api.orgEditRequests("pending").then(setRequests).catch(() => setRequests([]));
     }, []);
+
+    useEffect(() => {
+        if (!memberOrgSlug && orgs.length) {
+            const first = orgs.find((o) => o.status !== "rejected") || orgs[0];
+            if (first?.slug) setMemberOrgSlug(first.slug);
+        }
+    }, [orgs, memberOrgSlug]);
+
+    useEffect(() => {
+        if (!memberOrgSlug) {
+            setMemberRoster({ members: [], invites: [] });
+            return;
+        }
+        api.adminOrgMembers(memberOrgSlug)
+            .then((data) => setMemberRoster(data || { members: [], invites: [] }))
+            .catch(() => setMemberRoster({ members: [], invites: [] }));
+    }, [memberOrgSlug]);
+
+    useEffect(() => {
+        const id = window.setTimeout(async () => {
+            try {
+                const [attentionData, orphanOrgs, invites, usersData, taxonomyData, auditData, memberInvitesData] = await Promise.all([
+                    api.adminEventsAttention().catch(() => ({ counts: {}, attention: {} })),
+                    api.adminOrgsWithoutAdmins().catch(() => []),
+                    api.adminOrgClaimInvites("pending").catch(() => []),
+                    api.adminUsersOverview(userSearch.trim()).catch(() => ({ users: [], pending_invites: 0, pending_claims: 0, pending_member_invites: 0 })),
+                    api.taxonomy().catch(() => ({ event_categories: [], organisation_categories: [] })),
+                    api.adminAuditLog(80).catch(() => []),
+                    api.adminMemberInvites("pending").catch(() => []),
+                ]);
+                setAttention(attentionData || { counts: {}, attention: {} });
+                setOrgsWithoutAdmins(orphanOrgs || []);
+                setClaimInvites(invites || []);
+                setUserOverview(usersData || { users: [], pending_invites: 0, pending_claims: 0, pending_member_invites: 0 });
+                setTaxonomy(taxonomyData || { event_categories: [], organisation_categories: [] });
+                setAuditRows(auditData || []);
+                setMemberInvites(memberInvitesData || []);
+            } catch {
+                // non-blocking for legacy admin sections
+            }
+        }, 250);
+        return () => window.clearTimeout(id);
+    }, [userSearch]);
 
     // Manage table shows the real event records only — virtual recurring
     // instances share the same parent record so editing/deleting a virtual
@@ -177,7 +231,7 @@ export default function Admin() {
     };
 
     const reviewRequest = async (id, status) => {
-        await api.reviewOrgEditRequest(id, { status });
+        await api.reviewOrgEditRequest(id, { status, reviewer_notes: requestNotes[id] || "" });
         setRequests((current) => current.filter((request) => request.id !== id));
         setSelectedRequestIds((current) => current.filter((value) => value !== id));
         await refresh();
@@ -220,6 +274,191 @@ export default function Admin() {
         }
     };
 
+    const refreshAdminControls = async () => {
+        const [attentionData, orphanOrgs, invites, usersData, taxonomyData, auditData, memberInvitesData, orgMembersData] = await Promise.all([
+            api.adminEventsAttention().catch(() => ({ counts: {}, attention: {} })),
+            api.adminOrgsWithoutAdmins().catch(() => []),
+            api.adminOrgClaimInvites("pending").catch(() => []),
+            api.adminUsersOverview(userSearch.trim()).catch(() => ({ users: [], pending_invites: 0, pending_claims: 0, pending_member_invites: 0 })),
+            api.taxonomy().catch(() => ({ event_categories: [], organisation_categories: [] })),
+            api.adminAuditLog(80).catch(() => []),
+            api.adminMemberInvites("pending").catch(() => []),
+            memberOrgSlug ? api.adminOrgMembers(memberOrgSlug).catch(() => ({ members: [], invites: [] })) : Promise.resolve({ members: [], invites: [] }),
+        ]);
+        setAttention(attentionData || { counts: {}, attention: {} });
+        setOrgsWithoutAdmins(orphanOrgs || []);
+        setClaimInvites(invites || []);
+        setUserOverview(usersData || { users: [], pending_invites: 0, pending_claims: 0, pending_member_invites: 0 });
+        setTaxonomy(taxonomyData || { event_categories: [], organisation_categories: [] });
+        setAuditRows(auditData || []);
+        setMemberInvites(memberInvitesData || []);
+        setMemberRoster(orgMembersData || { members: [], invites: [] });
+    };
+
+    const inviteOrgMember = async () => {
+        if (!memberOrgSlug) {
+            toast.error("Select an organisation first");
+            return;
+        }
+        const email = window.prompt("Member email:")?.trim().toLowerCase();
+        if (!email) return;
+        const roleValue = (window.prompt("Role (owner/admin/editor/viewer):", "editor") || "editor").trim().toLowerCase();
+        const role = ["owner", "admin", "editor", "viewer"].includes(roleValue) ? roleValue : "editor";
+        const note = window.prompt("Optional invitation note:", "") || "";
+        try {
+            await api.adminInviteOrgMember(memberOrgSlug, { email, role, note });
+            await refreshAdminControls();
+            toast.success(`Invitation sent to ${email}`);
+        } catch (error) {
+            toast.error(error?.response?.data?.detail || "Could not send member invite");
+        }
+    };
+
+    const resendMemberInvite = async (inviteId) => {
+        try {
+            await api.adminResendMemberInvite(inviteId);
+            await refreshAdminControls();
+            toast.success("Invitation resent");
+        } catch (error) {
+            toast.error(error?.response?.data?.detail || "Could not resend invite");
+        }
+    };
+
+    const resetMemberInvite = async (inviteId) => {
+        try {
+            await api.adminResetMemberInvite(inviteId);
+            await refreshAdminControls();
+            toast.success("Invitation reset and resent");
+        } catch (error) {
+            toast.error(error?.response?.data?.detail || "Could not reset invite");
+        }
+    };
+
+    const changeMemberRole = async (member) => {
+        const roleValue = (window.prompt(`Role for ${member.email} (owner/admin/editor/viewer):`, member.role || "editor") || "").trim().toLowerCase();
+        if (!roleValue) return;
+        const role = ["owner", "admin", "editor", "viewer"].includes(roleValue) ? roleValue : null;
+        if (!role) {
+            toast.error("Invalid role");
+            return;
+        }
+        try {
+            await api.adminSetOrgMemberRole(member.org_slug, member.id, { role });
+            await refreshAdminControls();
+            toast.success(`Role set to ${role}`);
+        } catch (error) {
+            toast.error(error?.response?.data?.detail || "Could not update role");
+        }
+    };
+
+    const toggleMemberSuspend = async (member) => {
+        const suspended = member.status === "active";
+        try {
+            await api.adminSuspendOrgMember(member.org_slug, member.id, { suspended });
+            await refreshAdminControls();
+            toast.success(suspended ? "Member suspended" : "Member reactivated");
+        } catch (error) {
+            toast.error(error?.response?.data?.detail || "Could not update member status");
+        }
+    };
+
+    const removeMember = async (member) => {
+        if (!window.confirm(`Remove ${member.email} from ${member.org_slug}?`)) return;
+        try {
+            await api.adminRemoveOrgMember(member.org_slug, member.id);
+            await refreshAdminControls();
+            toast.success("Member removed");
+        } catch (error) {
+            toast.error(error?.response?.data?.detail || "Could not remove member");
+        }
+    };
+
+    const runOrgLifecycle = async (slug, action) => {
+        try {
+            await api.adminOrgLifecycle(slug, { action });
+            await refresh();
+            await refreshAdminControls();
+            toast.success(`Organisation ${action}d`);
+        } catch (error) {
+            toast.error(error?.response?.data?.detail || "Action failed");
+        }
+    };
+
+    const inviteClaim = async (slug, orgName) => {
+        const email = window.prompt(`Send claim invitation for ${orgName} to email:`)?.trim().toLowerCase();
+        if (!email) return;
+        const note = window.prompt("Optional invitation note:", "");
+        try {
+            await api.adminInviteOrgClaim(slug, { email, note: note || "" });
+            await refreshAdminControls();
+            toast.success(`Invitation sent to ${email}`);
+        } catch (error) {
+            toast.error(error?.response?.data?.detail || "Could not send invitation");
+        }
+    };
+
+    const transferOwnership = async (slug, orgName) => {
+        const ownerEmail = window.prompt(`Transfer ownership of ${orgName} to email:`)?.trim().toLowerCase();
+        if (!ownerEmail) return;
+        try {
+            await api.adminTransferOrgOwnership(slug, { owner_email: ownerEmail, add_to_admins: true });
+            await refresh();
+            await refreshAdminControls();
+            toast.success(`Ownership transferred to ${ownerEmail}`);
+        } catch (error) {
+            toast.error(error?.response?.data?.detail || "Transfer failed");
+        }
+    };
+
+    const assignAdmins = async (slug, orgName) => {
+        const raw = window.prompt(`Assign admin emails for ${orgName} (comma-separated):`, "");
+        if (raw === null) return;
+        const emails = raw.split(",").map((v) => v.trim().toLowerCase()).filter(Boolean);
+        if (!emails.length) return;
+        try {
+            await api.adminAssignOrgAdmins(slug, { admin_emails: emails });
+            await refresh();
+            await refreshAdminControls();
+            toast.success(`Assigned ${emails.length} admin email(s)`);
+        } catch (error) {
+            toast.error(error?.response?.data?.detail || "Could not assign admins");
+        }
+    };
+
+    const mergeDuplicateOrgs = async () => {
+        const duplicate = window.prompt("Duplicate organisation slug to merge from:")?.trim();
+        if (!duplicate) return;
+        const primary = window.prompt("Primary organisation slug to merge into:")?.trim();
+        if (!primary) return;
+        if (duplicate === primary) {
+            toast.error("Primary and duplicate slugs must be different");
+            return;
+        }
+        try {
+            await api.adminMergeOrgs({ primary_slug: primary, duplicate_slug: duplicate, archive_duplicate: true });
+            await refresh();
+            await refreshAdminControls();
+            toast.success(`Merged ${duplicate} into ${primary}`);
+        } catch (error) {
+            toast.error(error?.response?.data?.detail || "Merge failed");
+        }
+    };
+
+    const saveTaxonomy = async () => {
+        setTaxonomyBusy(true);
+        try {
+            const event_categories = (taxonomy.event_categories || []).map((v) => v.trim()).filter(Boolean);
+            const organisation_categories = (taxonomy.organisation_categories || []).map((v) => v.trim()).filter(Boolean);
+            await api.updateTaxonomy({ event_categories, organisation_categories });
+            await refreshAdminControls();
+            toast.success("Taxonomy updated");
+        } catch (error) {
+            toast.error(error?.response?.data?.detail || "Could not update taxonomy");
+        } finally {
+            setTaxonomyBusy(false);
+        }
+    };
+
     return (
         <div data-testid="admin-page" className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
             <div className="flex items-end justify-between gap-3 mb-8">
@@ -239,6 +478,18 @@ export default function Admin() {
                     >
                         <BarChart3 className="h-3.5 w-3.5" /> Impact dashboard
                     </Link>
+                    <Link
+                        to="/admin/flyers"
+                        className="inline-flex items-center gap-1.5 px-4 py-2 rounded-full border border-border font-semibold text-xs"
+                    >
+                        Flyers
+                    </Link>
+                    <Link
+                        to="/admin/events"
+                        className="inline-flex items-center gap-1.5 px-4 py-2 rounded-full border border-border font-semibold text-xs"
+                    >
+                        Event manager
+                    </Link>
                     <Link to="/" className="inline-flex px-4 py-2 rounded-full border-2 border-foreground font-semibold text-xs">
                         View site
                     </Link>
@@ -253,6 +504,174 @@ export default function Admin() {
                 <Stat label="Edit requests" value={stats?.org_edit_requests_pending || 0} icon={Sparkles} />
                 <Stat label="Unread messages" value={stats?.messages_unread || 0} icon={MessageSquare} />
             </div>
+
+            <section className="mt-8 space-y-4" data-testid="site-admin-controls">
+                <div className="flex flex-wrap items-end justify-between gap-3">
+                    <div>
+                        <h2 className="font-display font-black text-2xl inline-flex items-center gap-2">
+                            <ShieldCheck className="h-6 w-6 text-primary" /> Site Administrator
+                        </h2>
+                        <p className="text-sm text-muted-foreground mt-1">
+                            Ownership, verification, moderation and quality controls.
+                        </p>
+                    </div>
+                    <button onClick={mergeDuplicateOrgs} className="inline-flex items-center gap-1.5 px-4 py-2 rounded-full border border-border text-xs font-semibold">
+                        <Link2 className="h-3.5 w-3.5" /> Merge duplicates
+                    </button>
+                </div>
+
+                <div className="grid lg:grid-cols-2 gap-4">
+                    <div className="rounded-3xl border border-border bg-surface p-5">
+                        <div className="flex items-center justify-between gap-2 mb-3">
+                            <h3 className="font-display font-bold text-lg">Organisation management</h3>
+                            <span className="text-xs text-muted-foreground">Without admins: {orgsWithoutAdmins.length}</span>
+                        </div>
+                        <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
+                            {orgs.slice(0, 24).map((o) => (
+                                <div key={o.slug} className="rounded-2xl border border-border p-3">
+                                    <div className="flex items-start justify-between gap-2">
+                                        <div>
+                                            <div className="font-semibold text-sm">{o.name}</div>
+                                            <div className="text-[11px] text-muted-foreground mt-0.5">{o.slug} · {o.status || "approved"}{o.verified ? " · verified" : ""}</div>
+                                        </div>
+                                        <div className="flex gap-1.5 flex-wrap justify-end">
+                                            <button onClick={() => runOrgLifecycle(o.slug, "verify")} className="px-2 py-1 rounded-full bg-muted text-[11px] font-semibold">Verify</button>
+                                            <button onClick={() => runOrgLifecycle(o.slug, "suspend")} className="px-2 py-1 rounded-full bg-muted text-[11px] font-semibold inline-flex items-center gap-1"><PauseCircle className="h-3 w-3" />Suspend</button>
+                                            <button onClick={() => runOrgLifecycle(o.slug, "archive")} className="px-2 py-1 rounded-full bg-muted text-[11px] font-semibold inline-flex items-center gap-1"><Archive className="h-3 w-3" />Archive</button>
+                                        </div>
+                                    </div>
+                                    <div className="mt-2 flex gap-1.5 flex-wrap">
+                                        <button onClick={() => assignAdmins(o.slug, o.name)} className="px-2.5 py-1 rounded-full border border-border text-[11px] font-semibold inline-flex items-center gap-1"><UserPlus className="h-3 w-3" />Assign admins</button>
+                                        <button onClick={() => transferOwnership(o.slug, o.name)} className="px-2.5 py-1 rounded-full border border-border text-[11px] font-semibold">Transfer ownership</button>
+                                        <button onClick={() => inviteClaim(o.slug, o.name)} className="px-2.5 py-1 rounded-full border border-border text-[11px] font-semibold">Invite claim</button>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+
+                    <div className="rounded-3xl border border-border bg-surface p-5">
+                        <div className="flex items-center justify-between gap-2 mb-3">
+                            <h3 className="font-display font-bold text-lg">Events needing attention</h3>
+                            <Link to="/admin/events" className="text-xs font-semibold text-primary">Open event manager</Link>
+                        </div>
+                        <div className="grid grid-cols-2 gap-2 text-sm">
+                            <MiniMetric label="Missing venue" value={attention?.attention?.missing_venue || 0} />
+                            <MiniMetric label="Missing time" value={attention?.attention?.missing_time || 0} />
+                            <MiniMetric label="Missing image" value={attention?.attention?.missing_image || 0} />
+                            <MiniMetric label="Possible duplicate" value={attention?.attention?.possible_duplicate || 0} />
+                            <MiniMetric label="Past but published" value={attention?.attention?.date_passed_but_published || 0} />
+                            <MiniMetric label="Pending" value={attention?.counts?.pending || 0} />
+                        </div>
+                    </div>
+                </div>
+
+                <div className="grid lg:grid-cols-3 gap-4">
+                    <div className="rounded-3xl border border-border bg-surface p-5">
+                        <h3 className="font-display font-bold text-lg">User management</h3>
+                        <div className="mt-3 relative">
+                            <Search className="h-4 w-4 absolute left-3 top-2.5 text-muted-foreground" />
+                            <input value={userSearch} onChange={(e) => setUserSearch(e.target.value)} placeholder="Search email or organisation" className="w-full pl-9 pr-3 py-2 rounded-2xl border border-border bg-background text-sm" />
+                        </div>
+                        <div className="mt-3 text-xs text-muted-foreground">
+                            Pending org invites: {userOverview.pending_invites || 0} · Pending claims: {userOverview.pending_claims || 0} · Pending member invites: {userOverview.pending_member_invites || 0}
+                        </div>
+                        <div className="mt-3 space-y-2 max-h-52 overflow-y-auto pr-1">
+                            {(userOverview.users || []).slice(0, 12).map((u) => (
+                                <div key={u.email} className="rounded-2xl border border-border p-2.5">
+                                    <div className="text-sm font-semibold truncate">{u.email}</div>
+                                    <div className="text-[11px] text-muted-foreground mt-0.5">Roles: {(u.roles || []).join(", ") || "none"}</div>
+                                    <div className="text-[11px] text-muted-foreground">Orgs: {(u.organisations || []).map((o) => o.name).slice(0, 2).join(", ") || "none"}</div>
+                                    <div className="text-[11px] text-muted-foreground">Status: {u.status || "active"}{u.pending_invitations ? ` · pending invites: ${u.pending_invitations}` : ""}</div>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+
+                    <div className="rounded-3xl border border-border bg-surface p-5">
+                        <div className="flex items-center justify-between gap-2 mb-3">
+                            <h3 className="font-display font-bold text-lg">Org member access</h3>
+                            <button onClick={inviteOrgMember} className="px-3 py-1.5 rounded-full bg-primary text-primary-foreground text-[11px] font-semibold">Invite member</button>
+                        </div>
+                        <label className="block text-[11px] uppercase tracking-wider text-muted-foreground font-semibold">Organisation</label>
+                        <select value={memberOrgSlug} onChange={(e) => setMemberOrgSlug(e.target.value)} className="mt-1 w-full px-3 py-2 rounded-2xl border border-border bg-background text-sm">
+                            <option value="">Select organisation</option>
+                            {orgs
+                                .filter((o) => o.status !== "rejected")
+                                .sort((a, b) => (a.name || "").localeCompare(b.name || ""))
+                                .map((o) => (
+                                    <option key={o.slug} value={o.slug}>{o.name}</option>
+                                ))}
+                        </select>
+                        <div className="mt-3 text-xs text-muted-foreground">Global pending member invites: {memberInvites.length}</div>
+                        <div className="mt-3 space-y-2 max-h-48 overflow-y-auto pr-1">
+                            {(memberRoster.members || []).slice(0, 8).map((m) => (
+                                <div key={m.id} className="rounded-2xl border border-border p-2.5">
+                                    <div className="text-sm font-semibold truncate">{m.email}</div>
+                                    <div className="text-[11px] text-muted-foreground mt-0.5">{m.role || "editor"} · {m.status || "active"}</div>
+                                    <div className="mt-2 flex gap-1.5 flex-wrap">
+                                        <button onClick={() => changeMemberRole(m)} className="px-2 py-1 rounded-full border border-border text-[11px] font-semibold">Role</button>
+                                        <button onClick={() => toggleMemberSuspend(m)} className="px-2 py-1 rounded-full border border-border text-[11px] font-semibold">{m.status === "active" ? "Suspend" : "Activate"}</button>
+                                        <button onClick={() => removeMember(m)} className="px-2 py-1 rounded-full border border-border text-[11px] font-semibold">Remove</button>
+                                    </div>
+                                </div>
+                            ))}
+                            {(memberRoster.members || []).length === 0 && (
+                                <p className="text-sm text-muted-foreground">No members for this organisation yet.</p>
+                            )}
+                        </div>
+                        <div className="mt-3 space-y-2 max-h-36 overflow-y-auto pr-1">
+                            {(memberRoster.invites || []).filter((i) => i.status === "pending").slice(0, 6).map((inv) => (
+                                <div key={inv.id} className="rounded-2xl border border-border p-2.5">
+                                    <div className="text-xs font-semibold truncate">{inv.email}</div>
+                                    <div className="text-[11px] text-muted-foreground">{inv.role || "editor"} · pending</div>
+                                    <div className="mt-2 flex gap-1.5">
+                                        <button onClick={() => resendMemberInvite(inv.id)} className="px-2 py-1 rounded-full border border-border text-[11px] font-semibold">Resend</button>
+                                        <button onClick={() => resetMemberInvite(inv.id)} className="px-2 py-1 rounded-full border border-border text-[11px] font-semibold">Reset token</button>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+
+                    <div className="rounded-3xl border border-border bg-surface p-5">
+                        <h3 className="font-display font-bold text-lg">Category taxonomy</h3>
+                        <p className="text-xs text-muted-foreground mt-1">Central lists for consistent filtering.</p>
+                        <label className="block mt-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">Event categories (one per line)</label>
+                        <textarea
+                            rows={6}
+                            value={(taxonomy.event_categories || []).join("\n")}
+                            onChange={(e) => setTaxonomy((t) => ({ ...t, event_categories: e.target.value.split("\n") }))}
+                            className="mt-1 w-full px-3 py-2 rounded-2xl border border-border bg-background text-xs"
+                        />
+                        <label className="block mt-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">Organisation categories (one per line)</label>
+                        <textarea
+                            rows={5}
+                            value={(taxonomy.organisation_categories || []).join("\n")}
+                            onChange={(e) => setTaxonomy((t) => ({ ...t, organisation_categories: e.target.value.split("\n") }))}
+                            className="mt-1 w-full px-3 py-2 rounded-2xl border border-border bg-background text-xs"
+                        />
+                        <button onClick={saveTaxonomy} disabled={taxonomyBusy} className="mt-3 px-4 py-2 rounded-full bg-primary text-primary-foreground text-xs font-semibold disabled:opacity-60">
+                            {taxonomyBusy ? "Saving…" : "Save taxonomy"}
+                        </button>
+                    </div>
+
+                    <div className="rounded-3xl border border-border bg-surface p-5">
+                        <h3 className="font-display font-bold text-lg">Audit history</h3>
+                        <div className="mt-3 space-y-2 max-h-80 overflow-y-auto pr-1">
+                            {auditRows.length === 0 ? (
+                                <p className="text-sm text-muted-foreground">No audit actions yet.</p>
+                            ) : auditRows.slice(0, 20).map((row) => (
+                                <div key={row.id} className="rounded-2xl border border-border p-2.5">
+                                    <div className="text-sm font-semibold">{row.summary || row.action}</div>
+                                    <div className="text-[11px] text-muted-foreground mt-0.5">{new Date(row.created_at).toLocaleString("en-GB")} · {row.actor || "admin"}</div>
+                                </div>
+                            ))}
+                        </div>
+                        <div className="mt-3 text-xs text-muted-foreground">Claim invites pending: {claimInvites.length}</div>
+                    </div>
+                </div>
+            </section>
 
             <section className="mt-8 space-y-4" data-testid="admin-analytics-section">
                 <div>
@@ -385,11 +804,11 @@ export default function Admin() {
 
             <section className="mt-10 grid lg:grid-cols-2 gap-4">
                 <BroadcastCard onSent={refresh} />
-                <NewsletterCard />
+                <NewsletterCard orgs={orgs} />
             </section>
 
             <section className="mt-10">
-                <AdminEmailCompose />
+                <AdminEmailCentre orgs={orgs} onChange={refresh} />
             </section>
 
             <section className="mt-10 grid lg:grid-cols-2 gap-4">
@@ -398,8 +817,8 @@ export default function Admin() {
             </section>
 
             <section className="mt-10 grid lg:grid-cols-2 gap-4">
-                <AdminInbox onChange={refresh} />
                 <NotifyOrgCard orgs={orgs} />
+                <SubscribersCard />
             </section>
 
             <section className="mt-10">
@@ -632,8 +1051,18 @@ export default function Admin() {
                                         <span className="px-2.5 py-1 rounded-full bg-muted text-[11px] font-bold uppercase tracking-wider">{request.request_type === "claim" ? "Claim" : "Suggest edit"}</span>
                                     </div>
                                     <h3 className="font-display font-bold text-lg mt-2">{request.org_name}</h3>
-                                    <p className="text-sm text-muted-foreground mt-1">{request.contact_name} {request.contact_email ? `· ${request.contact_email}` : ""}</p>
+                                    <p className="text-sm text-muted-foreground mt-1">{request.contact_name} {request.contact_email ? `· ${request.contact_email}` : ""}{request.contact_phone ? ` · 📞 ${request.contact_phone}` : ""}</p>
                                     {request.message && <p className="text-sm mt-3">{request.message}</p>}
+                                    {request.request_type === "claim" && (
+                                        <textarea
+                                            rows={2}
+                                            value={requestNotes[request.id] || ""}
+                                            onChange={(ev) => { ev.stopPropagation(); setRequestNotes((n) => ({ ...n, [request.id]: ev.target.value })); }}
+                                            onClick={(ev) => ev.stopPropagation()}
+                                            placeholder="Reviewer notes (optional) — included in approval/rejection email"
+                                            className="w-full mt-3 px-3 py-2 rounded-2xl border border-border bg-background text-sm resize-none"
+                                        />
+                                    )}
                                     {request.request_type === "suggest_edit" && Object.keys(request.payload || {}).length > 0 && (
                                         <div className="mt-3 flex flex-wrap gap-2 text-[11px]">
                                             {Object.entries(request.payload).slice(0, 6).map(([key, value]) => (
@@ -655,7 +1084,7 @@ export default function Admin() {
             <section className="mt-10">
                 <h2 className="font-display font-bold text-xl mb-3">Manage organisations</h2>
                 <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
-                    {orgs.filter((o) => o.status !== "pending").slice(0, 30).map((o) => (
+                    {orgs.filter((o) => o.status !== "pending").map((o) => (
                         <div key={o.slug} className="min-w-0 rounded-3xl border border-border bg-surface p-4 flex items-center gap-3">
                             <div className="h-10 w-10 rounded-2xl bg-muted grid place-items-center text-xl shrink-0">{o.logo}</div>
                             <div className="flex-1 min-w-0">
@@ -724,6 +1153,53 @@ const DESTINATION_LABELS = {
 const inp = "w-full px-3 py-2 rounded-2xl border border-border bg-background text-sm";
 const LOW_CONFIDENCE_THRESHOLD = 0.75;
 
+const BULK_PARSE_JOB_STORAGE_KEY = "rn-admin-active-parse-job";
+const BULK_PARSE_POLL_INTERVAL_MS = 2500;
+const BULK_PARSE_MAX_RECONNECT_DELAY_MS = 15000;
+
+const readStoredParseJob = () => {
+    if (typeof window === "undefined") return null;
+    try {
+        const raw = localStorage.getItem(BULK_PARSE_JOB_STORAGE_KEY);
+        if (!raw) return null;
+        const parsed = JSON.parse(raw);
+        return parsed && parsed.job_id ? parsed : null;
+    } catch {
+        return null;
+    }
+};
+
+const writeStoredParseJob = (job) => {
+    if (typeof window === "undefined" || !job?.job_id) return;
+    try {
+        localStorage.setItem(BULK_PARSE_JOB_STORAGE_KEY, JSON.stringify(job));
+    } catch {
+        // Local storage is a convenience for resume/reconnect. The backend
+        // job continues even if the browser refuses local storage.
+    }
+};
+
+const clearStoredParseJob = () => {
+    if (typeof window === "undefined") return;
+    try {
+        localStorage.removeItem(BULK_PARSE_JOB_STORAGE_KEY);
+    } catch {
+        // Non-blocking.
+    }
+};
+
+const parserErrorStatus = (error) =>
+    error?.originalError?.response?.status ||
+    error?.response?.status ||
+    0;
+
+const parserErrorMessage = (error) =>
+    error?.response?.data?.detail ||
+    error?.originalError?.response?.data?.detail ||
+    error?.message ||
+    "Could not contact the parser";
+
+
 const Field = ({ label, children }) => (
     <label className="block">
         <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">{label}</span>
@@ -732,6 +1208,9 @@ const Field = ({ label, children }) => (
 );
 
 function BulkDocumentImportCard({ orgs }) {
+    const { refresh } = useApp();
+    const pollGenerationRef = useRef(0);
+    const mountedRef = useRef(false);
     const [files, setFiles] = useState([]);
     const [linkSources, setLinkSources] = useState("");
     const [textSources, setTextSources] = useState("");
@@ -745,6 +1224,9 @@ function BulkDocumentImportCard({ orgs }) {
     const [batchReport, setBatchReport] = useState(null);
     const [reviewStatusFilter, setReviewStatusFilter] = useState("all");
     const [reviewOwnerFilter, setReviewOwnerFilter] = useState("all");
+    const [activeJobId, setActiveJobId] = useState(() => readStoredParseJob()?.job_id || "");
+    const [connectionState, setConnectionState] = useState("idle");
+    const [lastPollError, setLastPollError] = useState("");
     const REVIEWER_NAME = "Admin";
 
     const isUpdateAction = (action) => ["update_event", "update_volunteer", "update_organisation", "update_venue"].includes(action);
@@ -806,9 +1288,13 @@ function BulkDocumentImportCard({ orgs }) {
     };
 
     const normalizeDocs = (documents) =>
-        documents.map((doc, docIndex) => ({
+        (Array.isArray(documents) ? documents : []).map((doc, docIndex) => ({
             ...doc,
-            items: (doc.items || []).map((item, itemIndex) => ({
+            filename: doc?.filename || `Source ${docIndex + 1}`,
+            source_type: doc?.source_type || "unknown",
+            text_excerpt: doc?.text_excerpt || "",
+            warnings: Array.isArray(doc?.warnings) ? doc.warnings : [],
+            items: (Array.isArray(doc?.items) ? doc.items : []).map((item, itemIndex) => ({
                 ...item,
                 reviewId: `${docIndex}-${itemIndex}`,
                 isEditing: false,
@@ -949,11 +1435,14 @@ function BulkDocumentImportCard({ orgs }) {
         });
     };
 
-    const parseDateTime = (date, startTime, endTime) => {
+    const parseDateTime = (date, startTime, endTime, endDate) => {
         if (!date) return null;
         const start = new Date(`${date}T${startTime || "10:00"}`);
-        const end = new Date(`${date}T${endTime || startTime || "11:00"}`);
-        if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return null;
+        let end = new Date(`${endDate || date}T${endTime || startTime || "11:00"}`);
+        if (Number.isNaN(start.getTime())) return null;
+        if (Number.isNaN(end.getTime()) || end <= start) {
+            end = new Date(start.getTime() + 60 * 60 * 1000);
+        }
         return { start: start.toISOString(), end: end.toISOString() };
     };
 
@@ -1066,7 +1555,7 @@ function BulkDocumentImportCard({ orgs }) {
             const destination = inferDestination(draft);
 
             if (destination === "events") {
-                const timing = parseDateTime(draft.date, draft.start_time, draft.end_time);
+                const timing = parseDateTime(draft.date, draft.start_time, draft.end_time, draft.end_date);
                 if (!timing) {
                     toast.error("Add a date and time before posting this event");
                     return false;
@@ -1083,14 +1572,14 @@ function BulkDocumentImportCard({ orgs }) {
                     start: timing.start,
                     end: timing.end,
                     venue: draft.location || "",
-                    address: draft.location || "",
+                    address: draft.address || draft.location || "",
                     description: draft.description || draft.title,
-                    cost: draft.cost || "Free",
-                    age: "",
-                    accessibility: "",
+                    cost: draft.cost || "",
+                    age: draft.age || "",
+                    accessibility: draft.accessibility || "",
                     booking: draft.booking || draft.url || "",
-                    contactEmail: "",
-                    contactPhone: "",
+                    contactEmail: draft.contact_email || "",
+                    contactPhone: draft.contact_phone || "",
                     image: "",
                     status: "approved",
                     recurrence: buildRecurrencePayload(
@@ -1156,6 +1645,11 @@ function BulkDocumentImportCard({ orgs }) {
                     await api.createVenue(venuePayload);
                 }
             } else {
+                const orgContactEmail = (draft.contact_email || draft.contactEmail || "").trim();
+                if (!orgContactEmail) {
+                    toast.error("Contact email is required before posting an organisation");
+                    return false;
+                }
                 const payload = {
                     slug: (draft.matched_org_slug || draft.title || doc.filename)
                         .toLowerCase()
@@ -1170,7 +1664,7 @@ function BulkDocumentImportCard({ orgs }) {
                     meeting: "",
                     address: draft.location || "",
                     location: "Blackrod",
-                    email: "",
+                    email: orgContactEmail,
                     phone: "",
                     website: "",
                     socials: { facebook: "", instagram: "", tiktok: "", linkedin: "" },
@@ -1222,7 +1716,185 @@ function BulkDocumentImportCard({ orgs }) {
         setFiles(Array.from(event.target.files || []));
     };
 
+    const waitForParserPoll = (ms) =>
+        new Promise((resolve) => window.setTimeout(resolve, ms));
+
+    const watchParseJob = async (jobId, fallbackTotal = 1, { resuming = false } = {}) => {
+        if (!jobId) return;
+
+        const generation = ++pollGenerationRef.current;
+        let consecutiveFailures = 0;
+
+        setBusy(true);
+        setConnectionState(resuming ? "reconnecting" : "connected");
+        setLastPollError("");
+
+        while (mountedRef.current && generation === pollGenerationRef.current) {
+            try {
+                const status = await api.getParseJob(jobId);
+
+                if (!mountedRef.current || generation !== pollGenerationRef.current) {
+                    return;
+                }
+
+                consecutiveFailures = 0;
+                setConnectionState("connected");
+                setLastPollError("");
+
+                const total = Math.max(
+                    1,
+                    Number(status?.total ?? status?.total_sources ?? fallbackTotal ?? 1) || 1,
+                );
+                const done = Math.max(0, Number(status?.done ?? 0) || 0);
+                const parserStatus = String(status?.status || "processing").toLowerCase();
+
+                const progress = {
+                    done,
+                    total,
+                    current: status?.current || "",
+                    status: parserStatus,
+                    attempts: Number(status?.attempts ?? status?.attempt ?? 0) || 0,
+                    error: status?.error || "",
+                    updatedAt: status?.updated_at || "",
+                };
+
+                setParseProgress(progress);
+
+                writeStoredParseJob({
+                    ...(readStoredParseJob() || {}),
+                    job_id: jobId,
+                    total,
+                    done,
+                    current: progress.current,
+                    status: parserStatus,
+                    updated_at: progress.updatedAt || new Date().toISOString(),
+                    source_org_slug: sourceOrgSlug || readStoredParseJob()?.source_org_slug || "",
+                });
+
+                if (parserStatus === "done") {
+                    const res = status?.result || { documents: [] };
+                    const documents = Array.isArray(res?.documents) ? res.documents : [];
+
+                    setResult(res);
+                    setReviewDocs(normalizeDocs(documents));
+                    setSelectedReviewIds([]);
+                    setBatchReport(null);
+                    setBusy(false);
+                    setConnectionState("done");
+                    setLastPollError("");
+
+                    writeStoredParseJob({
+                        ...(readStoredParseJob() || {}),
+                        job_id: jobId,
+                        total,
+                        done: total,
+                        current: "",
+                        status: "done",
+                        completed_at: status?.completed_at || new Date().toISOString(),
+                    });
+
+                    toast.success(
+                        `${resuming ? "Recovered" : "Parsed"} ${documents.length} source${documents.length === 1 ? "" : "s"}`,
+                    );
+                    return;
+                }
+
+                if (parserStatus === "failed") {
+                    const message = status?.error || "The parser could not complete this import.";
+                    setBusy(false);
+                    setConnectionState("failed");
+                    setLastPollError(message);
+
+                    writeStoredParseJob({
+                        ...(readStoredParseJob() || {}),
+                        job_id: jobId,
+                        status: "failed",
+                        error: message,
+                        updated_at: new Date().toISOString(),
+                    });
+
+                    toast.error(message);
+                    return;
+                }
+            } catch (error) {
+                if (!mountedRef.current || generation !== pollGenerationRef.current) {
+                    return;
+                }
+
+                const statusCode = parserErrorStatus(error);
+                const message = parserErrorMessage(error);
+
+                if (statusCode === 404) {
+                    clearStoredParseJob();
+                    setActiveJobId("");
+                    setBusy(false);
+                    setParseProgress(null);
+                    setConnectionState("failed");
+                    setLastPollError("The saved import job no longer exists on the server.");
+                    toast.error("The saved import job no longer exists. Start a new import.");
+                    return;
+                }
+
+                if (statusCode === 401 || statusCode === 403) {
+                    setBusy(false);
+                    setConnectionState("failed");
+                    setLastPollError("Your admin session can no longer access this import.");
+                    toast.error("Your admin session expired. Sign in again, then reopen this page to resume the import.");
+                    return;
+                }
+
+                consecutiveFailures += 1;
+                setConnectionState("reconnecting");
+                setLastPollError(message);
+            }
+
+            const reconnectDelay = consecutiveFailures
+                ? Math.min(
+                    BULK_PARSE_POLL_INTERVAL_MS * Math.pow(1.7, Math.min(consecutiveFailures, 6)),
+                    BULK_PARSE_MAX_RECONNECT_DELAY_MS,
+                )
+                : BULK_PARSE_POLL_INTERVAL_MS;
+
+            await waitForParserPoll(reconnectDelay);
+        }
+    };
+
+    useEffect(() => {
+        mountedRef.current = true;
+
+        const stored = readStoredParseJob();
+        if (stored?.job_id) {
+            setActiveJobId(stored.job_id);
+            setParseProgress({
+                done: Number(stored.done || 0),
+                total: Math.max(1, Number(stored.total || 1)),
+                current: stored.current || "",
+                status: stored.status || "queued",
+                attempts: Number(stored.attempts || 0),
+                error: stored.error || "",
+                updatedAt: stored.updated_at || "",
+            });
+            watchParseJob(stored.job_id, stored.total || 1, { resuming: true });
+        }
+
+        return () => {
+            mountedRef.current = false;
+            pollGenerationRef.current += 1;
+        };
+        // This intentionally runs once. A newly-created job is watched directly
+        // by parse(); a saved job is recovered here after a refresh/revisit.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+
     const clear = () => {
+        if (busy) {
+            toast.info("This import is still running. You can safely leave this page and come back later.");
+            return;
+        }
+
+        pollGenerationRef.current += 1;
+        clearStoredParseJob();
+        setActiveJobId("");
         setFiles([]);
         setLinkSources("");
         setTextSources("");
@@ -1230,6 +1902,19 @@ function BulkDocumentImportCard({ orgs }) {
         setReviewDocs([]);
         setSelectedReviewIds([]);
         setBatchReport(null);
+        setParseProgress(null);
+        setConnectionState("idle");
+        setLastPollError("");
+    };
+
+    const reconnectToSavedJob = () => {
+        const stored = readStoredParseJob();
+        if (!stored?.job_id) {
+            toast.error("There is no saved import to reconnect to.");
+            return;
+        }
+        setActiveJobId(stored.job_id);
+        watchParseJob(stored.job_id, stored.total || 1, { resuming: true });
     };
 
     const parse = async () => {
@@ -1237,44 +1922,80 @@ function BulkDocumentImportCard({ orgs }) {
             .split(/\n+/)
             .map((value) => value.trim())
             .filter(Boolean);
-        const textBlocks = textSources
-            .split(/\n\s*\n+/)
-            .map((value) => value.trim())
-            .filter(Boolean);
-        if (!files.length && !links.length && !textBlocks.length) return toast.error("Add files, links or pasted text first");
+
+        // Blank lines are deliberately preserved because they are common inside
+        // copied emails, event notices and Word-style content. If an admin wants
+        // to submit several unrelated pasted sources at once, a line containing
+        // three or more dashes acts as the explicit source separator.
+        const textBlocks = textSources.trim()
+            ? textSources
+                .split(/\n\s*-{3,}\s*\n/g)
+                .map((value) => value.trim())
+                .filter(Boolean)
+            : [];
+
+        if (!files.length && !links.length && !textBlocks.length) {
+            toast.error("Add files, links or pasted text first");
+            return;
+        }
+
+        pollGenerationRef.current += 1;
         setBusy(true);
-        setParseProgress(null);
+        setResult(null);
+        setReviewDocs([]);
+        setSelectedReviewIds([]);
+        setBatchReport(null);
+        setConnectionState("uploading");
+        setLastPollError("");
+        setParseProgress({
+            done: 0,
+            total: Math.max(1, files.length + links.length + textBlocks.length),
+            current: "Uploading sources…",
+            status: "uploading",
+            attempts: 0,
+            error: "",
+            updatedAt: "",
+        });
+
         try {
             const job = await api.createParseJob(files, sourceOrgSlug, { links, textBlocks });
-            setParseProgress({ done: 0, total: job.total, current: "" });
-            const startedAt = Date.now();
-            let res = null;
-            while (Date.now() - startedAt < 15 * 60 * 1000) {
-                await new Promise((resolve) => setTimeout(resolve, 2500));
-                let status;
-                try {
-                    status = await api.getParseJob(job.job_id);
-                } catch {
-                    continue;
-                }
-                setParseProgress({ done: status.done || 0, total: status.total || job.total, current: status.current || "" });
-                if (status.status === "failed") throw new Error(status.error || "Bulk parse failed");
-                if (status.status === "done") {
-                    res = status.result;
-                    break;
-                }
-            }
-            if (!res) throw new Error("Parsing took too long — please try fewer sources at once");
-            setResult(res);
-            setReviewDocs(normalizeDocs(res.documents || []));
-            setSelectedReviewIds([]);
-            setBatchReport(null);
-            toast.success(`Parsed ${res.documents.length} document${res.documents.length !== 1 ? "s" : ""}`);
+            const total = Math.max(
+                1,
+                Number(job?.total ?? job?.total_sources ?? files.length + links.length + textBlocks.length) || 1,
+            );
+
+            setActiveJobId(job.job_id);
+            setConnectionState("connected");
+            setParseProgress({
+                done: 0,
+                total,
+                current: "",
+                status: job?.status || "queued",
+                attempts: 0,
+                error: "",
+                updatedAt: "",
+            });
+
+            writeStoredParseJob({
+                job_id: job.job_id,
+                total,
+                done: 0,
+                current: "",
+                status: job?.status || "queued",
+                created_at: new Date().toISOString(),
+                source_org_slug: sourceOrgSlug || "",
+                filenames: files.map((file) => file.name),
+                link_count: links.length,
+                text_count: textBlocks.length,
+            });
+
+            toast.success("Import accepted. You can leave this page — processing will continue in the background.");
+            await watchParseJob(job.job_id, total);
         } catch (error) {
-            toast.error(error?.response?.data?.detail || error?.message || "Bulk parse failed");
-        } finally {
             setBusy(false);
-            setParseProgress(null);
+            setConnectionState("failed");
+            setLastPollError(parserErrorMessage(error));
+            toast.error(parserErrorMessage(error) || "Could not start the bulk import");
         }
     };
 
@@ -1315,7 +2036,7 @@ function BulkDocumentImportCard({ orgs }) {
                         </div>
                         <div className="flex-1 min-w-0">
                             <div className="font-semibold">Choose one or more files</div>
-                            <p className="text-sm text-muted-foreground mt-1">Best results: PDF, DOCX, XLSX, TXT, CSV or image files. Screenshots and flyer scans will be OCR’d before classification.</p>
+                            <p className="text-sm text-muted-foreground mt-1">Best results: PDF, DOCX, PPTX, XLSX, TXT, CSV or image files (including iPhone HEIC photos). Scanned flyers, Canva PDFs and screenshots are OCR’d automatically before classification.</p>
                         </div>
                     </div>
                     <div className="mt-4 flex flex-wrap items-center gap-3">
@@ -1324,7 +2045,7 @@ function BulkDocumentImportCard({ orgs }) {
                             <input
                                 type="file"
                                 multiple
-                                accept=".pdf,.doc,.docx,.xls,.xlsx,.txt,.csv,.png,.jpg,.jpeg,.webp,.bmp,.gif,.tif,.tiff"
+                                accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.csv,.md,.png,.jpg,.jpeg,.webp,.bmp,.gif,.tif,.tiff,.heic,.heif"
                                 className="hidden"
                                 onChange={onSelectFiles}
                                 disabled={busy}
@@ -1338,11 +2059,17 @@ function BulkDocumentImportCard({ orgs }) {
                             data-testid="admin-bulk-parse-btn"
                         >
                             {busy ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
-                            {busy && parseProgress ? `Parsing ${Math.min(parseProgress.done + 1, parseProgress.total)}/${parseProgress.total}…` : "Parse documents"}
+                            {busy && parseProgress
+                                ? parseProgress.status === "uploading"
+                                    ? "Uploading…"
+                                    : parseProgress.status === "queued"
+                                        ? "Queued…"
+                                        : `Processing ${Math.min(parseProgress.done + 1, parseProgress.total)}/${parseProgress.total}…`
+                                : "Parse documents"}
                         </button>
                         <button
                             onClick={clear}
-                            disabled={busy && !files.length}
+                            disabled={busy}
                             className="inline-flex items-center gap-1 px-4 py-2 rounded-full bg-muted text-xs font-semibold disabled:opacity-60"
                         >
                             Clear
@@ -1367,32 +2094,114 @@ function BulkDocumentImportCard({ orgs }) {
                                 className={inp}
                             />
                         </Field>
-                        <Field label="Pasted text, one source per blank-line block">
+                        <Field label="Pasted text — paste one notice, email, programme or multiple events together">
                             <textarea
                                 value={textSources}
                                 onChange={(e) => setTextSources(e.target.value)}
-                                placeholder="Paste flyer text, copied email content or article copy here.\n\nUse a blank line to separate the next source."
-                                rows={5}
+                                placeholder={"Paste flyer text, copied email content, a programme or several events here. Blank lines are preserved.\n\nIf you are pasting completely unrelated sources, put --- on its own line between them."}
+                                rows={7}
                                 className={inp}
                             />
                         </Field>
                     </div>
-                    {busy && parseProgress && (
-                        <div className="mt-4 rounded-2xl border border-border bg-surface px-4 py-3" data-testid="parse-progress-panel">
-                            <div className="flex items-center justify-between gap-3 text-xs font-semibold">
-                                <span className="flex items-center gap-2">
-                                    <RefreshCw className="h-3.5 w-3.5 animate-spin text-primary" />
-                                    {parseProgress.current ? `Working on: ${parseProgress.current}` : "Preparing sources…"}
-                                </span>
-                                <span className="text-muted-foreground">{Math.min(parseProgress.done, parseProgress.total)} of {parseProgress.total} done</span>
+                    {parseProgress && (
+                        <div className="mt-4 rounded-2xl border border-border bg-surface px-4 py-4" data-testid="parse-progress-panel">
+                            <div className="flex flex-wrap items-center justify-between gap-3">
+                                <div className="flex items-center gap-2 text-xs font-semibold">
+                                    {busy ? (
+                                        <RefreshCw className="h-3.5 w-3.5 animate-spin text-primary" />
+                                    ) : parseProgress.status === "done" ? (
+                                        <Check className="h-3.5 w-3.5 text-emerald-600" />
+                                    ) : (
+                                        <FileText className="h-3.5 w-3.5 text-muted-foreground" />
+                                    )}
+                                    <span>
+                                        {connectionState === "reconnecting"
+                                            ? "Reconnecting to parser…"
+                                            : parseProgress.status === "uploading"
+                                                ? "Uploading sources…"
+                                                : parseProgress.status === "queued"
+                                                    ? "Import queued"
+                                                    : parseProgress.status === "done"
+                                                        ? "Import complete"
+                                                        : parseProgress.status === "failed"
+                                                            ? "Import failed"
+                                                            : parseProgress.current
+                                                                ? `Working on: ${parseProgress.current}`
+                                                                : "Processing import…"}
+                                    </span>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                    <span className={`px-2.5 py-1 rounded-full text-[10px] font-black uppercase tracking-wider ${
+                                        connectionState === "reconnecting"
+                                            ? "bg-amber-500/10 text-amber-700 dark:text-amber-300"
+                                            : parseProgress.status === "done"
+                                                ? "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+                                                : parseProgress.status === "failed"
+                                                    ? "bg-red-500/10 text-red-700 dark:text-red-300"
+                                                    : "bg-primary/10 text-primary"
+                                    }`}>
+                                        {connectionState === "reconnecting" ? "Reconnecting" : parseProgress.status || "processing"}
+                                    </span>
+                                    <span className="text-xs text-muted-foreground">
+                                        {Math.min(parseProgress.done || 0, parseProgress.total || 1)} of {parseProgress.total || 1} done
+                                    </span>
+                                </div>
                             </div>
-                            <div className="mt-2 h-2 rounded-full bg-muted overflow-hidden">
+
+                            <div className="mt-3 h-2 rounded-full bg-muted overflow-hidden">
                                 <div
                                     className="h-full bg-primary rounded-full transition-all duration-500"
-                                    style={{ width: `${Math.max(5, Math.round((parseProgress.done / Math.max(1, parseProgress.total)) * 100))}%` }}
+                                    style={{
+                                        width: `${
+                                            parseProgress.status === "done"
+                                                ? 100
+                                                : Math.max(
+                                                    parseProgress.status === "uploading" ? 3 : 5,
+                                                    Math.round(((parseProgress.done || 0) / Math.max(1, parseProgress.total || 1)) * 100),
+                                                )
+                                        }%`,
+                                    }}
                                 />
                             </div>
-                            <p className="mt-2 text-[11px] text-muted-foreground">Parsing runs in the background — safe from timeouts, even with large uploads.</p>
+
+                            {connectionState === "reconnecting" && (
+                                <div className="mt-3 rounded-2xl bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-200">
+                                    The browser temporarily lost contact with the parser. The import has <b>not</b> been cancelled. Blackrod Now will keep reconnecting automatically.
+                                    {lastPollError ? <div className="mt-1 opacity-80">{lastPollError}</div> : null}
+                                </div>
+                            )}
+
+                            {parseProgress.status === "failed" && lastPollError && (
+                                <div className="mt-3 rounded-2xl bg-red-500/10 px-3 py-2 text-xs text-red-800 dark:text-red-200">
+                                    {lastPollError}
+                                </div>
+                            )}
+
+                            <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-[11px] text-muted-foreground">
+                                <span>
+                                    {busy
+                                        ? "Processing is server-side. You can safely leave or refresh this page and return later."
+                                        : parseProgress.status === "done"
+                                            ? "Results are retained against this import until you clear it or start another import."
+                                            : "This import is saved in your browser and can be reconnected."}
+                                </span>
+                                {activeJobId && (
+                                    <span className="font-mono text-[10px]" title={activeJobId}>
+                                        Job {activeJobId.slice(0, 8)}…
+                                    </span>
+                                )}
+                            </div>
+
+                            {!busy && activeJobId && parseProgress.status !== "done" && (
+                                <button
+                                    type="button"
+                                    onClick={reconnectToSavedJob}
+                                    className="mt-3 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-border text-xs font-semibold"
+                                >
+                                    <RefreshCw className="h-3.5 w-3.5" /> Reconnect to saved import
+                                </button>
+                            )}
                         </div>
                     )}
                     {files.length > 0 && (
@@ -1471,7 +2280,7 @@ function BulkDocumentImportCard({ orgs }) {
                                 <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
                                     <div>
                                         <div className="font-semibold">{doc.filename}</div>
-                                        <div className="text-xs text-muted-foreground mt-1">{doc.source_type.toUpperCase() || "UNKNOWN"}</div>
+                                        <div className="text-xs text-muted-foreground mt-1">{(doc.source_type || "unknown").toUpperCase()}</div>
                                     </div>
                                     <div className="flex flex-wrap gap-2">
                                         {doc.items.map((item, index) => (
@@ -1572,6 +2381,7 @@ function BulkDocumentImportCard({ orgs }) {
                                                                         <option value="weekly">Every week</option>
                                                                         <option value="biweekly">Every 2 weeks</option>
                                                                         <option value="monthly">Every month</option>
+                                                                        <option value="monthly_weekday">Same weekday each month (e.g. 1st Thursday)</option>
                                                                         <option value="annually">Every year</option>
                                                                     </select>
                                                                 </Field>
@@ -1586,11 +2396,39 @@ function BulkDocumentImportCard({ orgs }) {
                                                                     />
                                                                 </Field>
                                                             </div>
-                                                        </>
+                                                        </>  
                                                     ) : (
                                                         <Field label="Location">
                                                             <input value={item.draft.location || ""} onChange={(e) => updateItem(doc.filename, item.reviewId, { location: e.target.value })} className={inp} />
                                                         </Field>
+                                                    )}
+                                                    {item.suggested_type === "event" && (
+                                                        <>
+                                                            <div className="grid sm:grid-cols-2 gap-3">
+                                                                <Field label="Venue name">
+                                                                    <input value={item.draft.location || ""} onChange={(e) => updateItem(doc.filename, item.reviewId, { location: e.target.value })} className={inp} placeholder="e.g. St Catherine's Hall" />
+                                                                </Field>
+                                                                <Field label="Street address">
+                                                                    <input value={item.draft.address || ""} onChange={(e) => updateItem(doc.filename, item.reviewId, { address: e.target.value })} className={inp} placeholder="e.g. Church Road, Blackrod" />
+                                                                </Field>
+                                                            </div>
+                                                            <div className="grid sm:grid-cols-2 gap-3">
+                                                                <Field label="Cost">
+                                                                    <input value={item.draft.cost || ""} onChange={(e) => updateItem(doc.filename, item.reviewId, { cost: e.target.value })} className={inp} placeholder="e.g. Free, £5, £3/£5" />
+                                                                </Field>
+                                                                <Field label="Suitable for">
+                                                                    <input value={item.draft.age || ""} onChange={(e) => updateItem(doc.filename, item.reviewId, { age: e.target.value })} className={inp} placeholder="e.g. All ages, Adults, Under 16s" />
+                                                                </Field>
+                                                            </div>
+                                                            <div className="grid sm:grid-cols-2 gap-3">
+                                                                <Field label="Contact email">
+                                                                    <input type="email" value={item.draft.contact_email || ""} onChange={(e) => updateItem(doc.filename, item.reviewId, { contact_email: e.target.value })} className={inp} />
+                                                                </Field>
+                                                                <Field label="Contact phone">
+                                                                    <input type="tel" value={item.draft.contact_phone || ""} onChange={(e) => updateItem(doc.filename, item.reviewId, { contact_phone: e.target.value })} className={inp} />
+                                                                </Field>
+                                                            </div>
+                                                        </>
                                                     )}
                                                     <div className="flex gap-2 flex-wrap">
                                                         <button type="button" onClick={() => toggleEdit(doc.filename, item.reviewId)} className="px-3 py-2 rounded-full bg-muted text-xs font-semibold">Done</button>
@@ -1609,8 +2447,15 @@ function BulkDocumentImportCard({ orgs }) {
                                                 {item.matched_volunteer_title && <span className="px-2.5 py-1 rounded-full bg-muted">Volunteer: {item.matched_volunteer_title}</span>}
                                                 {item.matched_venue_name && <span className="px-2.5 py-1 rounded-full bg-muted">Venue: {item.matched_venue_name}</span>}
                                                 {item.location && <span className="px-2.5 py-1 rounded-full bg-muted">{item.location}</span>}
-                                                {item.date && <span className="px-2.5 py-1 rounded-full bg-muted">{item.date}</span>}
+                                                {item.address && <span className="px-2.5 py-1 rounded-full bg-muted">📍 {item.address}</span>}
+                                                {item.date && <span className="px-2.5 py-1 rounded-full bg-muted">{item.date}{item.end_date ? ` → ${item.end_date}` : ""}</span>}
                                                 {item.start_time && <span className="px-2.5 py-1 rounded-full bg-muted">{item.start_time}{item.end_time ? `-${item.end_time}` : ""}</span>}
+                                                {item.cost && <span className="px-2.5 py-1 rounded-full bg-muted">💷 {item.cost}</span>}
+                                                {item.booking && <span className="px-2.5 py-1 rounded-full bg-muted">🎫 {item.booking}</span>}
+                                                {item.age && <span className="px-2.5 py-1 rounded-full bg-muted">👥 {item.age}</span>}
+                                                {item.accessibility && <span className="px-2.5 py-1 rounded-full bg-muted">♿ {item.accessibility}</span>}
+                                                {item.contact_email && <span className="px-2.5 py-1 rounded-full bg-muted">✉ {item.contact_email}</span>}
+                                                {item.contact_phone && <span className="px-2.5 py-1 rounded-full bg-muted">☎ {item.contact_phone}</span>}
                                                 {item.recurrence_freq && item.recurrence_freq !== "none" && (
                                                     <span
                                                         data-testid={`bulk-item-recurrence-chip-${item.reviewId}`}
@@ -1884,7 +2729,7 @@ function QuickAddContentCard({ orgs, onCreated }) {
                 booking: eventForm.booking,
                 contactEmail: eventForm.contactEmail,
                 contactPhone: eventForm.contactPhone,
-                image: eventForm.image || "https://images.unsplash.com/photo-1533174072545-7a4b6ad7a6c3?w=1200&q=80",
+                image: eventForm.image,
                 status: eventForm.status,
                 recurrence: buildRecurrencePayload(eventForm.recurrenceFreq, eventForm.recurrenceUntil, {
                     interval: eventForm.recurrenceInterval,
@@ -1950,8 +2795,8 @@ function QuickAddContentCard({ orgs, onCreated }) {
     };
 
     const createOrgQuick = async () => {
-        if (!orgForm.name || !orgForm.short) {
-            return toast.error("Name and short description are required");
+        if (!orgForm.name || !orgForm.short || !orgForm.email.trim()) {
+            return toast.error("Name, short description and contact email are required");
         }
         const slug = orgForm.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
         setBusy(true);
@@ -2268,8 +3113,8 @@ function QuickAddContentCard({ orgs, onCreated }) {
                                 </Field>
                             </div>
                             <div className="grid sm:grid-cols-2 gap-3">
-                                <Field label="Email">
-                                    <input type="email" value={orgForm.email} onChange={(e) => setOrgForm((p) => ({ ...p, email: e.target.value }))} className={inp} />
+                                <Field label="Email" required>
+                                    <input required type="email" value={orgForm.email} onChange={(e) => setOrgForm((p) => ({ ...p, email: e.target.value }))} className={inp} />
                                 </Field>
                                 <Field label="Phone">
                                     <input value={orgForm.phone} onChange={(e) => setOrgForm((p) => ({ ...p, phone: e.target.value }))} className={inp} />
@@ -2392,12 +3237,22 @@ function BroadcastCard() {
 }
 
 // ─────────── Newsletter card ───────────
-function NewsletterCard() {
+function NewsletterCard({ orgs }) {
     const [subject, setSubject] = useState("Your Blackrod Now digest 📬");
     const [intro, setIntro] = useState("");
+    const [audience, setAudience] = useState("subscribers");
+    const [selectedOrgSlugs, setSelectedOrgSlugs] = useState([]);
     const [preview, setPreview] = useState(null);
     const [busy, setBusy] = useState(false);
     const [open, setOpen] = useState(false);
+
+    const toggleOrg = (slug) => {
+        setSelectedOrgSlugs((current) => (
+            current.includes(slug)
+                ? current.filter((item) => item !== slug)
+                : [...current, slug]
+        ));
+    };
 
     const previewIt = async () => {
         try {
@@ -2406,9 +3261,18 @@ function NewsletterCard() {
         } catch { toast.error("Preview failed"); }
     };
     const send = async () => {
+        if (audience === "orgs_selected" && !selectedOrgSlugs.length) {
+            toast.error("Pick at least one organisation");
+            return;
+        }
         setBusy(true);
         try {
-            const res = await api.sendNewsletter({ subject, body_intro: intro });
+            const res = await api.sendNewsletter({
+                subject,
+                body_intro: intro,
+                audience,
+                org_slugs: audience === "orgs_selected" ? selectedOrgSlugs : [],
+            });
             toast.success(`Newsletter sent — ${res.sent} delivered${res.mocked ? " (mocked)" : ""}`);
         } catch { toast.error("Send failed"); }
         finally { setBusy(false); }
@@ -2420,15 +3284,42 @@ function NewsletterCard() {
                 <div className="h-9 w-9 rounded-2xl bg-primary/10 text-primary grid place-items-center"><Mail className="h-4 w-4" /></div>
                 <h3 className="font-display font-bold">Weekly newsletter</h3>
             </div>
-            <p className="text-xs text-muted-foreground mb-3">Personalised digest — each subscriber gets events matching the orgs and categories they follow.</p>
+            <p className="text-xs text-muted-foreground mb-3">Choose who to send to: digest subscribers, all organisations, or selected organisations.</p>
+            <select
+                data-testid="newsletter-audience"
+                value={audience}
+                onChange={(e) => setAudience(e.target.value)}
+                className="w-full mb-2 px-3 py-2 rounded-2xl border border-border bg-background text-sm"
+            >
+                <option value="subscribers">Subscribers (digest-enabled)</option>
+                <option value="orgs_all">All organisations with email</option>
+                <option value="orgs_selected">Selected organisations</option>
+            </select>
             <input data-testid="newsletter-subject" value={subject} onChange={(e) => setSubject(e.target.value)} placeholder="Subject" className="w-full mb-2 px-3 py-2 rounded-2xl border border-border bg-background text-sm" />
-            <textarea data-testid="newsletter-intro" value={intro} onChange={(e) => setIntro(e.target.value)} rows={2} placeholder="Optional intro line…" className="w-full mb-2 px-3 py-2 rounded-2xl border border-border bg-background text-sm" />
+            <textarea data-testid="newsletter-intro" value={intro} onChange={(e) => setIntro(e.target.value)} rows={2} placeholder={audience === "subscribers" ? "Optional intro line…" : "Message for organisations…"} className="w-full mb-2 px-3 py-2 rounded-2xl border border-border bg-background text-sm" />
+            {audience === "orgs_selected" && (
+                <div className="mb-2 max-h-40 overflow-y-auto rounded-2xl border border-border bg-background p-2">
+                    {orgs
+                        .filter((org) => org.status !== "rejected")
+                        .sort((a, b) => (a.name || "").localeCompare(b.name || ""))
+                        .map((org) => (
+                            <label key={org.slug} className="flex items-center justify-between gap-3 px-2 py-1.5 rounded-xl hover:bg-muted text-sm">
+                                <span className="truncate">{org.name}</span>
+                                <input
+                                    type="checkbox"
+                                    checked={selectedOrgSlugs.includes(org.slug)}
+                                    onChange={() => toggleOrg(org.slug)}
+                                />
+                            </label>
+                        ))}
+                </div>
+            )}
             <div className="flex gap-2">
                 <button data-testid="newsletter-preview" onClick={previewIt} className="inline-flex items-center gap-1 px-4 py-2 rounded-full border-2 border-foreground font-semibold text-xs">
                     <Eye className="h-3.5 w-3.5" /> Preview
                 </button>
                 <button data-testid="newsletter-send" disabled={busy} onClick={send} className="inline-flex items-center gap-1 px-4 py-2 rounded-full bg-primary text-primary-foreground font-semibold text-xs disabled:opacity-60">
-                    <Send className="h-3.5 w-3.5" /> Send digest
+                    <Send className="h-3.5 w-3.5" /> Send newsletter
                 </button>
             </div>
             <Dialog open={open} onOpenChange={setOpen}>
@@ -2449,90 +3340,447 @@ function NewsletterCard() {
     );
 }
 
-// ─────────── Admin inbox (org → super admin) ───────────
-function AdminInbox({ onChange }) {
+// ─────────── Unified email centre ───────────
+function AdminEmailCentre({ orgs, onChange }) {
     const [msgs, setMsgs] = useState([]);
     const [tab, setTab] = useState("inbox");
+    const [expanded, setExpanded] = useState(null);
+    const [reply, setReply] = useState({ id: null, body: "" });
     const [query, setQuery] = useState("");
-    useEffect(() => { api.adminMessages().then(setMsgs).catch(() => {}); }, []);
+    const [replyBusy, setReplyBusy] = useState(false);
+    const [selected, setSelected] = useState(new Set());
+    const [bulkBusy, setBulkBusy] = useState(false);
+    const [senders, setSenders] = useState([]);
+    const [composeForm, setComposeForm] = useState({ to: "", subject: "", body: "", from_email: "", reply_to: "" });
+    const [composeBusy, setComposeBusy] = useState(false);
 
-    const normalizedQuery = query.trim().toLowerCase();
-    const visible = msgs
-        .filter((m) => (tab === "archive" ? m.read : !m.read))
-        .filter((m) => {
-            if (!normalizedQuery) return true;
-            const haystack = `${m.from_org_slug || ""} ${m.from_name || ""} ${m.from_email || ""} ${m.subject || ""} ${m.body || ""}`.toLowerCase();
-            return haystack.includes(normalizedQuery);
-        });
+    const loadMsgs = async () => { try { setMsgs(await api.adminMessages()); } catch { /* ignore */ } };
 
-    const inboxCount = msgs.filter((m) => !m.read).length;
-    const archiveCount = msgs.filter((m) => m.read).length;
+    useEffect(() => { loadMsgs(); }, []);
+    useEffect(() => {
+        api.adminEmailSenders()
+            .then((r) => { setSenders(r.senders || []); setComposeForm((f) => ({ ...f, from_email: r.default || (r.senders || [])[0] || "" })); })
+            .catch(() => {});
+    }, []);
+
+    // Clear selection when switching tabs
+    useEffect(() => { setSelected(new Set()); }, [tab]);
+
+    const inbox = msgs.filter((m) => m.direction !== "outbound_admin");
+    const sent  = msgs.filter((m) => m.direction === "outbound_admin");
+    const unread = inbox.filter((m) => !m.read).length;
+
+    const needle = query.trim().toLowerCase();
+    const visible = (tab === "inbox" ? inbox : sent).filter((m) => {
+        if (!needle) return true;
+        const h = `${m.from_org_slug || ""} ${m.from_name || ""} ${m.from_email || ""} ${m.to_email || ""} ${m.subject || ""} ${m.body || ""}`.toLowerCase();
+        return h.includes(needle);
+    });
+
+    const toggleSelect = (id) => setSelected((prev) => { const next = new Set(prev); next.has(id) ? next.delete(id) : next.add(id); return next; });
+    const selectAll = () => setSelected(new Set(visible.map((m) => m.id)));
+    const clearSelection = () => setSelected(new Set());
+
+    const bulkAction = async (action) => {
+        const ids = [...selected];
+        if (!ids.length) return;
+        setBulkBusy(true);
+        try {
+            await api.bulkMessageAction(ids, action);
+            if (action === "delete") {
+                setMsgs((prev) => prev.filter((x) => !selected.has(x.id)));
+                if (selected.has(expanded)) setExpanded(null);
+            } else {
+                setMsgs((prev) => prev.map((x) => selected.has(x.id) ? { ...x, read: true } : x));
+            }
+            setSelected(new Set());
+            toast.success(`${action === "delete" ? "Deleted" : "Archived"} ${ids.length} message${ids.length === 1 ? "" : "s"}`);
+            onChange?.();
+        } catch (e) {
+            toast.error(e?.response?.data?.detail || "Action failed");
+        } finally {
+            setBulkBusy(false);
+        }
+    };
 
     const markRead = async (id) => {
         await api.markMessageRead(id);
-        setMsgs((prev) => prev.map((x) => x.id === id ? { ...x, read: true } : x));
+        setMsgs((prev) => prev.map((x) => (x.id === id ? { ...x, read: true } : x)));
         onChange?.();
     };
+
+    const deleteMsg = async (id) => {
+        try {
+            await api.deleteAdminMessage(id);
+            setMsgs((prev) => prev.filter((x) => x.id !== id));
+            if (expanded === id) setExpanded(null);
+            if (reply.id === id) setReply({ id: null, body: "" });
+            onChange?.();
+        } catch (e) {
+            toast.error(e?.response?.data?.detail || "Could not delete message");
+        }
+    };
+
+    const sendReply = async (msg) => {
+        if (!reply.body.trim()) { toast.error("Reply is empty"); return; }
+        setReplyBusy(true);
+        try {
+            await api.replyAdminMessage(msg.id, { body: reply.body.trim(), subject: `Re: ${msg.subject || "Message"}` });
+            toast.success("Reply sent");
+            setReply({ id: null, body: "" });
+            await loadMsgs();
+            onChange?.();
+        } catch (e) {
+            toast.error(e?.response?.data?.detail || "Reply failed");
+        } finally {
+            setReplyBusy(false);
+        }
+    };
+
+    const openInCompose = (msg) => {
+        setComposeForm((f) => ({
+            ...f,
+            to: msg.from_email || "",
+            subject: `Re: ${msg.subject || "Message"}`,
+            body: `\n\n---\nOn ${new Date(msg.created_at).toLocaleString("en-GB")}, ${msg.from_name || msg.from_email || "you"} wrote:\n${msg.body || ""}`,
+        }));
+        setTab("compose");
+    };
+
+    const emailRe = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    const validCount = composeForm.to.split(/[,;\n]+/).map((s) => s.trim()).filter((s) => emailRe.test(s)).length;
+
+    const doComposeSend = async () => {
+        if (!validCount) { toast.error("Add at least one valid recipient"); return; }
+        if (!composeForm.subject.trim() || !composeForm.body.trim()) { toast.error("Subject and body are required"); return; }
+        if (!window.confirm(`Send to ${validCount} recipient${validCount === 1 ? "" : "s"}?`)) return;
+        setComposeBusy(true);
+        try {
+            const fd = new FormData();
+            Object.entries(composeForm).forEach(([k, v]) => fd.append(k, v || ""));
+            const r = await api.adminEmailSend(fd);
+            if (r.ok) {
+                toast.success(`Sent to ${r.sent} recipient${r.sent === 1 ? "" : "s"}`);
+                setComposeForm((f) => ({ ...f, to: "", subject: "", body: "" }));
+                await loadMsgs();
+                setTab("sent");
+            } else {
+                toast.error(`Sent ${r.sent}, failed ${r.failed}`);
+            }
+        } catch (e) {
+            toast.error(e?.response?.data?.detail || "Send failed");
+        } finally {
+            setComposeBusy(false);
+        }
+    };
+
+    const cinp = "w-full px-3 py-2.5 rounded-2xl border border-border bg-background text-sm focus:outline-none focus:ring-2 focus:ring-primary";
+
+    return (
+        <div className="rounded-3xl border border-border bg-surface overflow-hidden" data-testid="admin-email-centre">
+            {/* Tab bar */}
+            <div className="flex items-center justify-between gap-3 px-5 pt-5 pb-4 flex-wrap border-b border-border">
+                <div className="flex items-center gap-2">
+                    <div className="h-9 w-9 rounded-2xl bg-primary/10 text-primary grid place-items-center">
+                        <Mail className="h-4 w-4" />
+                    </div>
+                    <h3 className="font-display font-bold text-lg">Email</h3>
+                </div>
+                <div className="flex items-center gap-1.5 flex-wrap">
+                    <button type="button" onClick={() => setTab("inbox")} className={`px-3 py-1.5 rounded-full text-xs font-semibold flex items-center gap-1.5 ${tab === "inbox" ? "bg-foreground text-background" : "bg-muted"}`}>
+                        <Inbox className="h-3 w-3" /> Inbox
+                        {unread > 0 && <span className="bg-primary text-primary-foreground rounded-full px-1.5 text-[10px]">{unread}</span>}
+                    </button>
+                    <button type="button" onClick={() => setTab("sent")} className={`px-3 py-1.5 rounded-full text-xs font-semibold flex items-center gap-1.5 ${tab === "sent" ? "bg-foreground text-background" : "bg-muted"}`}>
+                        <Send className="h-3 w-3" /> Sent ({sent.length})
+                    </button>
+                    <button type="button" onClick={() => setTab("compose")} className={`px-3 py-1.5 rounded-full text-xs font-semibold flex items-center gap-1.5 ${tab === "compose" ? "bg-foreground text-background" : "bg-primary text-primary-foreground"}`}>
+                        <Edit3 className="h-3 w-3" /> Compose
+                    </button>
+                    <button type="button" onClick={loadMsgs} title="Refresh" className="px-3 py-1.5 rounded-full text-xs font-semibold bg-muted flex items-center gap-1">
+                        <RefreshCw className="h-3 w-3" />
+                    </button>
+                </div>
+            </div>
+
+            <div className="p-5">
+                {tab !== "compose" && (
+                    <>
+                        <input
+                            value={query}
+                            onChange={(e) => setQuery(e.target.value)}
+                            placeholder={`Search ${tab}…`}
+                            className="w-full mb-3 px-3 py-2 rounded-2xl border border-border bg-background text-sm"
+                        />
+                        {visible.length === 0 ? (
+                            <p className="text-sm text-muted-foreground py-6 text-center">
+                                {needle ? "No messages match your search." : tab === "inbox" ? "Inbox is empty." : "Nothing sent yet."}
+                            </p>
+                        ) : (
+                            <>
+                                {/* Bulk action toolbar */}
+                                <div className="flex items-center gap-2 mb-2 min-h-[32px]">
+                                    <label className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer select-none">
+                                        <input
+                                            type="checkbox"
+                                            checked={selected.size > 0 && selected.size === visible.length}
+                                            ref={(el) => { if (el) el.indeterminate = selected.size > 0 && selected.size < visible.length; }}
+                                            onChange={(e) => (e.target.checked ? selectAll() : clearSelection())}
+                                            className="h-3.5 w-3.5 accent-primary"
+                                        />
+                                        {selected.size > 0 ? `${selected.size} selected` : "Select all"}
+                                    </label>
+                                    {selected.size > 0 && (
+                                        <div className="flex items-center gap-1.5 ml-2">
+                                            <button type="button" disabled={bulkBusy} onClick={() => bulkAction("archive")} className="px-3 py-1 rounded-full bg-muted text-xs font-semibold disabled:opacity-60 flex items-center gap-1">
+                                                <Archive className="h-3 w-3" /> Archive
+                                            </button>
+                                            <button type="button" disabled={bulkBusy} onClick={() => bulkAction("delete")} className="px-3 py-1 rounded-full text-destructive border border-destructive/30 text-xs font-semibold disabled:opacity-60 flex items-center gap-1">
+                                                <Trash2 className="h-3 w-3" /> Delete
+                                            </button>
+                                            <button type="button" onClick={clearSelection} className="text-xs text-muted-foreground hover:text-foreground">
+                                                Cancel
+                                            </button>
+                                        </div>
+                                    )}
+                                </div>
+                                <div className="space-y-1.5 max-h-[500px] overflow-y-auto pr-0.5">
+                                    {visible.map((m) => {
+                                        const isUnread = !m.read && m.direction !== "outbound_admin";
+                                        const isOpen = expanded === m.id;
+                                        const isSelected = selected.has(m.id);
+                                        return (
+                                            <div key={m.id} data-testid={`msg-${m.id}`} className={`rounded-2xl border transition-colors ${isSelected ? "border-primary/50 bg-primary/5" : isUnread ? "border-primary/30 bg-primary/5" : "border-border bg-background"}`}>
+                                                <div className="px-4 py-3 flex items-center gap-3">
+                                                    <input
+                                                        type="checkbox"
+                                                        checked={isSelected}
+                                                        onChange={() => toggleSelect(m.id)}
+                                                        onClick={(e) => e.stopPropagation()}
+                                                        className="h-3.5 w-3.5 shrink-0 accent-primary"
+                                                    />
+                                                    <button type="button" onClick={() => setExpanded(isOpen ? null : m.id)} className="flex-1 min-w-0 text-left flex items-center gap-3">
+                                                        <span className={`h-2 w-2 rounded-full shrink-0 ${isUnread ? "bg-primary" : "bg-transparent"}`} />
+                                                        <div className="flex-1 min-w-0">
+                                                            <div className="flex items-center justify-between gap-2">
+                                                                <span className="font-semibold text-sm truncate">
+                                                                    {m.direction === "outbound_admin"
+                                                                        ? `To: ${m.to_email || m.to_org_slug || "—"}`
+                                                                        : (m.from_name || m.from_org_slug || m.from_email || "Unknown")}
+                                                                </span>
+                                                                <span className="text-[11px] text-muted-foreground shrink-0">
+                                                                    {new Date(m.created_at).toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}
+                                                                </span>
+                                                            </div>
+                                                            <div className="text-xs text-muted-foreground mt-0.5 truncate">{m.subject || "(no subject)"}</div>
+                                                        </div>
+                                                    </button>
+                                                </div>
+
+                                            {isOpen && (
+                                                <div className="border-t border-border px-4 pb-4 pt-3">
+                                                    <div className="text-xs text-muted-foreground space-y-0.5 mb-3">
+                                                        {m.from_email && <div>From: {m.from_name ? `${m.from_name} <${m.from_email}>` : m.from_email}</div>}
+                                                        {m.to_email && <div>To: {m.to_email}</div>}
+                                                        {m.in_reply_to && <div className="text-primary">↩ In reply to a notification</div>}
+                                                        {m.delivery?.ok === false && <div className="text-destructive">Delivery failed: {m.delivery.error || "unknown"}</div>}
+                                                    </div>
+                                                    <p className="text-sm whitespace-pre-wrap leading-relaxed">{m.body}</p>
+
+                                                    <div className="flex flex-wrap items-center gap-2 mt-4">
+                                                        {m.direction !== "outbound_admin" && m.from_email && (
+                                                            <>
+                                                                <button type="button" onClick={() => setReply((r) => (r.id === m.id ? { id: null, body: "" } : { id: m.id, body: "" }))} className="px-3 py-1.5 rounded-full bg-primary text-primary-foreground text-xs font-semibold">
+                                                                    Reply
+                                                                </button>
+                                                                <button type="button" onClick={() => openInCompose(m)} className="px-3 py-1.5 rounded-full border border-border text-xs font-semibold">
+                                                                    Open in compose
+                                                                </button>
+                                                            </>
+                                                        )}
+                                                        {isUnread && (
+                                                            <button type="button" onClick={() => markRead(m.id)} className="px-3 py-1.5 rounded-full bg-muted text-xs font-semibold">
+                                                                Mark read
+                                                            </button>
+                                                        )}
+                                                        <button type="button" onClick={() => deleteMsg(m.id)} className="ml-auto px-3 py-1.5 rounded-full text-destructive border border-destructive/30 text-xs font-semibold flex items-center gap-1">
+                                                            <Trash2 className="h-3 w-3" /> Delete
+                                                        </button>
+                                                    </div>
+
+                                                    {reply.id === m.id && (
+                                                        <div className="mt-3 space-y-2">
+                                                            <textarea
+                                                                rows={4}
+                                                                value={reply.body}
+                                                                onChange={(e) => setReply((r) => ({ ...r, body: e.target.value }))}
+                                                                placeholder="Write your reply…"
+                                                                className="w-full px-3 py-2 rounded-2xl border border-border bg-background text-sm"
+                                                            />
+                                                            <div className="flex gap-2">
+                                                                <button type="button" onClick={() => sendReply(m)} disabled={replyBusy} className="px-4 py-2 rounded-full bg-primary text-primary-foreground text-xs font-semibold disabled:opacity-60">
+                                                                    {replyBusy ? "Sending…" : "Send reply"}
+                                                                </button>
+                                                                <button type="button" onClick={() => setReply({ id: null, body: "" })} className="px-4 py-2 rounded-full border border-border text-xs font-semibold">
+                                                                    Cancel
+                                                                </button>
+                                                            </div>
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            )}
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                            </>
+                        )}
+                    </>
+                )}
+
+                {tab === "compose" && (
+                    <div className="space-y-3">
+                        <div className="grid sm:grid-cols-2 gap-3">
+                            <label className="block">
+                                <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">From</span>
+                                <select value={composeForm.from_email} onChange={(e) => setComposeForm((f) => ({ ...f, from_email: e.target.value }))} className={cinp}>
+                                    {senders.map((s) => <option key={s} value={s}>{s}</option>)}
+                                </select>
+                            </label>
+                            <label className="block">
+                                <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Reply-to (optional)</span>
+                                <input type="email" value={composeForm.reply_to} onChange={(e) => setComposeForm((f) => ({ ...f, reply_to: e.target.value }))} className={cinp} placeholder="admin@example.com" />
+                            </label>
+                        </div>
+
+                        {/* Quick-add an org's contact email to the To field */}
+                        {orgs?.some((o) => o.email) && (
+                            <div className="flex items-center gap-2">
+                                <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground shrink-0">Quick add org</span>
+                                <select
+                                    onChange={(e) => {
+                                        const o = orgs.find((x) => x.slug === e.target.value);
+                                        if (o?.email) setComposeForm((f) => ({ ...f, to: f.to ? `${f.to}, ${o.email}` : o.email }));
+                                        e.target.value = "";
+                                    }}
+                                    className="flex-1 px-2 py-1.5 rounded-2xl border border-border bg-background text-xs"
+                                >
+                                    <option value="">Select an organisation…</option>
+                                    {[...orgs].filter((o) => o.email).sort((a, b) => (a.name || "").localeCompare(b.name || "")).map((o) => (
+                                        <option key={o.slug} value={o.slug}>{o.name}</option>
+                                    ))}
+                                </select>
+                            </div>
+                        )}
+
+                        <label className="block">
+                            <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+                                To — comma-separated · <b>{validCount}</b> valid
+                            </span>
+                            <textarea rows={2} value={composeForm.to} onChange={(e) => setComposeForm((f) => ({ ...f, to: e.target.value }))} className={cinp} placeholder="email@example.com, another@example.com" />
+                        </label>
+                        <label className="block">
+                            <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Subject</span>
+                            <input value={composeForm.subject} onChange={(e) => setComposeForm((f) => ({ ...f, subject: e.target.value }))} className={cinp} />
+                        </label>
+                        <label className="block">
+                            <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Message</span>
+                            <textarea rows={9} value={composeForm.body} onChange={(e) => setComposeForm((f) => ({ ...f, body: e.target.value }))} className={cinp} placeholder="Write your message…" />
+                        </label>
+                        <div className="flex gap-2 flex-wrap">
+                            <button type="button" onClick={doComposeSend} disabled={composeBusy} className="px-5 py-2.5 rounded-full bg-primary text-primary-foreground text-sm font-semibold disabled:opacity-60 flex items-center gap-2">
+                                <Send className="h-4 w-4" /> {composeBusy ? "Sending…" : `Send${validCount ? ` to ${validCount}` : ""}`}
+                            </button>
+                            <button type="button" onClick={() => setComposeForm((f) => ({ ...f, to: "", subject: "", body: "" }))} className="px-5 py-2.5 rounded-full border border-border text-sm font-semibold">
+                                Clear
+                            </button>
+                        </div>
+                    </div>
+                )}
+            </div>
+        </div>
+    );
+}
+
+function SubscribersCard() {
+    const [items, setItems] = useState([]);
+    const [query, setQuery] = useState("");
+    const [includeUnsubscribed, setIncludeUnsubscribed] = useState(false);
+    const [digestOnly, setDigestOnly] = useState(false);
+    const [summary, setSummary] = useState({ total_active: 0, total_digest: 0 });
+    const [busy, setBusy] = useState(false);
+
+    const load = async () => {
+        setBusy(true);
+        try {
+            const result = await api.adminSubscribers({
+                q: query,
+                include_unsubscribed: includeUnsubscribed,
+                digest_only: digestOnly,
+                limit: 300,
+            });
+            setItems(result.items || []);
+            setSummary({ total_active: result.total_active || 0, total_digest: result.total_digest || 0 });
+        } catch {
+            toast.error("Could not load subscribers");
+        } finally {
+            setBusy(false);
+        }
+    };
+
+    useEffect(() => { load(); }, []);
 
     return (
         <div className="rounded-3xl border border-border bg-surface p-5">
             <div className="flex items-center gap-2 mb-2">
-                <div className="h-9 w-9 rounded-2xl bg-secondary/40 text-secondary-foreground grid place-items-center"><MessageSquare className="h-4 w-4" /></div>
-                <h3 className="font-display font-bold">Contact admin inbox</h3>
+                <div className="h-9 w-9 rounded-2xl bg-accent/15 text-accent-foreground grid place-items-center"><Users className="h-4 w-4" /></div>
+                <h3 className="font-display font-bold">Subscribers</h3>
             </div>
-
-            <div className="mt-3 flex flex-wrap items-center gap-2">
-                <button
-                    type="button"
-                    onClick={() => setTab("inbox")}
-                    className={`px-3 py-1.5 rounded-full text-xs font-semibold ${tab === "inbox" ? "bg-foreground text-background" : "bg-muted text-foreground"}`}
-                >
-                    Inbox ({inboxCount})
-                </button>
-                <button
-                    type="button"
-                    onClick={() => setTab("archive")}
-                    className={`px-3 py-1.5 rounded-full text-xs font-semibold ${tab === "archive" ? "bg-foreground text-background" : "bg-muted text-foreground"}`}
-                >
-                    Archive ({archiveCount})
-                </button>
+            <p className="text-xs text-muted-foreground mb-3">View newsletter subscribers and their follow profile.</p>
+            <div className="text-xs text-muted-foreground mb-2">
+                Active: <b className="text-foreground">{summary.total_active}</b> · Digest enabled: <b className="text-foreground">{summary.total_digest}</b>
+            </div>
+            <div className="grid gap-2 mb-3">
                 <input
                     value={query}
                     onChange={(e) => setQuery(e.target.value)}
-                    placeholder={`Search ${tab}...`}
-                    className="ml-auto w-full sm:w-56 px-3 py-2 rounded-2xl border border-border bg-background text-xs"
+                    placeholder="Search by email..."
+                    className="w-full px-3 py-2 rounded-2xl border border-border bg-background text-sm"
                 />
+                <div className="flex items-center gap-4 text-xs">
+                    <label className="inline-flex items-center gap-1.5">
+                        <input type="checkbox" checked={digestOnly} onChange={(e) => setDigestOnly(e.target.checked)} />
+                        Digest only
+                    </label>
+                    <label className="inline-flex items-center gap-1.5">
+                        <input type="checkbox" checked={includeUnsubscribed} onChange={(e) => setIncludeUnsubscribed(e.target.checked)} />
+                        Include unsubscribed
+                    </label>
+                    <button
+                        type="button"
+                        onClick={load}
+                        disabled={busy}
+                        className="ml-auto px-3 py-1.5 rounded-full border border-border text-xs font-semibold"
+                    >
+                        {busy ? "Loading..." : "Refresh"}
+                    </button>
+                </div>
             </div>
 
-            {visible.length === 0 ? (
-                <p className="text-sm text-muted-foreground mt-3">{tab === "archive" ? "No archived messages yet." : "No unread messages."}</p>
-            ) : (
-                <ul className="space-y-2 max-h-72 overflow-y-auto mt-3">
-                    {visible.map((m) => (
-                        <li key={m.id} data-testid={`msg-${m.id}`} className={`p-3 rounded-2xl border border-border ${m.read ? "bg-background" : "bg-primary/5"}`}>
-                            <div className="text-xs text-muted-foreground flex items-center gap-2 flex-wrap">
-                                <b className="text-foreground">{m.from_org_slug || m.from_name || m.from_email || "Anonymous"}</b>
-                                <span>· {new Date(m.created_at).toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}</span>
-                                {m.in_reply_to && (
-                                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-secondary/40 text-secondary-foreground text-[10px] font-bold uppercase tracking-wider">
-                                        Reply
-                                    </span>
-                                )}
-                            </div>
-                            <div className="font-semibold text-sm mt-1">{m.subject}</div>
-                            <div className="text-sm text-muted-foreground mt-1 whitespace-pre-wrap">{m.body}</div>
-                            {!m.read && tab !== "archive" && (
-                                <button
-                                    onClick={async () => { await markRead(m.id); }}
-                                    className="mt-2 text-xs text-primary font-semibold"
-                                >
-                                    Mark as read (move to archive)
-                                </button>
-                            )}
-                        </li>
-                    ))}
-                </ul>
-            )}
+            <div className="max-h-72 overflow-y-auto space-y-2">
+                {items.length === 0 && <p className="text-sm text-muted-foreground">No subscribers found.</p>}
+                {items.map((sub) => (
+                    <div key={sub.id} className="rounded-2xl border border-border bg-background p-3">
+                        <div className="text-sm font-semibold truncate">{sub.email}</div>
+                        <div className="text-xs text-muted-foreground mt-1 flex flex-wrap gap-x-3 gap-y-1">
+                            <span>Digest: {sub.digest ? "Yes" : "No"}</span>
+                            <span>Status: {sub.unsubscribed ? "Unsubscribed" : "Active"}</span>
+                            <span>Followed orgs: {sub.followed_orgs_count || 0}</span>
+                            <span>Categories: {sub.followed_categories_count || 0}</span>
+                        </div>
+                    </div>
+                ))}
+            </div>
         </div>
     );
 }
@@ -2548,8 +3796,14 @@ function NotifyOrgCard({ orgs }) {
     const send = async () => {
         if (!slug || !title) return toast.error("Pick an organisation and give it a title");
         try {
-            await api.sendNotification({ org_slug: slug, title, body });
-            toast.success("Notification sent");
+            const result = await api.sendNotification({ org_slug: slug, title, body, send_email: true });
+            if (result?.email_delivery?.ok) {
+                toast.success("Notification and email sent");
+            } else if (result?.email_delivery && !result?.email_delivery?.ok) {
+                toast.error("In-app notification sent, but email failed");
+            } else {
+                toast.success("Notification sent (no org email on record)");
+            }
             setTitle(""); setBody("");
         } catch { toast.error("Failed"); }
     };
@@ -2560,7 +3814,7 @@ function NotifyOrgCard({ orgs }) {
                 <div className="h-9 w-9 rounded-2xl bg-primary/10 text-primary grid place-items-center"><Bell className="h-4 w-4" /></div>
                 <h3 className="font-display font-bold">Notify an organisation</h3>
             </div>
-            <p className="text-xs text-muted-foreground mb-3">Appears in their dashboard bell.</p>
+            <p className="text-xs text-muted-foreground mb-3">Appears in their dashboard bell and also emails the organisation when an email address is on file.</p>
             <select data-testid="notify-org" value={slug} onChange={(e) => setSlug(e.target.value)} className="w-full mb-2 px-3 py-2 rounded-2xl border border-border bg-background text-sm">
                 {orgs.map((o) => <option key={o.slug} value={o.slug}>{o.name}</option>)}
             </select>

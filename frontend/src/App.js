@@ -23,11 +23,17 @@ import Volunteering from "@/pages/Volunteering";
 import Notifications from "@/pages/Notifications";
 import FAQ from "@/pages/FAQ";
 import Contact from "@/pages/Contact";
+import Privacy from "@/pages/Privacy";
+import Terms from "@/pages/Terms";
 import Preferences from "@/pages/Preferences";
 import Unsubscribe from "@/pages/Unsubscribe";
 import OrgProfileEdit from "@/pages/OrgProfileEdit";
 import Impact from "@/pages/Impact";
 import EventEdit from "@/pages/EventEdit";
+import Flyers from "@/pages/Flyers";
+import AdminEvents from "@/pages/AdminEvents";
+import MemberRedeem from "@/pages/MemberRedeem";
+import MemberLogin from "@/pages/MemberLogin";
 
 function RequireRole({ allowed, children }) {
     const { role } = useApp();
@@ -107,6 +113,22 @@ export default function App() {
                                 )}
                             />
                             <Route
+                                path="/admin/flyers"
+                                element={(
+                                    <RequireRole allowed={["admin"]}>
+                                        <Flyers />
+                                    </RequireRole>
+                                )}
+                            />
+                            <Route
+                                path="/admin/events"
+                                element={(
+                                    <RequireRole allowed={["admin"]}>
+                                        <AdminEvents />
+                                    </RequireRole>
+                                )}
+                            />
+                            <Route
                                 path="/organisation-dashboard"
                                 element={(
                                     <RequireRole allowed={["admin", "org"]}>
@@ -115,9 +137,13 @@ export default function App() {
                                 )}
                             />
 
+                            <Route path="/member/redeem" element={<MemberRedeem />} />
+                            <Route path="/member/login" element={<MemberLogin />} />
                             <Route path="/faq" element={<FAQ />} />
                             <Route path="/help" element={<FAQ />} />
                             <Route path="/contact" element={<Contact />} />
+                            <Route path="/privacy" element={<Privacy />} />
+                            <Route path="/terms" element={<Terms />} />
                             <Route path="/preferences/:token" element={<Preferences />} />
                             <Route path="/unsubscribe/:token" element={<Unsubscribe />} />
                             <Route

@@ -91,7 +91,7 @@ export default function SubmitEvent() {
                 booking: form.booking,
                 contactEmail: form.contactEmail,
                 contactPhone: form.contactPhone,
-                image: form.image || "https://images.unsplash.com/photo-1533174072545-7a4b6ad7a6c3?w=1200&q=80",
+                image: form.image,
                 recurrence: buildRecurrencePayload(form.recurrenceFreq, form.recurrenceUntil, {
                     interval: form.recurrenceInterval,
                     extraDates: form.recurrenceExtraDates,

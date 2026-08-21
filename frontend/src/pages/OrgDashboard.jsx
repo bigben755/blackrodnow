@@ -164,7 +164,7 @@ export default function OrgDashboard() {
                 booking: "",
                 contactEmail: org?.email || "",
                 contactPhone: org?.phone || "",
-                image: "https://images.unsplash.com/photo-1533174072545-7a4b6ad7a6c3?w=1200&q=80",
+                image: "",
                 recurrence: buildRecurrencePayload(recurrenceFreq, recurrenceUntil),
             });
             toast.success(
@@ -921,6 +921,7 @@ function ParsedCard({ it, onPublishEvent, onPublishUpdate, onCopy }) {
                             <option value="weekly">Every week</option>
                             <option value="biweekly">Every 2 weeks</option>
                             <option value="monthly">Every month</option>
+                            <option value="monthly_weekday">Same weekday each month (e.g. 1st Thursday)</option>
                             <option value="annually">Every year</option>
                         </select>
                         <input

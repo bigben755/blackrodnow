@@ -452,6 +452,13 @@ function Navbar() {
                         </label>
 
                         <DialogFooter>
+                            <Link
+                                to="/organisation/member/login"
+                                onClick={() => setOrgLoginOpen(false)}
+                                className="mr-auto text-xs font-semibold text-primary hover:underline"
+                            >
+                                Member login or invite redeem
+                            </Link>
                             <button
                                 type="button"
                                 onClick={() => setOrgLoginOpen(false)}
@@ -535,7 +542,7 @@ function Navbar() {
 }
 
 function Footer() {
-    const { startDemo, role } = useApp();
+    const { role } = useApp();
     const [wizardOpen, setWizardOpen] = useState(false);
     const [wizardBusy, setWizardBusy] = useState(false);
     const [wizardForm, setWizardForm] = useState({
@@ -704,26 +711,17 @@ function Footer() {
                     </div>
 
                     <div className="flex items-center gap-4">
-                        <a href="#" className="hover:text-foreground">
+                        <Link to="/privacy" className="hover:text-foreground">
                             Privacy
-                        </a>
+                        </Link>
 
-                        <a href="#" className="hover:text-foreground">
+                        <Link to="/terms" className="hover:text-foreground">
                             Terms
-                        </a>
+                        </Link>
 
                         <Link to="/faq" className="hover:text-foreground">
                             Help
                         </Link>
-
-                        <Button
-                            data-testid="start-demo-footer"
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => startDemo(role)}
-                        >
-                            Demo
-                        </Button>
 
                     </div>
                 </div>

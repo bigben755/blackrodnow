@@ -45,6 +45,24 @@ def _create_event(admin_headers, recurrence, title="TEST_AdvRecur"):
     return r.json()["id"], start
 
 
+def _create_event_at(admin_headers, recurrence, start, title="TEST_AdvRecur_At"):
+    end = start + timedelta(hours=1)
+    payload = {
+        "title": title,
+        "orgSlug": TEST_ORG_SLUG,
+        "category": "Community",
+        "start": start.isoformat(),
+        "end": end.isoformat(),
+        "venue": "Blackrod",
+        "description": "advanced recurrence test",
+        "status": "approved",
+        "recurrence": recurrence,
+    }
+    r = requests.post(f"{API}/events", json=payload, headers=admin_headers, timeout=15)
+    assert r.status_code == 200, r.text
+    return r.json()["id"], start
+
+
 def _instances(eid):
     r = requests.get(f"{API}/events", timeout=15)
     assert r.status_code == 200
@@ -76,6 +94,18 @@ def test_monthly_weekday(admin_headers):
             d = datetime.fromisoformat(m["start"])
             assert d.weekday() == start.weekday(), f"weekday mismatch on {m['start']}"
             assert (d.day - 1) // 7 + 1 in (nth, nth - 1), f"nth mismatch on {m['start']}"
+    finally:
+        requests.delete(f"{API}/admin/events/{eid}", headers=admin_headers, timeout=15)
+
+
+def test_monthly_weekday_old_anchor_still_has_future_instances(admin_headers):
+    old_start = datetime(2012, 1, 5, 10, 30, tzinfo=timezone.utc)  # first Thursday anchor
+    eid, _ = _create_event_at(admin_headers, {"freq": "monthly_weekday"}, old_start, title="TEST_OldMonthlyWeekday")
+    try:
+        matches = _instances(eid)
+        now = datetime.now(timezone.utc)
+        future = [m for m in matches if datetime.fromisoformat(m["start"]) >= now - timedelta(days=1)]
+        assert future, "expected at least one upcoming recurrence instance from old monthly_weekday anchor"
     finally:
         requests.delete(f"{API}/admin/events/{eid}", headers=admin_headers, timeout=15)
 

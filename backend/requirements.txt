@@ -30,6 +30,8 @@ resend>=2.0.0
 pillow==12.2.0
 rapidocr-onnxruntime>=1.4.4
 pypdf>=6.0.0
+pypdfium2>=4.30.0
+pillow-heif>=0.16.0
 python-docx>=1.2.0
 openpyxl>=3.1.5
 opencv-python-headless>=4.10.0.84
