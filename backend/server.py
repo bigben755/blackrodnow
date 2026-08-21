@@ -24,6 +24,7 @@ import html
 import base64
 import zipfile
 import xml.etree.ElementTree as ET
+import threading
 from functools import lru_cache
 import requests
 from io import BytesIO
@@ -37,6 +38,32 @@ load_dotenv(ROOT_DIR / ".env")
 MONGO_URL = os.environ["MONGO_URL"]
 DB_NAME = os.environ["DB_NAME"]
 EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY")
+
+# ─────────── LLM library preload (event-loop protection) ───────────
+_llm_ready = threading.Event()
+_llm_preload_error: Optional[str] = None
+
+
+def _preload_llm_libs():
+    global _llm_preload_error
+    try:
+        import emergentintegrations.llm.chat  # noqa: F401  — heavy import (litellm)
+        logging.getLogger(__name__).info("LLM libraries preloaded")
+    except Exception as exc:
+        _llm_preload_error = str(exc)
+        logging.getLogger(__name__).warning("LLM library preload failed: %s", exc)
+    finally:
+        _llm_ready.set()
+
+
+async def _ensure_llm_loaded(timeout: float = 240) -> bool:
+    """Await LLM library availability WITHOUT blocking the event loop.
+    Returns False when the libraries can't be used (callers fall back)."""
+    if not EMERGENT_LLM_KEY:
+        return False
+    if not _llm_ready.is_set():
+        await asyncio.to_thread(_llm_ready.wait, timeout)
+    return _llm_ready.is_set() and _llm_preload_error is None
 RESEND_API_KEY = os.environ.get("RESEND_API_KEY")
 SENDER_EMAIL = os.environ.get("SENDER_EMAIL", "onboarding@resend.dev")
 SENDER_NAME = os.environ.get("SENDER_NAME", "Blackrod Now")
@@ -4286,6 +4313,8 @@ async def _ai_caption(ev: dict, org: Optional[dict], tone: str, base: Optional[s
     template if key missing or the call fails."""
     if not EMERGENT_LLM_KEY:
         return _template_caption(ev, tone, base)
+    if not await _ensure_llm_loaded():
+        return _template_caption(ev, tone, base)
     try:
         from emergentintegrations.llm.chat import LlmChat, UserMessage
         tone_hint = {
@@ -6854,6 +6883,9 @@ async def _parse_text_to_response(text: str, hint: Optional[str] = None) -> Pars
             + "\nIf the document is clearly an existing organisation update, event update, volunteering update or venue update, prefer update_organisation, update_event, update_volunteer or update_venue and fill in the matching slug/id."
         )
     try:
+        if not await _ensure_llm_loaded():
+            logger.warning("Classifier: LLM libraries unavailable (ready=%s err=%s key=%s) — using fallback", _llm_ready.is_set(), _llm_preload_error, bool(EMERGENT_LLM_KEY))
+            return ParseResponse(items=[_fallback_parse(text)])
         from emergentintegrations.llm.chat import LlmChat, UserMessage
         chat = LlmChat(
             api_key=EMERGENT_LLM_KEY,
@@ -6878,7 +6910,8 @@ async def _parse_text_to_response(text: str, hint: Optional[str] = None) -> Pars
             try:
                 parsed_item = ParsedItem(**{**{"description": ""}, **it})
                 items.append(_normalize_parsed_item(parsed_item, text))
-            except Exception:
+            except Exception as item_exc:
+                logger.warning("Classifier item rejected: %s | raw keys: %s", item_exc, list(it.keys()) if isinstance(it, dict) else type(it))
                 continue
         if not items:
             items = [_fallback_parse(text)]
@@ -8541,6 +8574,11 @@ async def resolve_moderation_report(
 
 @app.on_event("startup")
 async def startup():
+    # Preload the heavy LLM libraries (litellm etc.) in a daemon thread so the
+    # first AI call never does a multi-minute synchronous import on the event
+    # loop thread (which froze the whole API / failed health probes on
+    # CPU-limited production pods).
+    threading.Thread(target=_preload_llm_libs, daemon=True).start()
     init_storage()
     # useful indexes (idempotent)
     try:
