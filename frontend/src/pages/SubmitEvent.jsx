@@ -151,6 +151,12 @@ export default function SubmitEvent() {
                 <p className="mt-2 text-muted-foreground text-sm">
                     Submit an event — we'll save your draft as you go, then review it before it goes live.
                 </p>
+                <p className="mt-2 text-sm">
+                    Got a whole list of events?{" "}
+                    <a href="/submit-events-list" data-testid="link-submit-events-list" className="font-semibold text-primary underline underline-offset-2">
+                        Upload your events list in one go →
+                    </a>
+                </p>
                 <div className="mt-4 rounded-2xl border border-border bg-surface p-4 text-sm text-muted-foreground">
                     <div className="font-semibold text-foreground">What happens next</div>
                     <p className="mt-1">1. Your draft is autosaved locally. 2. Admins review it for duplicates or missing details. 3. Approved events go straight into the calendar.</p>

@@ -14,6 +14,7 @@ import EventDetail from "@/pages/EventDetail";
 import Organisations from "@/pages/Organisations";
 import OrganisationDetail from "@/pages/OrganisationDetail";
 import SubmitEvent from "@/pages/SubmitEvent";
+import SubmitEventsList from "@/pages/SubmitEventsList";
 import AddOrganisation from "@/pages/AddOrganisation";
 import Admin from "@/pages/Admin";
 import OrgDashboard from "@/pages/OrgDashboard";
@@ -82,6 +83,7 @@ export default function App() {
                             />
 
                             <Route path="/submit-event" element={<SubmitEvent />} />
+                            <Route path="/submit-events-list" element={<SubmitEventsList />} />
                             <Route
                                 path="/edit-event/:id"
                                 element={(

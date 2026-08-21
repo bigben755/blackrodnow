@@ -7722,6 +7722,133 @@ async def parse_content(req: ParseRequest):
     return await _parse_text_to_response(req.text, hint=req.hint)
 
 
+class PublicListSubmission(BaseModel):
+    submitter_name: str
+    submitter_email: str
+    org_name: str = ""
+    notes: str = ""
+    items: List[ParsedItem]
+
+
+PUBLIC_LIST_FALLBACK_ORG = "blackrod-sports-community-centre"
+
+
+@api.post("/public/event-list/parse")
+async def public_event_list_parse(file: UploadFile = File(...)):
+    """Deterministic-only parse for the public 'Submit your events list' page.
+    Never uses the AI: only the strict template formats are accepted, so
+    submitters (and admins) always see exactly what was written."""
+    filename = file.filename or "file"
+    data = await file.read()
+    if not data:
+        raise HTTPException(400, "The file is empty")
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise HTTPException(413, "File too large (max 10 MB)")
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    orgs = await db.orgs.find({}, {"_id": 0, "slug": 1, "name": 1}).to_list(500)
+    events = await db.events.find({}, {"_id": 0, "id": 1, "title": 1}).to_list(2000)
+
+    doc: Optional[ParsedDocument] = None
+    if ext in {"xlsx", "csv"}:
+        doc = await asyncio.to_thread(_try_structured_spreadsheet, filename, data, orgs, events)
+    elif ext in {"docx", "txt"}:
+        if ext == "docx":
+            text, _warn = await asyncio.to_thread(_extract_docx_text, data)
+        else:
+            text = data.decode("utf-8", errors="ignore")
+        doc = _try_labeled_blocks(filename, text, orgs, events)
+    else:
+        raise HTTPException(422, "Please upload a filled-in Word (.docx), Excel (.xlsx) or CSV template")
+    if not doc or not doc.items:
+        raise HTTPException(
+            422,
+            "We couldn't find the template structure in this file. Please download the Word or "
+            "spreadsheet template, fill it in without changing the labels/columns, and upload again.",
+        )
+    return {"format": doc.source_type, "count": len(doc.items), "warnings": doc.warnings, "items": [it.model_dump() for it in doc.items]}
+
+
+@api.post("/public/event-list/submit")
+async def public_event_list_submit(req: PublicListSubmission):
+    name = req.submitter_name.strip()
+    email = req.submitter_email.strip()
+    if not name or "@" not in email:
+        raise HTTPException(400, "Please provide your name and a valid email address")
+    if not req.items:
+        raise HTTPException(400, "No events to submit")
+    if len(req.items) > 100:
+        raise HTTPException(400, "Maximum 100 events per submission")
+
+    orgs = await db.orgs.find({}, {"_id": 0, "slug": 1, "name": 1}).to_list(500)
+    created_ids: list[str] = []
+    skipped: list[str] = []
+    for item in req.items:
+        if not item.title or not item.date or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", item.date or ""):
+            skipped.append(item.title or "(untitled)")
+            continue
+        org_slug = item.matched_org_slug
+        if not org_slug and (item.matched_org_name or req.org_name):
+            org_match, org_score = _best_match(item.matched_org_name or req.org_name, orgs, "name")
+            if org_match and org_score >= 0.85:
+                org_slug = org_match.get("slug")
+        org_slug = org_slug or PUBLIC_LIST_FALLBACK_ORG
+        start_time = item.start_time if re.fullmatch(r"\d{2}:\d{2}", item.start_time or "") else "10:00"
+        end_time = item.end_time if re.fullmatch(r"\d{2}:\d{2}", item.end_time or "") else None
+        end_date = item.end_date if re.fullmatch(r"\d{4}-\d{2}-\d{2}", item.end_date or "") else item.date
+        end_value = end_time or start_time
+        recurrence = None
+        if item.recurrence_freq and item.recurrence_freq != "none":
+            recurrence = EventRecurrence(freq=item.recurrence_freq)
+        evt = Event(
+            title=item.title.strip(),
+            orgSlug=org_slug,
+            category=item.category or "Community",
+            start=f"{item.date}T{start_time}:00",
+            end=f"{end_date}T{end_value}:00",
+            venue=item.location or "",
+            address=item.address or item.location or "",
+            description=item.description or item.title,
+            cost=item.cost or "",
+            age=item.age or "",
+            accessibility=item.accessibility or "",
+            booking=item.booking or item.url or "",
+            contactEmail=item.contact_email or "",
+            contactPhone=item.contact_phone or "",
+            image=item.image or "",
+            featured=False,
+            status="pending",  # NEVER auto-published — admin must approve each one
+            recurrence=recurrence,
+        )
+        if _is_blank_or_legacy_event_image(evt.image):
+            evt.image = _event_category_image(evt.category)
+        await db.events.insert_one(evt.model_dump())
+        created_ids.append(evt.id)
+
+    if not created_ids:
+        raise HTTPException(400, "No valid events found — every event needs at least a title and a date")
+
+    submission = {
+        "id": new_id(),
+        "submitter_name": name,
+        "submitter_email": email,
+        "org_name": req.org_name.strip(),
+        "notes": req.notes.strip()[:2000],
+        "event_ids": created_ids,
+        "skipped": skipped,
+        "created_at": now_iso(),
+    }
+    await db.bulk_submissions.insert_one(submission)
+    await _audit(
+        action="public_event_list_submitted",
+        entity_type="event",
+        entity_id=submission["id"],
+        summary=f"Public events list from {name} ({email}): {len(created_ids)} pending event(s)",
+        meta={"event_ids": created_ids, "org_name": req.org_name, "skipped": skipped},
+        actor="public",
+    )
+    return {"ok": True, "created": len(created_ids), "skipped": skipped, "status": "pending_review"}
+
+
 @api.get("/admin/documents/template.docx")
 async def bulk_import_word_template():
     """Blank Word template matching the labeled-block parser's format."""

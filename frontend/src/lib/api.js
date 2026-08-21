@@ -1224,6 +1224,24 @@ export const api = {
     },
 
     // ─────────────────────────────────────────────────────────
+    // Public "Submit your events list" (deterministic parse only)
+    // ─────────────────────────────────────────────────────────
+
+    publicParseEventList: (file) => {
+        const fd = new FormData();
+        fd.append("file", file);
+        return client
+            .post("/public/event-list/parse", fd, {
+                headers: { "Content-Type": "multipart/form-data" },
+                timeout: 60000,
+            })
+            .then((r) => r.data);
+    },
+
+    publicSubmitEventList: (payload) =>
+        client.post("/public/event-list/submit", payload).then((r) => r.data),
+
+    // ─────────────────────────────────────────────────────────
     // Event image upload
     // ─────────────────────────────────────────────────────────
 
