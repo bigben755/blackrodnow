@@ -7781,6 +7781,7 @@ async def public_event_list_submit(req: PublicListSubmission):
 
     orgs = await db.orgs.find({}, {"_id": 0, "slug": 1, "name": 1}).to_list(500)
     created_ids: list[str] = []
+    submitted_titles: list[str] = []
     skipped: list[str] = []
     for item in req.items:
         if not item.title or not item.date or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", item.date or ""):
@@ -7823,6 +7824,7 @@ async def public_event_list_submit(req: PublicListSubmission):
             evt.image = _event_category_image(evt.category)
         await db.events.insert_one(evt.model_dump())
         created_ids.append(evt.id)
+        submitted_titles.append(evt.title)
 
     if not created_ids:
         raise HTTPException(400, "No valid events found — every event needs at least a title and a date")
@@ -7846,6 +7848,36 @@ async def public_event_list_submit(req: PublicListSubmission):
         meta={"event_ids": created_ids, "org_name": req.org_name, "skipped": skipped},
         actor="public",
     )
+
+    # Best-effort notifications (never block or fail the submission)
+    titles_html = "".join(f"<li>{html.escape(t)}</li>" for t in submitted_titles[:30])
+    org_line = f" for <strong>{html.escape(req.org_name.strip())}</strong>" if req.org_name.strip() else ""
+    admin_to = os.environ.get("ADMIN_NOTIFY_EMAIL") or SENDER_EMAIL
+    admin_html = (
+        f"<h2>New events list submitted</h2>"
+        f"<p><strong>{html.escape(name)}</strong> ({html.escape(email)}) submitted "
+        f"{len(created_ids)} event(s){org_line}.</p>"
+        f"<ul>{titles_html}</ul>"
+        + (f"<p>Notes: {html.escape(req.notes.strip())}</p>" if req.notes.strip() else "")
+        + f"<p>All are <strong>pending</strong> — review and approve them in the admin dashboard: "
+        f"<a href=\"{PUBLIC_URL.rstrip('/')}/admin\">{PUBLIC_URL.rstrip('/')}/admin</a></p>"
+    )
+    submitter_html = (
+        f"<h2>We've received your events list</h2>"
+        f"<p>Hi {html.escape(name)},</p>"
+        f"<p>Thanks — we've received {len(created_ids)} event(s){org_line}. "
+        f"The Blackrod Now team will check the details and publish them once approved. "
+        f"Nothing appears on the site until it has been reviewed.</p>"
+        f"<ul>{titles_html}</ul>"
+        f"<p>If anything needs correcting, just reply to this email.</p>"
+        f"<p>— Blackrod Now</p>"
+    )
+
+    def _notify():
+        resend_send(admin_to, f"New events list: {len(created_ids)} event(s) from {name}", admin_html)
+        resend_send(email, "Your events list is under review — Blackrod Now", submitter_html)
+
+    asyncio.create_task(asyncio.to_thread(_notify))
     return {"ok": True, "created": len(created_ids), "skipped": skipped, "status": "pending_review"}
 
 
