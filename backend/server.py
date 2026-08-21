@@ -7084,7 +7084,14 @@ def _try_labeled_blocks(filename: str, text: str, orgs: list[dict], events: list
                 "matched_event_id": ev_match.get("id"),
                 "matched_event_title": ev_match.get("title"),
             })
-        normalized = _normalize_parsed_item(item, block)
+        # Strip placeholder label lines so normalizer back-fill can't re-extract them.
+        clean_lines = []
+        for line in block.splitlines():
+            lm = _LABEL_LINE_RE.match(line)
+            if lm and lm.group(2).strip() and not _labeled_value(lm.group(2)):
+                continue
+            clean_lines.append(line)
+        normalized = _normalize_parsed_item(item, "\n".join(clean_lines))
         if normalized.date and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", normalized.date):
             iso = re.search(r"\d{4}-\d{2}-\d{2}", normalized.date)
             if iso:
@@ -7713,6 +7720,73 @@ async def _parse_job_worker(worker_number: int) -> None:
 @api.post("/parse-content", response_model=ParseResponse)
 async def parse_content(req: ParseRequest):
     return await _parse_text_to_response(req.text, hint=req.hint)
+
+
+@api.get("/admin/documents/template.docx")
+async def bulk_import_word_template():
+    """Blank Word template matching the labeled-block parser's format."""
+    from docx import Document
+    from docx.shared import Pt
+
+    doc = Document()
+    doc.add_heading("Blackrod Now — Bulk Event Upload", 0)
+    intro = doc.add_paragraph(
+        "Fill in one numbered block per event using the labels below, then upload this "
+        "document via Admin → Bulk document import. Every field is read exactly as written — "
+        "no AI guesswork. Leave a field as 'Not published' (or delete the line) if unknown."
+    )
+    intro.runs[0].font.size = Pt(10)
+
+    def block(n, values):
+        doc.add_heading(f"{n}. {values['Event title']}", level=2)
+        for i, (label, value) in enumerate(values.items(), start=1):
+            doc.add_paragraph(f"{i}. {label}: {value}")
+
+    block(1, {
+        "Event title": "Example Coffee Morning",
+        "Organisation": "Blackrod Community Group",
+        "Category": "community",
+        "Date": "Tuesday 6 October 2026",
+        "Start": "10:00",
+        "End": "11:30",
+        "Venue": "Blackrod Community Centre",
+        "Address": "Blackrod, Bolton, BL6",
+        "Description": "Friendly weekly coffee morning — everyone welcome.",
+        "Cost": "Free",
+        "Age suitability": "All ages",
+        "Accessibility": "Step-free access",
+        "Booking link": "Not published",
+        "Email": "hello@example.org",
+        "Phone": "01204 000000",
+        "Image URL": "Not published",
+        "Repeats": "Yes — Tuesdays",
+    })
+    block(2, {
+        "Event title": "Example Christmas Fair",
+        "Organisation": "St Katharine's Church",
+        "Category": "family",
+        "Date": "Saturday 5 December 2026",
+        "Start": "11:00",
+        "End": "15:00",
+        "Venue": "Church Hall",
+        "Address": "Church Street, Blackrod",
+        "Description": "Stalls, mulled wine and Santa's grotto.",
+        "Cost": "50p entry",
+        "Age suitability": "All ages",
+        "Accessibility": "Accessible entrance at the rear",
+        "Booking link": "https://example.org/fair",
+        "Email": "Not published",
+        "Phone": "Not published",
+        "Image URL": "Not published",
+        "Repeats": "No — one-off",
+    })
+    buf = BytesIO()
+    doc.save(buf)
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": 'attachment; filename="blackrod-now-events-template.docx"'},
+    )
 
 
 @api.get("/admin/documents/template.xlsx")

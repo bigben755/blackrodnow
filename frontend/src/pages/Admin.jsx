@@ -2081,7 +2081,16 @@ function BulkDocumentImportCard({ orgs }) {
                             className="inline-flex items-center gap-1.5 px-4 py-2 rounded-full border border-border text-xs font-semibold hover:bg-muted"
                             title="Blank Excel template with the exact columns the parser understands"
                         >
-                            <FileText className="h-3.5 w-3.5" /> Download spreadsheet template
+                            <FileText className="h-3.5 w-3.5" /> Spreadsheet template
+                        </a>
+                        <a
+                            href={`${API}/admin/documents/template.docx`}
+                            download
+                            data-testid="admin-bulk-word-template-link"
+                            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-full border border-border text-xs font-semibold hover:bg-muted"
+                            title="Word template using labelled event blocks — parses instantly without AI"
+                        >
+                            <FileText className="h-3.5 w-3.5" /> Word template
                         </a>
                     </div>
                     <div className="mt-4 grid gap-3">
