@@ -1241,6 +1241,9 @@ export const api = {
     publicSubmitEventList: (payload) =>
         client.post("/public/event-list/submit", payload).then((r) => r.data),
 
+    adminCheckEntity: (kind, id) =>
+        client.post("/admin/check", { kind, id }, { timeout: 160000 }).then((r) => r.data),
+
     // ─────────────────────────────────────────────────────────
     // Event image upload
     // ─────────────────────────────────────────────────────────

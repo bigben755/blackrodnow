@@ -6,7 +6,7 @@ import { Stat, CategoryBadge, formatDate, formatTime } from "@/components/Cards"
 import {
     CalendarDays, Building2, Inbox, Users, Star, Check, X, Trash2, BarChart3, Mail,
     Send, Edit3, Eye, MessageSquare, Bell, Pencil, UploadCloud, FileText, Sparkles, RefreshCw, Newspaper, HandHeart,
-    LogIn, MapPin, ShieldCheck, Archive, PauseCircle, UserPlus, Link2, Search,
+    LogIn, MapPin, ShieldCheck, Archive, PauseCircle, UserPlus, Link2, Search, Globe,
 } from "lucide-react";
 import { toast } from "sonner";
 import { useNavigate } from "react-router-dom";
@@ -956,6 +956,9 @@ export default function Admin() {
                                             <div className="text-[11px] text-muted-foreground truncate">
                                                 {orgs.find((o) => o.slug === e.orgSlug)?.name || e.orgSlug}
                                             </div>
+                                            <div className="mt-1.5">
+                                                <EntityCheck kind="event" id={e.id} initial={e.check_result} />
+                                            </div>
                                         </td>
                                         <td className="px-4 py-3 text-muted-foreground hidden sm:table-cell">{formatDate(e.start)}</td>
                                         <td className="px-4 py-3 hidden md:table-cell"><CategoryBadge category={e.category} /></td>
@@ -1085,13 +1088,15 @@ export default function Admin() {
                 <h2 className="font-display font-bold text-xl mb-3">Manage organisations</h2>
                 <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
                     {orgs.filter((o) => o.status !== "pending").map((o) => (
-                        <div key={o.slug} className="min-w-0 rounded-3xl border border-border bg-surface p-4 flex items-center gap-3">
-                            <div className="h-10 w-10 rounded-2xl bg-muted grid place-items-center text-xl shrink-0">{o.logo}</div>
-                            <div className="flex-1 min-w-0">
-                                <div className="font-semibold text-sm truncate">{o.name}</div>
-                                <div className="text-xs text-muted-foreground truncate">{o.category}</div>
+                        <div key={o.slug} className="min-w-0 rounded-3xl border border-border bg-surface p-4" data-testid={`manage-org-card-${o.slug}`}>
+                            <div className="flex items-center gap-3">
+                                <div className="h-10 w-10 rounded-2xl bg-muted grid place-items-center text-xl shrink-0">{o.logo}</div>
+                                <div className="flex-1 min-w-0">
+                                    <div className="font-bold text-sm leading-snug" data-testid={`manage-org-name-${o.slug}`}>{o.name}</div>
+                                    <div className="text-xs text-muted-foreground">{o.category}</div>
+                                </div>
                             </div>
-                            <div className="shrink-0 flex items-center gap-1">
+                            <div className="mt-3 flex items-center gap-1 flex-wrap">
                                 <button
                                     data-testid={`impersonate-org-${o.slug}`}
                                     onClick={() => loginAsOrg(o.slug, o.name)}
@@ -1109,6 +1114,9 @@ export default function Admin() {
                                 </button>
                                 <Link to={`/edit-organisation/${o.slug}`} data-testid={`edit-org-${o.slug}`} className="inline-flex items-center gap-1 px-3 py-1.5 rounded-full border border-border text-[11px] font-semibold uppercase tracking-wider"><Edit3 className="h-3 w-3" /> Edit</Link>
                             </div>
+                            <div className="mt-2">
+                                <EntityCheck kind="org" id={o.slug} initial={o.check_result} />
+                            </div>
                         </div>
                     ))}
                 </div>
@@ -1116,6 +1124,76 @@ export default function Admin() {
         </div>
     );
 }
+
+const CHECK_STYLES = {
+    looks_accurate: { label: "Looks accurate", cls: "bg-green-100 text-green-800" },
+    needs_attention: { label: "Needs attention", cls: "bg-amber-100 text-amber-800" },
+    likely_outdated: { label: "Likely outdated", cls: "bg-red-100 text-red-700" },
+    could_not_verify: { label: "Could not verify", cls: "bg-muted text-muted-foreground" },
+};
+
+const EntityCheck = ({ kind, id, initial }) => {
+    const [checking, setChecking] = useState(false);
+    const [result, setResult] = useState(initial || null);
+    const [open, setOpen] = useState(false);
+
+    const run = async () => {
+        setChecking(true);
+        try {
+            const res = await api.adminCheckEntity(kind, id);
+            setResult(res);
+            setOpen(true);
+        } catch (err) {
+            toast.error(err?.response?.data?.detail || "Check failed — please try again");
+        } finally {
+            setChecking(false);
+        }
+    };
+
+    const style = result ? CHECK_STYLES[result.verdict] || CHECK_STYLES.could_not_verify : null;
+    return (
+        <div className="min-w-0">
+            <div className="flex items-center gap-1.5 flex-wrap">
+                <button
+                    onClick={run}
+                    disabled={checking}
+                    data-testid={`check-${kind}-${id}`}
+                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full border border-border text-[10px] font-bold uppercase tracking-wider hover:bg-muted disabled:opacity-60"
+                    title="Search the web to verify this listing is accurate and still running"
+                >
+                    {checking ? <RefreshCw className="h-3 w-3 animate-spin" /> : <Globe className="h-3 w-3" />}
+                    {checking ? "Checking…" : result ? "Re-check" : "Check"}
+                </button>
+                {result && style && (
+                    <button onClick={() => setOpen((o) => !o)} data-testid={`check-verdict-${kind}-${id}`}
+                        className={`px-2 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider ${style.cls}`}
+                        title={`Checked ${result.checked_at ? new Date(result.checked_at).toLocaleString("en-GB") : ""} — click for details`}>
+                        {style.label}
+                    </button>
+                )}
+            </div>
+            {result && open && (
+                <div className="mt-2 rounded-xl border border-border bg-background p-3 text-xs space-y-2" data-testid={`check-details-${kind}-${id}`}>
+                    <p>{result.summary}</p>
+                    {result.issues?.length > 0 && (
+                        <ul className="list-disc pl-4 text-amber-700 space-y-0.5">
+                            {result.issues.map((i, n) => <li key={n}>{i}</li>)}
+                        </ul>
+                    )}
+                    {result.sources?.length > 0 && (
+                        <div className="flex flex-wrap gap-x-3 gap-y-1">
+                            {result.sources.map((s, n) => (
+                                <a key={n} href={s.url} target="_blank" rel="noreferrer" className="text-primary underline underline-offset-2 truncate max-w-[240px]">
+                                    {s.title || s.url}
+                                </a>
+                            ))}
+                        </div>
+                    )}
+                </div>
+            )}
+        </div>
+    );
+};
 
 const Empty = ({ children }) => (
     <div className="rounded-3xl border border-dashed border-border p-8 text-center text-sm text-muted-foreground">

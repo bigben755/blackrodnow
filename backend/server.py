@@ -7881,6 +7881,114 @@ async def public_event_list_submit(req: PublicListSubmission):
     return {"ok": True, "created": len(created_ids), "skipped": skipped, "status": "pending_review"}
 
 
+class AdminCheckReq(BaseModel):
+    kind: Literal["event", "org"]
+    id: str
+
+
+CHECK_VERDICTS = {"looks_accurate", "needs_attention", "likely_outdated", "could_not_verify"}
+
+
+@api.post("/admin/check")
+async def admin_check_entity(req: AdminCheckReq):
+    """Fact-check an event or organisation against the live web (Claude web search)."""
+    if req.kind == "event":
+        entity = await db.events.find_one({"id": req.id}, {"_id": 0})
+        if not entity:
+            raise HTTPException(404, "Event not found")
+        org = await db.orgs.find_one({"slug": entity.get("orgSlug")}, {"_id": 0, "name": 1, "website": 1, "socials": 1}) or {}
+        facts = {
+            "event_title": entity.get("title"),
+            "date_start": entity.get("start"),
+            "venue": entity.get("venue"),
+            "address": entity.get("address"),
+            "cost": entity.get("cost"),
+            "booking": entity.get("booking"),
+            "recurrence": (entity.get("recurrence") or {}).get("freq"),
+            "description": (entity.get("description") or "")[:400],
+            "organisation": org.get("name"),
+            "org_website": org.get("website"),
+            "org_socials": org.get("socials"),
+        }
+        subject = f'the community event "{entity.get("title")}"'
+    else:
+        entity = await db.orgs.find_one({"slug": req.id}, {"_id": 0})
+        if not entity:
+            raise HTTPException(404, "Organisation not found")
+        facts = {
+            "name": entity.get("name"),
+            "category": entity.get("category"),
+            "description": (entity.get("description") or "")[:400],
+            "website": entity.get("website"),
+            "socials": entity.get("socials"),
+            "email": entity.get("email"),
+            "phone": entity.get("phone"),
+            "meeting_info": entity.get("meeting_info") or entity.get("meets"),
+        }
+        subject = f'the community organisation "{entity.get("name")}"'
+
+    if not await _ensure_llm_loaded():
+        raise HTTPException(503, "The AI checker isn't available right now — try again shortly")
+    from emergentintegrations.llm.chat import LlmChat, UserMessage
+
+    system = (
+        "You are a careful fact-checker for Blackrod Now, a community website for Blackrod, Bolton, UK. "
+        "Use web search to verify whether the listing below is accurate and still active/running. "
+        "Prioritise the organisation's own website/Facebook page, Bolton Council and local news. "
+        "Be conservative: if you cannot find clear evidence either way, say so rather than guessing. "
+        "Respond with ONLY a JSON object, no markdown: "
+        '{"verdict": one of "looks_accurate"|"needs_attention"|"likely_outdated"|"could_not_verify", '
+        '"summary": "2-3 plain-English sentences for the site admin", '
+        '"issues": ["specific discrepancy or concern", ...] (empty list if none), '
+        '"sources": [{"url": "...", "title": "..."}, ...]}'
+    )
+    chat = (
+        LlmChat(api_key=EMERGENT_LLM_KEY, session_id=f"check-{new_id()}", system_message=system)
+        .with_model("anthropic", "claude-sonnet-4-5-20250929")
+        .with_tools([{"type": "web_search_20250305", "name": "web_search", "max_uses": 4}])
+    )
+    try:
+        raw = await asyncio.wait_for(
+            chat.send_message_with_tools(UserMessage(text=f"Verify {subject}. Current listing data:\n{json.dumps(facts, ensure_ascii=False)}")),
+            timeout=150,
+        )
+        content = getattr(raw, "content", None) or str(raw)
+        cleaned = re.sub(r"^```(?:json)?|```$", "", content.strip(), flags=re.M).strip()
+        m = re.search(r"\{.*\}", cleaned, re.S)
+        data = json.loads(m.group(0) if m else cleaned)
+    except asyncio.TimeoutError:
+        raise HTTPException(504, "The check took too long — please try again")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("admin_check failed: %s", exc)
+        raise HTTPException(502, "The checker couldn't complete — please try again")
+
+    result = {
+        "verdict": data.get("verdict") if data.get("verdict") in CHECK_VERDICTS else "could_not_verify",
+        "summary": str(data.get("summary") or "")[:1200],
+        "issues": [str(i)[:300] for i in (data.get("issues") or [])][:8],
+        "sources": [
+            {"url": str(s.get("url") or "")[:400], "title": str(s.get("title") or "")[:160]}
+            for s in (data.get("sources") or []) if isinstance(s, dict) and s.get("url")
+        ][:6],
+        "checked_at": now_iso(),
+    }
+    if req.kind == "event":
+        await db.events.update_one({"id": req.id}, {"$set": {"check_result": result}})
+    else:
+        await db.orgs.update_one({"slug": req.id}, {"$set": {"check_result": result}})
+    await _audit(
+        action="entity_checked",
+        entity_type=req.kind,
+        entity_id=req.id,
+        summary=f"Web check ({result['verdict']}): {subject}",
+        meta={"verdict": result["verdict"]},
+        actor="admin",
+    )
+    return result
+
+
 @api.get("/admin/documents/template.docx")
 async def bulk_import_word_template():
     """Blank Word template matching the labeled-block parser's format."""
