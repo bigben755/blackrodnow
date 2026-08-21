@@ -5590,6 +5590,9 @@ class ParsedItem(BaseModel):
     cost: Optional[str] = None
     booking: Optional[str] = None
     url: Optional[str] = None
+    image: Optional[str] = None
+    # Whether the category came from an explicit labeled field (skips inference)
+    category_explicit: bool = False
     address: Optional[str] = None        # street address, distinct from location/venue name
     age: Optional[str] = None            # audience/age suitability
     accessibility: Optional[str] = None  # accessibility notes
@@ -6175,7 +6178,7 @@ def _normalize_parsed_item(item: ParsedItem, source_text: str) -> ParsedItem:
             phone = _extract_contact_phone(merged)
             if phone:
                 updates["contact_phone"] = phone
-        if not item.category or item.category == "Community":
+        if (not item.category or item.category == "Community") and not item.category_explicit:
             inferred = _infer_category(merged)
             if inferred:
                 updates["category"] = inferred
@@ -6219,8 +6222,16 @@ def _extract_docx_text(data: bytes) -> tuple[str, list[str]]:
         namespaces = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
         paragraphs: list[str] = []
         for para in root.findall(".//w:p", namespaces):
-            texts = [node.text for node in para.findall('.//w:t', namespaces) if node.text]
-            line = "".join(texts).strip()
+            pieces: list[str] = []
+            for node in para.iter():
+                tag = node.tag.rsplit("}", 1)[-1]
+                if tag == "t" and node.text:
+                    pieces.append(node.text)
+                elif tag == "br":
+                    pieces.append("\n")  # preserve Word soft line breaks
+                elif tag == "tab":
+                    pieces.append("\t")
+            line = "".join(pieces).strip()
             if line:
                 paragraphs.append(line)
         return "\n".join(paragraphs).strip(), warnings
@@ -6799,6 +6810,7 @@ def _try_structured_spreadsheet(filename: str, data: bytes, orgs: list[dict], ev
             cost=fee or None,
             booking=booking or None,
             url=url or None,
+            category_explicit=bool(category_raw),
             address=address or None,
             age=age or None,
             accessibility=accessibility or None,
@@ -6935,6 +6947,163 @@ def _decode_bulk_sources(raw: Optional[str]) -> list[str]:
     return [part.strip() for part in re.split(r"\n{2,}|\r\n{2,}|\n", raw) if part.strip()]
 
 
+# ─────────── Labeled-block documents (Event title: … / Venue: …) ───────────
+LABELED_FIELD_MAP = {
+    "eventtitle": "title", "title": "title", "eventname": "title",
+    "organisation": "org", "organization": "org", "org": "org", "organiser": "org", "organizer": "org",
+    "category": "category",
+    "date": "date", "dates": "date", "eventdate": "date",
+    "start": "start_time", "starttime": "start_time", "time": "start_time", "times": "start_time",
+    "end": "end_time", "endtime": "end_time",
+    "venue": "venue", "location": "venue", "where": "venue", "place": "venue",
+    "address": "address",
+    "description": "description", "details": "description", "about": "description",
+    "cost": "cost", "fee": "cost", "fees": "cost", "price": "cost", "admission": "cost",
+    "agesuitability": "age", "age": "age", "ages": "age", "agerange": "age",
+    "accessibility": "accessibility", "access": "accessibility",
+    "bookinglink": "booking", "booking": "booking", "bookinginfo": "booking", "howtobook": "booking", "tickets": "booking",
+    "email": "email", "contactemail": "email",
+    "phone": "phone", "contactphone": "phone", "tel": "phone", "telephone": "phone",
+    "url": "url", "link": "url", "website": "url", "web": "url", "moreinfo": "url",
+    "imageurl": "image", "image": "image", "poster": "image",
+    "repeats": "repeats", "recurrence": "repeats", "repeat": "repeats", "frequency": "repeats",
+}
+
+_LABEL_LINE_RE = re.compile(r"^\s*(?:\d+\.\s*)?([A-Za-z][A-Za-z /&]{1,24})\s*:\s*(.*)$")
+_PLACEHOLDER_VALUE_RE = re.compile(
+    r"^(not published|not stated|not specified|not safely verified|not applicable|none stated|none|n/?a|tbc|tba|unknown|no advance booking.*|no booking.*|-+)$",
+    re.I,
+)
+
+
+def _labeled_value(raw: str) -> str:
+    value = (raw or "").strip()
+    return "" if not value or _PLACEHOLDER_VALUE_RE.match(value) else value
+
+
+def _try_labeled_blocks(filename: str, text: str, orgs: list[dict], events: list[dict]) -> Optional[ParsedDocument]:
+    """Deterministic parse for documents where each event is a block of
+    'Label: value' lines (e.g. 'Event title: … / Organisation: … / Date: …').
+    Returns None unless at least 2 titled blocks are found, so free-text
+    flyers still go through the AI pipeline."""
+    if not text:
+        return None
+    title_marker = re.compile(r"^\s*(?:\d+\.\s*)?event\s*title\s*:", re.I | re.M)
+    markers = list(title_marker.finditer(text))
+    if len(markers) < 2:
+        return None
+
+    items: list[ParsedItem] = []
+    for i, marker in enumerate(markers):
+        block_start = marker.start()
+        block_end = markers[i + 1].start() if i + 1 < len(markers) else len(text)
+        block = text[block_start:block_end]
+        fields: dict[str, str] = {}
+        for line in block.splitlines():
+            m = _LABEL_LINE_RE.match(line)
+            if not m:
+                continue
+            key = re.sub(r"[^a-z]", "", m.group(1).lower())
+            field = LABELED_FIELD_MAP.get(key)
+            if field and field not in fields:
+                fields[field] = _labeled_value(m.group(2))
+        title = fields.get("title")
+        if not title:
+            continue
+
+        # Contact-ish fields: treat "No …"/"Not …" prose as empty; sanity-check shape.
+        email_val = fields.get("email") or ""
+        if email_val and ("@" not in email_val or re.match(r"^(no|not)\b", email_val, re.I)):
+            email_val = ""
+        phone_val = fields.get("phone") or ""
+        if phone_val and (not re.search(r"\d{5,}", phone_val.replace(" ", "")) or re.match(r"^(no|not)\b", phone_val, re.I)):
+            phone_val = ""
+        booking_val = fields.get("booking") or ""
+        if re.match(r"^(no|not)\b", booking_val, re.I):
+            booking_val = ""
+
+        category = "Community"
+        if fields.get("category"):
+            cat_match, cat_score = _best_match(fields["category"], [{"name": c} for c in SITE_CATEGORIES], "name")
+            if cat_match and cat_score >= 0.55:
+                category = cat_match["name"]
+
+        recurrence_freq = None
+        recurrence_weekday = None
+        repeats_raw = fields.get("repeats") or ""
+        if repeats_raw and not re.match(r"^no\b", repeats_raw, re.I):
+            repeats_normalized = re.sub(r"\beach month\b", "the month", repeats_raw, flags=re.I)
+            detected = _detect_recurrence(repeats_normalized) or _detect_recurrence(f"every {repeats_normalized}")
+            if detected:
+                recurrence_freq = detected.get("freq")
+                recurrence_weekday = detected.get("weekday")
+            elif re.match(r"^yes\b", repeats_raw, re.I):
+                recurrence_freq = "weekly"
+
+        url_value = fields.get("url") or ""
+        image_value = fields.get("image") or ""
+        item = ParsedItem(
+            suggested_type="event",
+            action="new_event",
+            title=title,
+            date=fields.get("date") or None,
+            start_time=fields.get("start_time") or None,
+            end_time=fields.get("end_time") or None,
+            location=fields.get("venue") or None,
+            address=fields.get("address") or None,
+            category=category,
+            description=fields.get("description") or title,
+            cost=fields.get("cost") or None,
+            age=fields.get("age") or None,
+            accessibility=fields.get("accessibility") or None,
+            booking=booking_val or None,
+            contact_email=email_val or None,
+            contact_phone=phone_val or None,
+            category_explicit=bool(fields.get("category")),
+            url=url_value if url_value.startswith("http") else None,
+            image=image_value if image_value.startswith("http") else None,
+            recurrence_freq=recurrence_freq,
+            recurrence_weekday=recurrence_weekday,
+            recurrence_raw_text=repeats_raw or None,
+            social_caption=f"📣 {title} — happening in Blackrod. More on Blackrod Now.",
+            notification_text=f"New on Blackrod Now: {title}",
+            confidence=0.92,
+        )
+        if fields.get("org"):
+            org_match, org_score = _best_match(fields["org"], orgs, "name")
+            if org_match and org_score >= 0.8:
+                item = item.model_copy(update={
+                    "matched_org_slug": org_match.get("slug"),
+                    "matched_org_name": org_match.get("name"),
+                    "entity_confidence": round(org_score, 2),
+                })
+        ev_match, ev_score = _best_match(title, events, "title")
+        if ev_match and ev_score >= 0.85:
+            item = item.model_copy(update={
+                "action": "update_event",
+                "matched_event_id": ev_match.get("id"),
+                "matched_event_title": ev_match.get("title"),
+            })
+        normalized = _normalize_parsed_item(item, block)
+        if normalized.date and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", normalized.date):
+            iso = re.search(r"\d{4}-\d{2}-\d{2}", normalized.date)
+            if iso:
+                normalized = normalized.model_copy(update={"date": iso.group(0)})
+        items.append(normalized)
+        if len(items) >= 100:
+            break
+
+    if len(items) < 2:
+        return None
+    return ParsedDocument(
+        filename=filename,
+        source_type="labeled_document",
+        text_excerpt=_clean_text_excerpt(text),
+        warnings=[f"Structured document detected — parsed {len(items)} labeled event blocks without AI"],
+        items=items,
+    )
+
+
 async def _admin_parse_documents(
     file_sources: Optional[list[tuple]] = None,
     source_org_slug: Optional[str] = None,
@@ -7004,6 +7173,11 @@ async def _admin_parse_documents(
                 warnings=warnings + ["No readable text extracted"],
                 items=[_fallback_parse(filename)],
             )
+
+        # Deterministic path for label-formatted documents (Event title: … blocks)
+        labeled = _try_labeled_blocks(filename, text, orgs, events)
+        if labeled:
+            return labeled.model_copy(update={"warnings": warnings + labeled.warnings})
 
         hint = "\n".join([
             f"Filename: {filename}",

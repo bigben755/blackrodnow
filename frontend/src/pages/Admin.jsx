@@ -1578,9 +1578,9 @@ function BulkDocumentImportCard({ orgs }) {
                     age: draft.age || "",
                     accessibility: draft.accessibility || "",
                     booking: draft.booking || draft.url || "",
-                    contactEmail: draft.contact_email || "",
-                    contactPhone: draft.contact_phone || "",
-                    image: "",
+                    contactEmail: draft.contact_email || draft.email || "",
+                    contactPhone: draft.contact_phone || draft.phone || "",
+                    image: draft.image || "",
                     status: "approved",
                     recurrence: buildRecurrencePayload(
                         draft.recurrence_freq || "none",
