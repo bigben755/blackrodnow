@@ -1,7 +1,11 @@
 import React, { useEffect } from "react";
 import { useParams, Link } from "react-router-dom";
 import { useApp, eventsByOrg } from "@/context/AppContext";
-import { CategoryBadge, formatDate, formatTime } from "@/components/Cards";
+import {
+    CategoryBadge,
+    formatDate,
+    formatTime,
+} from "@/components/Cards";
 import NewsletterSection from "@/components/NewsletterSection";
 import ShareButtons from "@/components/ShareButtons";
 import PostNowDialog from "@/components/PostNowDialog";
@@ -25,16 +29,30 @@ import {
     ShieldCheck,
     Heart,
     Rocket,
+    ChevronDown,
+    Navigation,
+    Building2,
 } from "lucide-react";
 import { toast } from "sonner";
-import SeoJsonLd, { eventJsonLd } from "@/components/SeoJsonLd";
+import SeoJsonLd, {
+    eventJsonLd,
+} from "@/components/SeoJsonLd";
+import {
+    DropdownMenu,
+    DropdownMenuContent,
+    DropdownMenuItem,
+    DropdownMenuSeparator,
+    DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 
-const SITE_NAME = "RodLife";
+const SITE_NAME = "Blackrod Now";
 
 const SITE_ORIGIN =
     typeof window !== "undefined"
         ? window.location.origin
-        : "https://rodlife.co.uk";
+        : (
+              process.env.REACT_APP_SITE_ORIGIN || ""
+          ).replace(/\/$/, "");
 
 const formatCalendarDate = (date) => {
     return new Date(date)
@@ -53,10 +71,19 @@ const escapeIcsText = (value = "") => {
 
 const buildCalendarUrl = (event, provider) => {
     const start = new Date(event.start);
-    const end = new Date(event.end);
+    const end = new Date(
+        event.end || event.start
+    );
 
-    const location = [event.venue, event.address].filter(Boolean).join(", ");
-    const description = event.description || "";
+    const location = [
+        event.venue,
+        event.address,
+    ]
+        .filter(Boolean)
+        .join(", ");
+
+    const description =
+        event.description || "";
 
     if (provider === "google") {
         const params = new URLSearchParams({
@@ -64,7 +91,9 @@ const buildCalendarUrl = (event, provider) => {
             text: event.title,
             details: description,
             location,
-            dates: `${formatCalendarDate(start)}/${formatCalendarDate(end)}`,
+            dates: `${formatCalendarDate(
+                start
+            )}/${formatCalendarDate(end)}`,
         });
 
         return `https://calendar.google.com/calendar/render?${params.toString()}`;
@@ -87,38 +116,93 @@ const buildCalendarUrl = (event, provider) => {
     return "#";
 };
 
-const buildIcsContent = (event, eventUrl) => {
-    const start = formatCalendarDate(event.start);
-    const end = formatCalendarDate(event.end);
-    const location = [event.venue, event.address].filter(Boolean).join(", ");
-    const description = `${event.description || ""}\n\nFull details: ${eventUrl}`;
+const buildMapsUrl = (event) => {
+    const location = [
+        event.venue,
+        event.address,
+        "Blackrod",
+    ]
+        .filter(Boolean)
+        .join(", ");
+
+    return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(
+        location
+    )}`;
+};
+
+const buildIcsContent = (
+    event,
+    eventUrl
+) => {
+    const start = formatCalendarDate(
+        event.start
+    );
+
+    const end = formatCalendarDate(
+        event.end || event.start
+    );
+
+    const location = [
+        event.venue,
+        event.address,
+    ]
+        .filter(Boolean)
+        .join(", ");
+
+    const description = `${
+        event.description || ""
+    }\n\nFull details: ${eventUrl}`;
 
     return [
         "BEGIN:VCALENDAR",
         "VERSION:2.0",
         `PRODID:-//${SITE_NAME}//Events Calendar//EN`,
         "BEGIN:VEVENT",
-        `UID:${event.id}@rodlife-events`,
-        `DTSTAMP:${formatCalendarDate(new Date())}`,
+        `UID:${event.id}@blackrod-now-events`,
+        `DTSTAMP:${formatCalendarDate(
+            new Date()
+        )}`,
         `DTSTART:${start}`,
         `DTEND:${end}`,
-        `SUMMARY:${escapeIcsText(event.title)}`,
-        `DESCRIPTION:${escapeIcsText(description)}`,
-        `LOCATION:${escapeIcsText(location)}`,
+        `SUMMARY:${escapeIcsText(
+            event.title
+        )}`,
+        `DESCRIPTION:${escapeIcsText(
+            description
+        )}`,
+        `LOCATION:${escapeIcsText(
+            location
+        )}`,
         `URL:${eventUrl}`,
         "END:VEVENT",
         "END:VCALENDAR",
     ].join("\r\n");
 };
 
-const downloadIcsFile = (event, eventUrl) => {
-    const ics = buildIcsContent(event, eventUrl);
-    const blob = new Blob([ics], { type: "text/calendar;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
+const downloadIcsFile = (
+    event,
+    eventUrl
+) => {
+    const ics = buildIcsContent(
+        event,
+        eventUrl
+    );
 
-    const link = document.createElement("a");
+    const blob = new Blob([ics], {
+        type: "text/calendar;charset=utf-8",
+    });
+
+    const url =
+        URL.createObjectURL(blob);
+
+    const link =
+        document.createElement("a");
+
     link.href = url;
-    link.download = `${event.id || "event"}.ics`;
+    link.download = `${
+        event.id || "event"
+    }.ics`;
+
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -126,51 +210,111 @@ const downloadIcsFile = (event, eventUrl) => {
     URL.revokeObjectURL(url);
 };
 
-const buildFacebookPost = (event, eventUrl, org) => {
-    const date = formatDate(event.start);
-    const startTime = formatTime(event.start);
-    const endTime = formatTime(event.end);
-    const location = [event.venue, event.address].filter(Boolean).join(", ");
-    const organiser = org?.name || event.organiser || "";
+const buildFacebookPost = (
+    event,
+    eventUrl,
+    org
+) => {
+    const date = formatDate(
+        event.start
+    );
+
+    const startTime = formatTime(
+        event.start
+    );
+
+    const endTime = event.end
+        ? formatTime(event.end)
+        : "";
+
+    const location = [
+        event.venue,
+        event.address,
+    ]
+        .filter(Boolean)
+        .join(", ");
+
+    const organiser =
+        org?.name ||
+        event.organiser ||
+        "";
 
     return [
         `🎉 Blackrod Event: ${event.title}`,
         "",
         `📅 ${date}`,
-        `🕒 ${startTime}${endTime ? ` – ${endTime}` : ""}`,
-        location ? `📍 ${location}` : "",
-        organiser ? `👥 Organised by ${organiser}` : "",
-        event.cost ? `💷 ${event.cost}` : "",
+        `🕒 ${startTime}${
+            endTime
+                ? ` – ${endTime}`
+                : ""
+        }`,
+        location
+            ? `📍 ${location}`
+            : "",
+        organiser
+            ? `👥 Organised by ${organiser}`
+            : "",
+        event.cost
+            ? `💷 ${event.cost}`
+            : "",
         "",
-        event.description ? event.description.trim() : "",
+        event.description
+            ? event.description.trim()
+            : "",
         "",
         "Full details:",
         eventUrl,
         "",
-        "#Blackrod #BlackrodEvents #Horwich #SouthHorwich #CommunityEvents",
+        "#Blackrod #BlackrodEvents #CommunityEvents",
     ]
         .filter(Boolean)
         .join("\n");
 };
 
-const copyToClipboard = async (text, successMessage) => {
+const copyToClipboard = async (
+    text,
+    successMessage
+) => {
     try {
-        await navigator.clipboard.writeText(text);
+        await navigator.clipboard.writeText(
+            text
+        );
+
         toast.success(successMessage);
     } catch {
-        toast.error("Could not copy to clipboard");
+        toast.error(
+            "Could not copy to clipboard"
+        );
     }
 };
 
 export default function EventDetail() {
     const { id } = useParams();
-    const { events, orgs, role, isEventSaved, toggleSaveEvent } = useApp();
-    const [postNowOpen, setPostNowOpen] = React.useState(false);
-    const event = events.find((e) => e.id === id);
-    const org = orgs.find((o) => o.slug === event?.orgSlug);
+
+    const {
+        events,
+        orgs,
+        role,
+        activeOrgSlug,
+        isEventSaved,
+        toggleSaveEvent,
+    } = useApp();
+
+    const [postNowOpen, setPostNowOpen] =
+        React.useState(false);
+
+    const event = events.find(
+        (item) => item.id === id
+    );
+
+    const org = orgs.find(
+        (item) =>
+            item.slug === event?.orgSlug
+    );
 
     useEffect(() => {
         if (!event?.id) return;
+
         api.trackAnalytics({
             kind: "event_view",
             entity_type: "event",
@@ -182,15 +326,23 @@ export default function EventDetail() {
     if (!event) {
         return (
             <div className="max-w-3xl mx-auto py-24 px-6 text-center">
-                <h1 className="font-display font-bold text-3xl">Event not found</h1>
+                <CalendarDays className="h-9 w-9 mx-auto text-muted-foreground" />
+
+                <h1 className="font-display font-bold text-3xl mt-4">
+                    Event not found
+                </h1>
+
                 <p className="mt-3 text-muted-foreground">
-                    It might have been moved or removed.
+                    It may have been moved,
+                    cancelled or removed.
                 </p>
+
                 <Link
                     to="/events"
-                    className="mt-6 inline-flex text-primary font-semibold"
+                    className="mt-6 inline-flex items-center gap-1 text-primary font-semibold"
                 >
-                    Back to all events
+                    <ArrowLeft className="h-4 w-4" />
+                    Back to What's On
                 </Link>
             </div>
         );
@@ -199,116 +351,141 @@ export default function EventDetail() {
     const eventUrl =
         typeof window !== "undefined"
             ? window.location.href
-            : `${SITE_ORIGIN}/events/${event.id}`;
+            : `${
+                  SITE_ORIGIN || ""
+              }/events/${event.id}`;
 
-    // Crawler-friendly URL that renders per-event OG tags; redirects humans
-    // to the canonical `eventUrl`. Used for FB / LinkedIn / X / WhatsApp
-    // shares so each post gets a rich preview card.
     const shareOgUrl = `${API}/events/${event.id}/og`;
 
-    const location = [event.venue, event.address].filter(Boolean).join(", ");
-    const facebookPost = buildFacebookPost(event, eventUrl, org);
-    const saved = isEventSaved?.(event.id);
-    const eventImage = resolveEventImage(event);
+    const location = [
+        event.venue,
+        event.address,
+    ]
+        .filter(Boolean)
+        .join(", ");
+
+    const facebookPost =
+        buildFacebookPost(
+            event,
+            eventUrl,
+            org
+        );
+
+    const saved =
+        isEventSaved?.(event.id);
+
+    const eventImage =
+        resolveEventImage(event);
+
+    const canManage =
+        role === "admin" ||
+        (role === "org" &&
+            activeOrgSlug ===
+                event.orgSlug);
+
+    const upcomingFromOrg = org
+        ? eventsByOrg(
+              events,
+              org.slug
+          )
+              .filter(
+                  (item) =>
+                      item.id !== event.id &&
+                      item.status ===
+                          "approved" &&
+                      new Date(
+                          item.end ||
+                              item.start
+                      ) >= new Date()
+              )
+              .sort(
+                  (a, b) =>
+                      new Date(a.start) -
+                      new Date(b.start)
+              )
+              .slice(0, 4)
+        : [];
 
     const shareNative = async () => {
         try {
             if (navigator.share) {
                 await navigator.share({
                     title: event.title,
-                    text: `Blackrod Event: ${event.title}`,
+                    text: `${event.title} on Blackrod Now`,
                     url: eventUrl,
                 });
             } else {
-                await copyToClipboard(eventUrl, "Event link copied");
+                await copyToClipboard(
+                    eventUrl,
+                    "Event link copied"
+                );
             }
         } catch {
-            // User cancelled native share.
+            // Native share cancelled.
         }
     };
 
-    const downloadPoster = async () => {
-        const imageUrl = eventImage.startsWith("http")
-            ? eventImage
-            : `${SITE_ORIGIN}${eventImage}`;
+    const copyPosterLink =
+        async () => {
+            const imageUrl =
+                eventImage.startsWith(
+                    "http"
+                )
+                    ? eventImage
+                    : `${SITE_ORIGIN}${eventImage}`;
 
-        await copyToClipboard(imageUrl, "Poster image link copied");
-    };
-
-    const eventSchema = {
-        "@context": "https://schema.org",
-        "@type": "Event",
-        name: event.title,
-        description: event.description,
-        startDate: new Date(event.start).toISOString(),
-        endDate: new Date(event.end).toISOString(),
-        eventStatus: "https://schema.org/EventScheduled",
-        eventAttendanceMode: "https://schema.org/OfflineEventAttendanceMode",
-        image: eventImage
-            ? eventImage.startsWith("http")
-                ? eventImage
-                : `${SITE_ORIGIN}${eventImage}`
-            : undefined,
-        url: eventUrl,
-        location: {
-            "@type": "Place",
-            name: event.venue || "Blackrod",
-            address: {
-                "@type": "PostalAddress",
-                streetAddress: event.address || "",
-                addressLocality: "Blackrod",
-                addressRegion: "Greater Manchester",
-                addressCountry: "GB",
-            },
-        },
-        organizer: {
-            "@type": "Organization",
-            name: org?.name || event.organiser || SITE_NAME,
-            url: org?.website || undefined,
-        },
-        offers: event.cost
-            ? {
-                  "@type": "Offer",
-                  price: event.cost.toLowerCase().includes("free") ? "0" : undefined,
-                  priceCurrency: "GBP",
-                  availability: "https://schema.org/InStock",
-                  url: event.booking || eventUrl,
-              }
-            : undefined,
-    };
+            await copyToClipboard(
+                imageUrl,
+                "Poster image link copied"
+            );
+        };
 
     return (
         <div
             data-testid={`event-detail-${event.id}`}
-            className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-10"
+            className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-8 sm:py-10"
         >
-            <SeoJsonLd id="event" data={eventJsonLd(event, org, eventUrl, eventImage)} />
-            <script
-                type="application/ld+json"
-                dangerouslySetInnerHTML={{
-                    __html: JSON.stringify(eventSchema),
-                }}
+            <SeoJsonLd
+                id="event"
+                data={eventJsonLd(
+                    event,
+                    org,
+                    eventUrl,
+                    eventImage
+                )}
             />
 
             <Link
                 to="/events"
-                className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground mb-6"
+                className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground mb-6"
             >
-                <ArrowLeft className="h-4 w-4" /> All events
+                <ArrowLeft className="h-4 w-4" />
+                Back to What's On
             </Link>
 
-            <div className="rounded-3xl overflow-hidden border border-border bg-surface">
-                <div className="relative aspect-[16/8] bg-muted overflow-hidden">
+            {/* HERO */}
+            <article className="rounded-[2rem] overflow-hidden border border-border bg-surface">
+                <div className="relative aspect-[16/8] sm:aspect-[16/7] bg-muted overflow-hidden">
                     <img
                         src={eventImage}
-                        alt={`${event.title} event poster`}
+                        alt={event.title}
                         className="absolute inset-0 h-full w-full object-cover"
                     />
 
-                    <div className="absolute top-4 left-4 flex gap-2">
-                        <CategoryBadge category={event.category} />
+                    <div className="absolute inset-x-0 bottom-0 h-1/2 bg-gradient-to-t from-black/65 to-transparent pointer-events-none" />
 
-                        {event.cost?.toLowerCase().includes("free") && (
+                    <div className="absolute top-4 left-4 flex flex-wrap gap-2">
+                        <CategoryBadge
+                            category={
+                                event.category
+                            }
+                        />
+
+                        {event.cost
+                            ?.toLowerCase()
+                            .includes(
+                                "free"
+                            ) && (
                             <span className="px-2.5 py-1 rounded-full text-[10px] font-bold tracking-wider uppercase bg-secondary text-secondary-foreground">
                                 Free
                             </span>
@@ -316,334 +493,556 @@ export default function EventDetail() {
                     </div>
                 </div>
 
-                <div className="p-6 sm:p-10">
-                    <h1 className="font-display font-black text-3xl sm:text-5xl tracking-tight leading-tight">
-                        {event.title}
-                    </h1>
+                <div className="p-6 sm:p-9 lg:p-10">
+                    <div className="max-w-4xl">
+                        <h1 className="font-display font-black text-3xl sm:text-5xl tracking-tight leading-tight">
+                            {event.title}
+                        </h1>
 
-                    {org && (
-                        <Link
-                            to={`/organisations/${org.slug}`}
-                            className="inline-flex items-center gap-2 mt-3 text-sm font-semibold text-primary"
-                        >
-                            <span className="text-lg">{org.logo}</span> {org.name}
-                        </Link>
-                    )}
-
-                    <div className="mt-8 grid sm:grid-cols-2 gap-5">
-                        <InfoRow
-                            icon={CalendarDays}
-                            label="When"
-                            value={`${formatDate(event.start)} · ${formatTime(
-                                event.start
-                            )} – ${formatTime(event.end)}`}
-                        />
-
-                        <InfoRow
-                            icon={MapPin}
-                            label="Where"
-                            value={location || "Blackrod"}
-                        />
-
-                        <InfoRow
-                            icon={PoundSterling}
-                            label="Cost"
-                            value={event.cost || "Not specified"}
-                        />
-
-                        <InfoRow
-                            icon={Users}
-                            label="Suitable for"
-                            value={event.age || "Not specified"}
-                        />
-
-                        <InfoRow
-                            icon={Accessibility}
-                            label="Accessibility"
-                            value={event.accessibility || "Not specified"}
-                        />
-
-                        {(event.contactEmail || event.contactPhone) && (
-                            <InfoRow
-                                icon={Mail}
-                                label="Contact"
-                                value={
-                                    <span className="space-x-3">
-                                        {event.contactEmail && (
-                                            <a
-                                                href={`mailto:${event.contactEmail}`}
-                                                className="text-primary"
-                                            >
-                                                {event.contactEmail}
-                                            </a>
-                                        )}
-
-                                        {event.contactPhone && (
-                                            <a
-                                                href={`tel:${event.contactPhone}`}
-                                                className="text-primary inline-flex items-center gap-1"
-                                            >
-                                                <Phone className="h-3.5 w-3.5" />
-                                                {event.contactPhone}
-                                            </a>
-                                        )}
-                                    </span>
-                                }
-                            />
+                        {org && (
+                            <Link
+                                to={`/organisations/${org.slug}`}
+                                className="inline-flex items-center gap-2 mt-3 text-sm font-semibold text-primary hover:underline"
+                            >
+                                <Building2 className="h-4 w-4" />
+                                {org.name}
+                            </Link>
                         )}
                     </div>
 
-                    <p className="mt-8 text-base text-foreground/90 leading-relaxed whitespace-pre-line">
-                        {event.description}
-                    </p>
+                    {/* MAIN ACTIONS */}
+                    <div className="mt-7 flex flex-wrap gap-2">
+                        {event.booking && (
+                            <a
+                                href={
+                                    event.booking
+                                }
+                                target="_blank"
+                                rel="noreferrer"
+                                data-testid="event-book"
+                                className="inline-flex items-center gap-2 px-5 py-3 rounded-full text-sm font-semibold bg-primary text-primary-foreground hover:brightness-110 transition"
+                            >
+                                Book / RSVP
+                                <ExternalLink className="h-3.5 w-3.5" />
+                            </a>
+                        )}
 
-                    <div className="mt-8 flex flex-wrap gap-2">
                         <button
                             type="button"
                             data-testid="event-save"
                             onClick={() => {
-                                const nextSaved = toggleSaveEvent(event.id);
-                                toast.success(nextSaved ? "Saved to your shortlist" : "Removed from shortlist");
+                                const nextSaved =
+                                    toggleSaveEvent(
+                                        event.id
+                                    );
+
+                                toast.success(
+                                    nextSaved
+                                        ? "Saved to your events"
+                                        : "Removed from saved events"
+                                );
                             }}
-                            className={`inline-flex items-center gap-1.5 px-5 py-3 rounded-full text-sm font-semibold border-2 transition ${saved ? "border-primary bg-primary text-primary-foreground" : "border-foreground hover:bg-foreground hover:text-background"}`}
+                            className={`inline-flex items-center gap-1.5 px-5 py-3 rounded-full text-sm font-semibold border transition ${
+                                saved
+                                    ? "border-primary bg-primary text-primary-foreground"
+                                    : "border-border bg-background hover:border-primary/50"
+                            }`}
                         >
-                            <Heart className={`h-4 w-4 ${saved ? "fill-current" : ""}`} />
-                            {saved ? "Saved" : "Save event"}
+                            <Heart
+                                className={`h-4 w-4 ${
+                                    saved
+                                        ? "fill-current"
+                                        : ""
+                                }`}
+                            />
+
+                            {saved
+                                ? "Saved"
+                                : "Save event"}
                         </button>
 
-                        {event.booking && (
-                            <a
-                                href={event.booking}
-                                target="_blank"
-                                rel="noreferrer"
-                                data-testid="event-book"
-                                className="inline-flex items-center gap-1.5 px-5 py-3 rounded-full text-sm font-semibold bg-primary text-primary-foreground hover:scale-105 transition-transform"
+                        <DropdownMenu>
+                            <DropdownMenuTrigger
+                                asChild
                             >
-                                Book / RSVP <ExternalLink className="h-3.5 w-3.5" />
-                            </a>
-                        )}
+                                <button
+                                    type="button"
+                                    className="inline-flex items-center gap-1.5 px-5 py-3 rounded-full text-sm font-semibold border border-border bg-background hover:bg-muted transition"
+                                >
+                                    <CalendarDays className="h-4 w-4" />
+                                    Add to calendar
+                                    <ChevronDown className="h-3.5 w-3.5" />
+                                </button>
+                            </DropdownMenuTrigger>
 
-                        <a
-                            href={buildCalendarUrl(event, "google")}
-                            target="_blank"
-                            rel="noreferrer"
-                            data-testid="event-google-cal"
-                            className="inline-flex items-center gap-1.5 px-5 py-3 rounded-full text-sm font-semibold border-2 border-foreground hover:bg-foreground hover:text-background transition"
-                        >
-                            Add to Google Calendar
-                        </a>
+                            <DropdownMenuContent
+                                align="start"
+                                className="rounded-2xl"
+                            >
+                                <DropdownMenuItem
+                                    asChild
+                                >
+                                    <a
+                                        href={buildCalendarUrl(
+                                            event,
+                                            "google"
+                                        )}
+                                        target="_blank"
+                                        rel="noreferrer"
+                                    >
+                                        Google Calendar
+                                    </a>
+                                </DropdownMenuItem>
 
-                        <a
-                            href={buildCalendarUrl(event, "outlook")}
-                            target="_blank"
-                            rel="noreferrer"
-                            data-testid="event-outlook-cal"
-                            className="inline-flex items-center gap-1.5 px-5 py-3 rounded-full text-sm font-semibold border-2 border-foreground hover:bg-foreground hover:text-background transition"
-                        >
-                            Add to Outlook
-                        </a>
+                                <DropdownMenuItem
+                                    asChild
+                                >
+                                    <a
+                                        href={buildCalendarUrl(
+                                            event,
+                                            "outlook"
+                                        )}
+                                        target="_blank"
+                                        rel="noreferrer"
+                                    >
+                                        Outlook Calendar
+                                    </a>
+                                </DropdownMenuItem>
 
-                        <button
-                            type="button"
-                            data-testid="event-apple-cal"
-                            onClick={() => downloadIcsFile(event, eventUrl)}
-                            className="inline-flex items-center gap-1.5 px-5 py-3 rounded-full text-sm font-semibold border-2 border-foreground hover:bg-foreground hover:text-background transition"
-                        >
-                            Download .ics
-                        </button>
+                                <DropdownMenuSeparator />
+
+                                <DropdownMenuItem
+                                    onClick={() =>
+                                        downloadIcsFile(
+                                            event,
+                                            eventUrl
+                                        )
+                                    }
+                                >
+                                    Download .ics file
+                                </DropdownMenuItem>
+                            </DropdownMenuContent>
+                        </DropdownMenu>
 
                         <button
                             type="button"
                             data-testid="event-share"
-                            onClick={shareNative}
-                            className="inline-flex items-center gap-1.5 px-5 py-3 rounded-full text-sm font-semibold bg-secondary text-secondary-foreground"
+                            onClick={
+                                shareNative
+                            }
+                            className="inline-flex items-center gap-1.5 px-5 py-3 rounded-full text-sm font-semibold border border-border bg-background hover:bg-muted transition"
                         >
-                            <Share2 className="h-4 w-4" /> Share
+                            <Share2 className="h-4 w-4" />
+                            Share
                         </button>
                     </div>
+
+                    {/* EVENT FACTS */}
+                    <div className="mt-9 rounded-3xl border border-border bg-background p-5 sm:p-6">
+                        <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-6">
+                            <InfoRow
+                                icon={
+                                    CalendarDays
+                                }
+                                label="When"
+                                value={`${formatDate(
+                                    event.start
+                                )} · ${formatTime(
+                                    event.start
+                                )}${
+                                    event.end
+                                        ? ` – ${formatTime(
+                                              event.end
+                                          )}`
+                                        : ""
+                                }`}
+                            />
+
+                            <InfoRow
+                                icon={MapPin}
+                                label="Where"
+                                value={
+                                    <div>
+                                        <div>
+                                            {location ||
+                                                "Blackrod"}
+                                        </div>
+
+                                        {(event.venue ||
+                                            event.address) && (
+                                            <a
+                                                href={buildMapsUrl(
+                                                    event
+                                                )}
+                                                target="_blank"
+                                                rel="noreferrer"
+                                                className="inline-flex items-center gap-1 mt-1.5 text-xs font-semibold text-primary hover:underline"
+                                            >
+                                                <Navigation className="h-3 w-3" />
+                                                Directions
+                                            </a>
+                                        )}
+                                    </div>
+                                }
+                            />
+
+                            <InfoRow
+                                icon={
+                                    PoundSterling
+                                }
+                                label="Cost"
+                                value={
+                                    event.cost ||
+                                    "Not specified"
+                                }
+                            />
+
+                            <InfoRow
+                                icon={Users}
+                                label="Suitable for"
+                                value={
+                                    event.age ||
+                                    "Not specified"
+                                }
+                            />
+
+                            <InfoRow
+                                icon={
+                                    Accessibility
+                                }
+                                label="Accessibility"
+                                value={
+                                    event.accessibility ||
+                                    "Not specified"
+                                }
+                            />
+
+                            {(event.contactEmail ||
+                                event.contactPhone) && (
+                                <InfoRow
+                                    icon={Mail}
+                                    label="Contact"
+                                    value={
+                                        <div className="space-y-1">
+                                            {event.contactEmail && (
+                                                <a
+                                                    href={`mailto:${event.contactEmail}`}
+                                                    className="block text-primary hover:underline break-all"
+                                                >
+                                                    {
+                                                        event.contactEmail
+                                                    }
+                                                </a>
+                                            )}
+
+                                            {event.contactPhone && (
+                                                <a
+                                                    href={`tel:${event.contactPhone}`}
+                                                    className="inline-flex items-center gap-1 text-primary hover:underline"
+                                                >
+                                                    <Phone className="h-3.5 w-3.5" />
+                                                    {
+                                                        event.contactPhone
+                                                    }
+                                                </a>
+                                            )}
+                                        </div>
+                                    }
+                                />
+                            )}
+                        </div>
+                    </div>
+
+                    {/* DESCRIPTION */}
+                    {event.description && (
+                        <section className="mt-9 max-w-4xl">
+                            <h2 className="font-display font-bold text-2xl">
+                                About this event
+                            </h2>
+
+                            <p className="mt-4 text-base text-foreground/90 leading-relaxed whitespace-pre-line">
+                                {
+                                    event.description
+                                }
+                            </p>
+                        </section>
+                    )}
                 </div>
-            </div>
+            </article>
 
-            <section className="mt-10 rounded-3xl border border-border bg-surface p-6 sm:p-8">
-                <div className="max-w-3xl">
-                    <p className="text-xs font-bold uppercase tracking-wider text-primary">
-                        Promote this event
-                    </p>
+            {/* ORGANISER TOOLS */}
+            {canManage && (
+                <section className="mt-8 rounded-3xl border border-primary/20 bg-primary/5 p-6 sm:p-8">
+                    <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-6">
+                        <div className="max-w-2xl">
+                            <p className="text-xs font-bold uppercase tracking-wider text-primary">
+                                Organiser tools
+                            </p>
 
-                    <h2 className="mt-2 font-display font-black text-2xl sm:text-3xl">
-                        Share this Blackrod event in seconds
-                    </h2>
+                            <h2 className="mt-2 font-display font-black text-2xl">
+                                Manage and promote this event
+                            </h2>
 
-                    <p className="mt-3 text-sm sm:text-base text-muted-foreground leading-relaxed">
-                        Are you involved with this event, or do you want to help more
-                        people find it? Use the one-tap buttons below to share to any
-                        social platform, copy the poster link, or save the event to your
-                        calendar.
-                    </p>
+                            <p className="mt-2 text-sm text-muted-foreground">
+                                These controls are only
+                                visible to authorised
+                                organisation users and
+                                site administrators.
+                            </p>
+                        </div>
 
-                    <div className="mt-5">
-                        <button
-                            type="button"
-                            data-testid="event-post-now-btn"
-                            onClick={() => setPostNowOpen(true)}
-                            className="inline-flex items-center gap-2 px-5 py-3 rounded-full bg-primary text-primary-foreground text-sm font-bold hover:brightness-110 shadow-sm"
-                        >
-                            <Rocket className="h-4 w-4" /> Post Now — poster + caption + share
-                        </button>
-                        <p className="mt-2 text-xs text-muted-foreground">
-                            One-click social bundle. Grab the poster, tweak the caption, and post to any channel.
-                        </p>
+                        <div className="flex flex-wrap gap-2">
+                            <Link
+                                to={`/edit-event/${event.id}`}
+                                data-testid="edit-event-cta"
+                                className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-full text-sm font-semibold bg-primary text-primary-foreground"
+                            >
+                                <Edit3 className="h-4 w-4" />
+                                Edit event
+                            </Link>
+
+                            <button
+                                type="button"
+                                data-testid="event-post-now-btn"
+                                onClick={() =>
+                                    setPostNowOpen(
+                                        true
+                                    )
+                                }
+                                className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-full text-sm font-semibold bg-foreground text-background"
+                            >
+                                <Rocket className="h-4 w-4" />
+                                Post Now
+                            </button>
+                        </div>
                     </div>
 
-                    <div className="mt-5">
-                        <div className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground mb-2">One-tap share</div>
+                    <div className="mt-6">
+                        <div className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground mb-2">
+                            One-tap sharing
+                        </div>
+
                         <ShareButtons
-                            text={`${event.title} — ${formatDate(event.start)} at ${event.venue || "Blackrod"}`}
+                            text={`${event.title} — ${formatDate(
+                                event.start
+                            )} at ${
+                                event.venue ||
+                                "Blackrod"
+                            }`}
                             url={eventUrl}
-                            ogUrl={shareOgUrl}
-                            title={event.title}
-                            analytics={{ entityType: "event", entityId: event.id, orgSlug: event.orgSlug }}
+                            ogUrl={
+                                shareOgUrl
+                            }
+                            title={
+                                event.title
+                            }
+                            analytics={{
+                                entityType:
+                                    "event",
+                                entityId:
+                                    event.id,
+                                orgSlug:
+                                    event.orgSlug,
+                            }}
                         />
                     </div>
-                    <div className="mt-4 flex justify-end">
-                        <ReportButton kind="event" targetId={event.id} />
-                    </div>
-                </div>
 
-                <div className="mt-6 grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
-                    <ActionButton
-                        icon={Copy}
-                        label="Copy Facebook Post"
-                        description="Ready to paste onto a Facebook Page or group."
-                        onClick={() =>
-                            copyToClipboard(facebookPost, "Facebook post copied")
-                        }
-                    />
+                    <div className="mt-6 grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                        <ActionButton
+                            icon={Copy}
+                            label="Copy Facebook post"
+                            description="Copy a ready-to-edit event caption."
+                            onClick={() =>
+                                copyToClipboard(
+                                    facebookPost,
+                                    "Facebook post copied"
+                                )
+                            }
+                        />
 
-                    <ActionButton
-                        icon={Download}
-                        label="Copy Poster Link"
-                        description="Use the event image in social posts."
-                        onClick={downloadPoster}
-                    />
+                        <ActionButton
+                            icon={Download}
+                            label="Copy poster link"
+                            description="Copy the event image URL for social posts."
+                            onClick={
+                                copyPosterLink
+                            }
+                        />
 
-                    <ActionButton
-                        icon={CalendarDays}
-                        label="Download Calendar File"
-                        description="Works with Apple Calendar and most calendar apps."
-                        onClick={() => downloadIcsFile(event, eventUrl)}
-                    />
-                </div>
-
-                <div className="mt-6 flex flex-wrap gap-2">
-                    {(role === "admin" || role === "org") && (
-                        <Link
-                            to={`/edit-event/${event.id}`}
-                            data-testid="edit-event-cta"
-                            className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-full text-sm font-semibold bg-primary text-primary-foreground hover:brightness-110 transition"
-                        >
-                            <Edit3 className="h-4 w-4" />
-                            Edit event
-                        </Link>
-                    )}
-                    <Link
-                        to={`/events/${event.id}/suggest-update`}
-                        className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-full text-sm font-semibold border border-border hover:border-primary/40 hover:text-primary transition"
-                    >
-                        <Edit3 className="h-4 w-4" />
-                        Suggest an update
-                    </Link>
-
-                    <Link
-                        to={`/events/${event.id}/claim`}
-                        className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-full text-sm font-semibold border border-border hover:border-primary/40 hover:text-primary transition"
-                    >
-                        <ShieldCheck className="h-4 w-4" />
-                        Claim this event
-                    </Link>
-                </div>
-            </section>
-
-            <section className="mt-10 rounded-3xl border border-border bg-background p-6 sm:p-8">
-                <h2 className="font-display font-bold text-2xl">
-                    Facebook-ready post
-                </h2>
-
-                <p className="mt-2 text-sm text-muted-foreground">
-                    Copy and paste this into your organisation’s Facebook Page, local
-                    group, WhatsApp community or newsletter.
-                </p>
-
-                <pre className="mt-4 whitespace-pre-wrap rounded-2xl bg-muted p-4 text-sm leading-relaxed overflow-x-auto">
-                    {facebookPost}
-                </pre>
-
-                <button
-                    type="button"
-                    onClick={() => copyToClipboard(facebookPost, "Facebook post copied")}
-                    className="mt-4 inline-flex items-center gap-1.5 px-5 py-3 rounded-full text-sm font-semibold bg-primary text-primary-foreground hover:scale-105 transition-transform"
-                >
-                    <Copy className="h-4 w-4" />
-                    Copy Facebook Post
-                </button>
-            </section>
-
-            {org && (
-                <section className="mt-10">
-                    <h2 className="font-display font-bold text-2xl">
-                        More from {org.name}
-                    </h2>
-
-                    <div className="mt-4 grid sm:grid-cols-2 gap-4">
-                        {eventsByOrg(events, org.slug)
-                            .filter((e) => e.id !== event.id)
-                            .slice(0, 4)
-                            .map((e) => (
-                                <Link
-                                    key={e.id}
-                                    to={`/events/${e.id}`}
-                                    className="p-5 rounded-3xl border border-border bg-surface hover:border-primary/30 transition"
-                                >
-                                    <CategoryBadge category={e.category} />
-                                    <h3 className="font-display font-bold mt-2">
-                                        {e.title}
-                                    </h3>
-                                    <p className="text-xs text-muted-foreground mt-1">
-                                        {formatDate(e.start)} · {formatTime(e.start)}
-                                    </p>
-                                </Link>
-                            ))}
+                        <ActionButton
+                            icon={
+                                CalendarDays
+                            }
+                            label="Download calendar file"
+                            description="Download an .ics version of this event."
+                            onClick={() =>
+                                downloadIcsFile(
+                                    event,
+                                    eventUrl
+                                )
+                            }
+                        />
                     </div>
                 </section>
             )}
-            {/* NEWSLETTER */}
+
+            {/* CORRECTIONS / CLAIM */}
+            <section className="mt-8 rounded-3xl border border-border bg-surface p-5 sm:p-6">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                    <div>
+                        <h2 className="font-display font-bold text-lg">
+                            Something not right?
+                        </h2>
+
+                        <p className="mt-1 text-xs text-muted-foreground">
+                            Help us keep Blackrod
+                            Now's event information
+                            accurate.
+                        </p>
+                    </div>
+
+                    <div className="flex flex-wrap gap-2">
+                        <Link
+                            to={`/events/${event.id}/suggest-update`}
+                            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-full text-xs font-semibold border border-border hover:border-primary/40 hover:text-primary transition"
+                        >
+                            <Edit3 className="h-3.5 w-3.5" />
+                            Suggest an update
+                        </Link>
+
+                        {!canManage && (
+                            <Link
+                                to={`/events/${event.id}/claim`}
+                                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-full text-xs font-semibold border border-border hover:border-primary/40 hover:text-primary transition"
+                            >
+                                <ShieldCheck className="h-3.5 w-3.5" />
+                                Claim this event
+                            </Link>
+                        )}
+
+                        <ReportButton
+                            kind="event"
+                            targetId={
+                                event.id
+                            }
+                        />
+                    </div>
+                </div>
+            </section>
+
+            {/* MORE FROM ORGANISER */}
+            {org &&
+                upcomingFromOrg.length >
+                    0 && (
+                    <section className="mt-10">
+                        <div className="flex items-end justify-between gap-4">
+                            <div>
+                                <span className="text-xs font-bold uppercase tracking-[0.18em] text-primary">
+                                    More locally
+                                </span>
+
+                                <h2 className="font-display font-bold text-2xl sm:text-3xl mt-2">
+                                    More from{" "}
+                                    {org.name}
+                                </h2>
+                            </div>
+
+                            <Link
+                                to={`/organisations/${org.slug}`}
+                                className="hidden sm:inline-flex text-sm font-semibold text-primary"
+                            >
+                                View organisation →
+                            </Link>
+                        </div>
+
+                        <div className="mt-5 grid sm:grid-cols-2 gap-4">
+                            {upcomingFromOrg.map(
+                                (item) => (
+                                    <Link
+                                        key={
+                                            item.id
+                                        }
+                                        to={`/events/${item.id}`}
+                                        className="group p-5 rounded-3xl border border-border bg-surface hover:border-primary/30 transition"
+                                    >
+                                        <div className="flex items-center justify-between gap-3">
+                                            <CategoryBadge
+                                                category={
+                                                    item.category
+                                                }
+                                            />
+
+                                            <span className="text-xs text-muted-foreground">
+                                                {formatTime(
+                                                    item.start
+                                                )}
+                                            </span>
+                                        </div>
+
+                                        <h3 className="font-display font-bold text-lg mt-3 group-hover:text-primary transition">
+                                            {
+                                                item.title
+                                            }
+                                        </h3>
+
+                                        <p className="text-xs text-muted-foreground mt-1">
+                                            {formatDate(
+                                                item.start
+                                            )}
+                                            {item.venue
+                                                ? ` · ${item.venue}`
+                                                : ""}
+                                        </p>
+                                    </Link>
+                                )
+                            )}
+                        </div>
+                    </section>
+                )}
+
             <NewsletterSection />
 
-            <PostNowDialog
-                event={event}
-                open={postNowOpen}
-                onOpenChange={setPostNowOpen}
-            />
+            {canManage && (
+                <PostNowDialog
+                    event={event}
+                    open={postNowOpen}
+                    onOpenChange={
+                        setPostNowOpen
+                    }
+                />
+            )}
         </div>
     );
 }
 
-const InfoRow = ({ icon: Icon, label, value }) => (
-    <div className="flex items-start gap-3">
-        <div className="h-9 w-9 rounded-2xl bg-primary/10 text-primary grid place-items-center shrink-0">
+const InfoRow = ({
+    icon: Icon,
+    label,
+    value,
+}) => (
+    <div className="flex items-start gap-3 min-w-0">
+        <div className="h-10 w-10 rounded-2xl bg-primary/10 text-primary grid place-items-center shrink-0">
             <Icon className="h-4 w-4" />
         </div>
 
-        <div className="leading-tight">
+        <div className="leading-tight min-w-0">
             <div className="text-[10px] font-bold tracking-wider uppercase text-muted-foreground">
                 {label}
             </div>
-            <div className="text-sm mt-1">{value}</div>
+
+            <div className="text-sm mt-1 leading-relaxed break-words">
+                {value}
+            </div>
         </div>
     </div>
 );
 
-const ActionButton = ({ icon: Icon, label, description, onClick }) => (
+const ActionButton = ({
+    icon: Icon,
+    label,
+    description,
+    onClick,
+}) => (
     <button
         type="button"
         onClick={onClick}
@@ -655,7 +1054,10 @@ const ActionButton = ({ icon: Icon, label, description, onClick }) => (
             </div>
 
             <div>
-                <div className="font-semibold text-sm">{label}</div>
+                <div className="font-semibold text-sm">
+                    {label}
+                </div>
+
                 <p className="mt-1 text-xs text-muted-foreground leading-relaxed">
                     {description}
                 </p>

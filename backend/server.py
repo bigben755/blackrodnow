@@ -4,10 +4,12 @@ from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo import ReturnDocument
+from pymongo.errors import DuplicateKeyError
 from pathlib import Path
 from pydantic import BaseModel, EmailStr, Field, ConfigDict
 from typing import List, Optional, Literal, Any, Dict
 from datetime import datetime, timezone, timedelta, date as date_cls, time as time_cls
+from zoneinfo import ZoneInfo
 from collections import Counter, defaultdict
 from difflib import SequenceMatcher
 import os
@@ -82,6 +84,12 @@ STORAGE_URL = "https://integrations.emergentagent.com/objstore/api/v1/storage"
 PUBLIC_URL = os.environ.get("PUBLIC_URL", "https://blackrodnow.local")
 ADMIN_LAUNCH_CODE = os.environ.get("ADMIN_LAUNCH_CODE", "Blackr0dN0w!&")
 ORG_DEFAULT_PASSWORD = os.environ.get("ORG_DEFAULT_PASSWORD", "Organisat10n!&")
+# Security: the historical shared default password is disabled unless explicitly
+# re-enabled for a short migration window. Existing approved organisations should
+# have a password document provisioned/reset by an admin.
+ALLOW_LEGACY_DEFAULT_ORG_PASSWORD = os.environ.get(
+    "ALLOW_LEGACY_DEFAULT_ORG_PASSWORD", "false"
+).strip().lower() in {"1", "true", "yes", "on"}
 ORG_AUTH_SECRET = os.environ.get("ORG_AUTH_SECRET", f"{APP_NAME}:{ADMIN_LAUNCH_CODE}")
 ORG_AUTH_TOKEN_TTL_SECONDS = int(os.environ.get("ORG_AUTH_TOKEN_TTL_SECONDS", "43200"))
 ORG_CLAIM_VERIFY_TTL_MINUTES = int(os.environ.get("ORG_CLAIM_VERIFY_TTL_MINUTES", "20"))
@@ -107,31 +115,55 @@ def new_token() -> str:
 
 
 def _require_org_write_access(slug: str, org_auth: Optional[str] = None, admin_code: Optional[str] = None) -> str:
-    """Auth guard. Accepts (a) X-Admin-Code matching ADMIN_LAUNCH_CODE, (b) an
-    admin/org JWT via X-Org-Auth `Bearer <jwt>` header, or (c) legacy org tokens
-    (current permissive rollout). Returns the effective role ('admin' if the
-    caller proved admin credentials, else 'org').
-    Real JWT flow now uses `/api/auth/admin/login`; this shim keeps existing
-    role-switcher UI working while we migrate."""
-    # Admin: launch code header
+    """Require authenticated write access to one organisation.
+
+    Accepted callers:
+    - site admin via X-Admin-Code;
+    - site admin JWT via X-Org-Auth: Bearer <jwt>;
+    - organisation shared-account JWT (role=org) scoped to this slug;
+    - organisation member JWT (role=org_member) scoped to this slug;
+    - admin-assistance JWT (role=admin_impersonation) scoped to this slug.
+
+    Missing, malformed, expired, cross-organisation, or inactive credentials are
+    rejected. This is deliberately fail-closed.
+    """
+    clean_slug = str(slug or "").strip()
+    if not clean_slug:
+        raise HTTPException(400, "Organisation is required")
+
     if admin_code and hmac.compare_digest(admin_code, ADMIN_LAUNCH_CODE):
         return "admin"
-    # Admin/Org: bearer JWT via X-Org-Auth (frontend already sends this)
-    if org_auth and org_auth.lower().startswith("bearer "):
-        token = org_auth[7:].strip()
-        try:
-            from auth import decode_token
-            payload = decode_token(token)
-            if payload.get("role") == "admin":
-                return "admin"
-            if payload.get("role") == "org_member":
-                token_slug = str(payload.get("org_slug") or "")
-                member_status = str(payload.get("member_status") or "active")
-                if token_slug == slug and member_status == "active":
-                    return "org"
-        except Exception:
-            pass
-    return "org"
+
+    if not org_auth or not org_auth.lower().startswith("bearer "):
+        raise HTTPException(401, "Organisation authentication required")
+
+    token = org_auth[7:].strip()
+    if not token:
+        raise HTTPException(401, "Organisation authentication required")
+
+    from auth import decode_token
+
+    payload = decode_token(token)
+    role = str(payload.get("role") or "")
+    token_slug = str(payload.get("org_slug") or "")
+    member_status = str(payload.get("member_status") or "active")
+
+    if role == "admin":
+        return "admin"
+
+    if role == "admin_impersonation":
+        if token_slug != clean_slug:
+            raise HTTPException(403, "Admin assistance token is for a different organisation")
+        return "admin"
+
+    if role in {"org", "org_member"}:
+        if token_slug != clean_slug:
+            raise HTTPException(403, "You do not have access to this organisation")
+        if member_status != "active":
+            raise HTTPException(403, "This organisation account is not active")
+        return "org"
+
+    raise HTTPException(403, "Invalid organisation credentials")
 
 
 def now_iso() -> str:
@@ -861,6 +893,11 @@ class NewsletterEdition(BaseModel):
     body_intro: str = ""
     scheduled_for: Optional[str] = None
     sent_at: Optional[str] = None
+    audience: str = "subscribers"
+    trigger: str = "manual"
+    sent_count: int = 0
+    failed_count: int = 0
+    recipient_count: int = 0
     created_at: str = Field(default_factory=now_iso)
 
 
@@ -923,7 +960,7 @@ class AdminAuditEntry(BaseModel):
     id: str = Field(default_factory=new_id)
     actor: str = "admin"
     action: str
-    entity_type: Literal["org", "event", "user", "site"] = "site"
+    entity_type: Literal["org", "event", "user", "site", "subscriber"] = "site"
     entity_id: str = ""
     summary: str
     meta: Dict[str, Any] = Field(default_factory=dict)
@@ -1423,13 +1460,22 @@ async def admin_org_status(
 
 
 @api.delete("/admin/organisations/{slug}")
-async def admin_delete_org(slug: str):
+async def admin_delete_org(
+    slug: str,
+    request: Request,
+    authorization: Optional[str] = Header(None),
+    admin_code: Optional[str] = Header(None, alias="X-Admin-Code"),
+):
+    _require_admin_from_request(request, authorization, admin_code)
+
+    org = await _find_org(slug)
     await db.orgs.delete_one({"slug": slug})
     await _audit(
         action="org_deleted",
         entity_type="org",
         entity_id=slug,
-        summary="Organisation deleted",
+        summary=f"Organisation deleted: {org.get('name') or slug}",
+        actor="admin",
     )
     return {"ok": True}
 
@@ -2526,7 +2572,9 @@ def _password_matches(doc: Optional[Dict[str, Any]], password: str) -> bool:
     if not password:
         return False
     if not doc:
-        return hmac.compare_digest(password, ORG_DEFAULT_PASSWORD)
+        if ALLOW_LEGACY_DEFAULT_ORG_PASSWORD:
+            return hmac.compare_digest(password, ORG_DEFAULT_PASSWORD)
+        return False
     expected = doc.get("password_hash") or ""
     actual = _hash_org_password(password, doc.get("password_salt") or "")
     return hmac.compare_digest(actual, expected)
@@ -2613,56 +2661,112 @@ async def verify_org_password(slug: str, req: OrgPasswordVerifyReq):
 
 @api.post("/organisations/{slug}/auth/login")
 async def org_auth_login(slug: str, req: OrgPasswordVerifyReq):
-    """Password → per-org access token. Frontend stores under `rn-org-tokens`
-    and sends as X-Org-Auth on protected calls."""
+    """Exchange the organisation shared password for a signed, slug-scoped JWT.
+
+    This preserves the simple organisation-password workflow while making every
+    subsequent write request cryptographically verifiable.
+    """
     org = await _find_org(slug)
     if org.get("status") in {"pending", "suspended", "archived", "rejected"}:
         raise HTTPException(403, "This organisation cannot sign in right now. Contact site admin for access.")
+
     doc = await _get_org_password_doc(slug)
+    if not doc and not ALLOW_LEGACY_DEFAULT_ORG_PASSWORD:
+        raise HTTPException(
+            403,
+            "Organisation access has not been set up yet. Ask a Blackrod Now admin to reset the organisation password.",
+        )
+
     if not _password_matches(doc, (req.password or "").strip()):
         raise HTTPException(401, "Invalid organisation password")
-    # Token is opaque — the permissive middleware only checks presence today.
-    token = f"org:{slug}:{new_token()}"
+
+    from auth import create_access_token
+
+    token = create_access_token(
+        sub=f"org:{slug}",
+        role="org",
+        extra={
+            "org_slug": slug,
+            "org_name": org.get("name", ""),
+            "member_status": "active",
+            "auth_mode": "shared_password",
+        },
+    )
+
+    await _audit(
+        action="org_login",
+        entity_type="org",
+        entity_id=slug,
+        summary=f"Organisation signed in: {org.get('name') or slug}",
+        actor="org",
+        meta={"auth_mode": "shared_password"},
+    )
+
     return {
         "ok": True,
         "slug": slug,
         "org_name": org.get("name", ""),
-        "token": token,
+        "token": f"Bearer {token}",
     }
 
 
 @api.post("/organisations/{slug}/password/change")
-async def change_org_password(slug: str, req: OrgPasswordChangeReq):
+async def change_org_password(
+    slug: str,
+    req: OrgPasswordChangeReq,
+    request: Request,
+    authorization: Optional[str] = Header(None),
+    admin_code: Optional[str] = Header(None, alias="X-Admin-Code"),
+):
     await _find_org(slug)
     new_password = (req.new_password or "").strip()
     if len(new_password) < 8:
         raise HTTPException(400, "New password must be at least 8 characters")
 
-    using_admin = False
-    if req.admin_code:
-        if not hmac.compare_digest((req.admin_code or "").strip(), ADMIN_LAUNCH_CODE):
-            raise HTTPException(403, "Invalid admin code")
-        using_admin = True
-    else:
+    supplied_admin_code = (req.admin_code or admin_code or "").strip()
+    using_admin = _admin_from_request(request, authorization, supplied_admin_code)
+
+    if not using_admin:
         current_password = (req.current_password or "").strip()
         doc = await _get_org_password_doc(slug)
         if not _password_matches(doc, current_password):
             raise HTTPException(403, "Current organisation password is incorrect")
 
     await _set_org_password(slug, new_password, updated_by=("admin" if using_admin else "org"))
+    await _audit(
+        action="org_password_changed",
+        entity_type="org",
+        entity_id=slug,
+        summary="Organisation password changed",
+        actor=("admin" if using_admin else "org"),
+    )
     return {"ok": True}
 
 
 @api.post("/admin/organisations/{slug}/password/reset")
-async def reset_org_password(slug: str, body: Dict[str, str]):
+async def reset_org_password(
+    slug: str,
+    body: Dict[str, str],
+    request: Request,
+    authorization: Optional[str] = Header(None),
+    admin_code: Optional[str] = Header(None, alias="X-Admin-Code"),
+):
     await _find_org(slug)
-    admin_code = (body.get("admin_code") or "").strip()
-    if not hmac.compare_digest(admin_code, ADMIN_LAUNCH_CODE):
-        raise HTTPException(403, "Invalid admin code")
-    password = (body.get("password") or ORG_DEFAULT_PASSWORD).strip()
+    supplied_admin_code = (admin_code or body.get("admin_code") or "").strip()
+    _require_admin_from_request(request, authorization, supplied_admin_code)
+
+    password = (body.get("password") or "").strip()
     if len(password) < 8:
         raise HTTPException(400, "Password must be at least 8 characters")
+
     await _set_org_password(slug, password, updated_by="admin-reset")
+    await _audit(
+        action="org_password_reset",
+        entity_type="org",
+        entity_id=slug,
+        summary="Organisation password reset by admin",
+        actor="admin",
+    )
     return {"ok": True, "slug": slug}
 
 
@@ -2672,24 +2776,48 @@ async def admin_impersonate_org(
     body: Dict[str, str],
     request: Request,
     authorization: Optional[str] = Header(None),
+    admin_code: Optional[str] = Header(None, alias="X-Admin-Code"),
 ):
-    """Super admin exchanges credentials for an organisation access token so
-    they can operate an organisation dashboard on the owner's behalf. Accepts
-    EITHER an admin JWT (`Authorization: Bearer …` — new preferred flow) OR
-    the legacy `admin_code` body field (backward compat during rollover).
-    The returned token is a synthetic value the frontend passes via X-Org-Auth
-    to signal an admin-impersonation session."""
+    """Issue a signed, organisation-scoped admin-assistance token.
+
+    The token lets a site admin operate that organisation's normal dashboard
+    without learning or using the organisation's own password. It cannot be
+    reused against another organisation.
+    """
     org = await _find_org(slug)
-    admin_payload = read_admin_from_request(request, authorization)
-    admin_code = (body.get("admin_code") or "").strip()
-    if not admin_payload and not (admin_code and hmac.compare_digest(admin_code, ADMIN_LAUNCH_CODE)):
-        raise HTTPException(403, "Admin authentication required")
-    token = f"admin-impersonate:{slug}:{new_token()}"
+    supplied_admin_code = (admin_code or body.get("admin_code") or "").strip()
+    _require_admin_from_request(request, authorization, supplied_admin_code)
+
+    from auth import create_access_token
+
+    admin_payload = read_admin_from_request(request, authorization) or {}
+    actor = admin_payload.get("email") or admin_payload.get("sub") or "legacy-admin"
+
+    token = create_access_token(
+        sub=str(actor),
+        role="admin_impersonation",
+        extra={
+            "org_slug": slug,
+            "org_name": org.get("name", ""),
+            "member_status": "active",
+            "mode": "impersonate",
+        },
+    )
+
+    await _audit(
+        action="admin_impersonation_started",
+        entity_type="org",
+        entity_id=slug,
+        summary=f"Admin assistance session started for {org.get('name') or slug}",
+        actor="admin",
+        meta={"admin": actor},
+    )
+
     return {
         "ok": True,
         "slug": slug,
         "org_name": org.get("name", ""),
-        "token": token,
+        "token": f"Bearer {token}",
         "mode": "impersonate",
     }
 
@@ -2855,7 +2983,10 @@ async def duplicate_event(
             src = await db.events.find_one({"id": event_id.split("__", 1)[0]}, {"_id": 0})
         if not src:
             raise HTTPException(404, "Event not found")
-    role = _require_org_write_access(src["orgSlug"], org_auth=org_auth, admin_code=admin_code)
+    if _admin_from_request(request, authorization, admin_code):
+        role = "admin"
+    else:
+        role = _require_org_write_access(src["orgSlug"], org_auth=org_auth, admin_code=admin_code)
     new_ev = {**src}
     new_ev["id"] = new_id()
     new_ev["title"] = f"Copy of {src.get('title','')}".strip()
@@ -3258,15 +3389,18 @@ async def create_event(
     org_auth: Optional[str] = Header(None, alias="X-Org-Auth"),
     admin_code: Optional[str] = Header(None, alias="X-Admin-Code"),
 ):
-    auth_role = "org"
-    authorized = True
-    try:
+    # Public event suggestions remain allowed, but an explicitly supplied bad
+    # credential must fail rather than silently falling back to "public".
+    has_credentials = bool((org_auth or "").strip() or (admin_code or "").strip())
+
+    if has_credentials:
         auth_role = _require_org_write_access(evt.orgSlug, org_auth, admin_code)
-    except HTTPException:
+        authorized = True
+    else:
+        auth_role = "public"
         authorized = False
 
     if not authorized:
-        # Public submissions stay allowed, but always as pending and never featured.
         await _find_org(evt.orgSlug)
         evt.status = "pending"
         evt.featured = False
@@ -3276,10 +3410,7 @@ async def create_event(
     else:
         org = await _find_org(evt.orgSlug)
         trust = (org.get("trust_level") or "new").strip().lower()
-        if trust == "trusted":
-            evt.status = "approved"
-        else:
-            evt.status = "pending"
+        evt.status = "approved" if trust == "trusted" else "pending"
         evt.featured = False
 
     if evt.status not in ("pending", "approved", "rejected", "draft", "cancelled"):
@@ -3335,6 +3466,13 @@ async def update_event(
     updates = patch.model_dump(exclude_none=True)
     if not updates:
         return await get_event(event_id)
+
+    if auth_role != "admin":
+        if "featured" in updates:
+            raise HTTPException(403, "Only site admins can feature events")
+        if "status" in updates and updates["status"] not in {"pending", "draft", "cancelled"}:
+            raise HTTPException(403, "Organisation users cannot approve or reject events")
+
     if updates.get("orgSlug"):
         # Ensure the target org exists
         await _find_org(updates["orgSlug"])
@@ -3356,25 +3494,95 @@ async def update_event(
     return await get_event(event_id)
 
 
-@api.post("/admin/events/{event_id}/status")
-async def admin_event_status(event_id: str, body: Dict[str, str]):
-    status = body.get("status", "approved")
+@api.post("/events/{event_id}/status")
+async def set_event_status(
+    event_id: str,
+    body: Dict[str, str],
+    request: Request,
+    authorization: Optional[str] = Header(None),
+    org_auth: Optional[str] = Header(None, alias="X-Org-Auth"),
+    admin_code: Optional[str] = Header(None, alias="X-Admin-Code"),
+):
+    existing = await db.events.find_one({"id": event_id}, {"_id": 0})
+    if not existing:
+        raise HTTPException(404, "Event not found")
+
+    status = str(body.get("status") or "").strip()
+    allowed = {"approved", "pending", "rejected", "draft", "cancelled"}
+    if status not in allowed:
+        raise HTTPException(400, "Invalid event status")
+
+    if _admin_from_request(request, authorization, admin_code):
+        auth_role = "admin"
+    else:
+        auth_role = _require_org_write_access(
+            existing.get("orgSlug") or "",
+            org_auth=org_auth,
+            admin_code=admin_code,
+        )
+
+    if auth_role != "admin" and status not in {"pending", "draft", "cancelled"}:
+        raise HTTPException(
+            403,
+            "Organisation users can save drafts, request approval, or cancel their own events",
+        )
+
     await db.events.update_one({"id": event_id}, {"$set": {"status": status}})
     await _audit(
         action="event_status_changed",
         entity_type="event",
         entity_id=event_id,
         summary=f"Event status set to {status}",
-        meta={"status": status},
+        meta={"status": status, "org_slug": existing.get("orgSlug")},
+        actor=("admin" if auth_role == "admin" else "org"),
+    )
+    return await get_event(event_id)
+
+
+@api.post("/admin/events/{event_id}/status")
+async def admin_event_status(
+    event_id: str,
+    body: Dict[str, str],
+    request: Request,
+    authorization: Optional[str] = Header(None),
+    admin_code: Optional[str] = Header(None, alias="X-Admin-Code"),
+):
+    _require_admin_from_request(request, authorization, admin_code)
+
+    status = str(body.get("status") or "approved").strip()
+    allowed = {"approved", "pending", "rejected", "draft", "cancelled"}
+    if status not in allowed:
+        raise HTTPException(400, "Invalid event status")
+
+    existing = await db.events.find_one({"id": event_id}, {"_id": 0})
+    if not existing:
+        raise HTTPException(404, "Event not found")
+
+    await db.events.update_one({"id": event_id}, {"$set": {"status": status}})
+    await _audit(
+        action="event_status_changed",
+        entity_type="event",
+        entity_id=event_id,
+        summary=f"Event status set to {status}",
+        meta={"status": status, "org_slug": existing.get("orgSlug")},
+        actor="admin",
     )
     return await get_event(event_id)
 
 
 @api.post("/admin/events/{event_id}/feature")
-async def admin_feature_event(event_id: str):
+async def admin_feature_event(
+    event_id: str,
+    request: Request,
+    authorization: Optional[str] = Header(None),
+    admin_code: Optional[str] = Header(None, alias="X-Admin-Code"),
+):
+    _require_admin_from_request(request, authorization, admin_code)
+
     e = await db.events.find_one({"id": event_id})
     if not e:
         raise HTTPException(404, "Event not found")
+
     featured = not e.get("featured", False)
     await db.events.update_one({"id": event_id}, {"$set": {"featured": featured}})
     await _audit(
@@ -3382,18 +3590,32 @@ async def admin_feature_event(event_id: str):
         entity_type="event",
         entity_id=event_id,
         summary=("Featured event" if featured else "Unfeatured event"),
+        actor="admin",
     )
     return await get_event(event_id)
 
 
 @api.delete("/admin/events/{event_id}")
-async def admin_delete_event(event_id: str):
+async def admin_delete_event(
+    event_id: str,
+    request: Request,
+    authorization: Optional[str] = Header(None),
+    admin_code: Optional[str] = Header(None, alias="X-Admin-Code"),
+):
+    _require_admin_from_request(request, authorization, admin_code)
+
+    existing = await db.events.find_one({"id": event_id}, {"_id": 0})
+    if not existing:
+        raise HTTPException(404, "Event not found")
+
     await db.events.delete_one({"id": event_id})
     await _audit(
         action="event_deleted",
         entity_type="event",
         entity_id=event_id,
-        summary="Deleted event",
+        summary=f"Deleted event: {existing.get('title') or event_id}",
+        meta={"org_slug": existing.get("orgSlug")},
+        actor="admin",
     )
     return {"ok": True}
 
@@ -5002,6 +5224,67 @@ def _render_contact_admin_html(req: ContactAdminReq) -> str:
         "<p><b>Message:</b></p>"
         f"{body_html}"
     )
+
+
+class PublicContactReq(BaseModel):
+    name: str
+    email: str
+    subject: str = ""
+    message: str
+
+
+@api.post("/contact")
+async def public_contact(req: PublicContactReq):
+    """Public website contact form (Contact page)."""
+    name = req.name.strip()
+    email = req.email.strip()
+    message = req.message.strip()
+    if not name or not message:
+        raise HTTPException(400, "Please add your name and a message")
+    if not EMAIL_RE.match(email):
+        raise HTTPException(400, "Please enter a valid email address")
+    subject = req.subject.strip() or "Website contact form"
+    m = AdminMessage(from_name=name, from_email=email, subject=subject, body=message[:5000], direction="inbound_org")
+    await db.messages.insert_one(m.model_dump())
+
+    email_result: Optional[Dict[str, Any]] = None
+    admin_inbox = [addr for addr in ADMIN_INBOX_EMAILS if EMAIL_RE.match(addr)]
+    if admin_inbox:
+        body_html = (
+            f"<h2>Website contact form</h2>"
+            f"<p><strong>{html.escape(name)}</strong> &lt;{html.escape(email)}&gt;</p>"
+            f"<p><strong>Subject:</strong> {html.escape(subject)}</p>"
+            f"<p>{html.escape(message)[:5000].replace(chr(10), '<br/>')}</p>"
+        )
+        email_result = await asyncio.to_thread(
+            resend_send,
+            admin_inbox[0],
+            f"[Contact form] {subject}",
+            body_html,
+            None,
+            name,
+            admin_inbox[1:] or None,
+        )
+        await db.messages.update_one({"id": m.id}, {"$set": {"delivery": email_result}})
+    return {"ok": True, "id": m.id}
+
+
+@api.delete("/admin/subscribers/{sub_id}")
+async def admin_delete_subscriber(sub_id: str):
+    """Delete a subscriber entirely (removes them from every mailing list)."""
+    sub = await db.subscribers.find_one({"id": sub_id}, {"_id": 0, "email": 1})
+    if not sub:
+        raise HTTPException(404, "Subscriber not found")
+    await db.subscribers.delete_one({"id": sub_id})
+    await _audit(
+        action="subscriber_deleted",
+        entity_type="subscriber",
+        entity_id=sub_id,
+        summary=f"Deleted subscriber {sub.get('email')}",
+        meta={"email": sub.get("email")},
+        actor="admin",
+    )
+    return {"ok": True, "deleted": sub.get("email")}
 
 
 @api.post("/contact-admin")
@@ -8283,75 +8566,177 @@ def _outlook_url(event: dict) -> str:
     return "https://outlook.live.com/calendar/0/deeplink/compose?" + urlencode(params, safe=":/")
 
 
-def _render_digest(sub: dict, events: List[dict], updates: List[dict]) -> str:
-    unsub = f"{PUBLIC_URL}/unsubscribe/{sub['unsub_token']}"
-    pref = f"{PUBLIC_URL}/preferences/{sub['pref_token']}"
-    def fmt_time(iso):
-        try:
-            return datetime.fromisoformat(iso.replace("Z", "+00:00")).strftime("%a %d %b · %H:%M")
-        except Exception:
-            return ""
-    def _event_row(e: dict) -> str:
-        gcal = _gcal_url(e)
-        outlook = _outlook_url(e)
-        ics = f"{PUBLIC_URL}/api/events/{e.get('id')}.ics" if e.get("id") else ""
-        cal_row = "".join([
-            f'<a href="{gcal}" style="display:inline-block;margin-right:8px;padding:6px 12px;border-radius:999px;background:#0052FF;color:#fff;font-size:12px;text-decoration:none;font-weight:700">Google</a>' if gcal else "",
-            f'<a href="{outlook}" style="display:inline-block;margin-right:8px;padding:6px 12px;border-radius:999px;background:#0F172A;color:#fff;font-size:12px;text-decoration:none;font-weight:700">Outlook</a>' if outlook else "",
-            f'<a href="{ics}" style="display:inline-block;padding:6px 12px;border-radius:999px;background:#475569;color:#fff;font-size:12px;text-decoration:none;font-weight:700">Apple / iCal</a>' if ics else "",
-        ])
-        return f"""<tr><td style="padding:14px 0;border-bottom:1px solid #E2E8F0">
-            <div style="font-weight:700;color:#0F172A;font-size:15px">{e.get('title','')}</div>
-            <div style="color:#0052FF;font-size:13px;margin-top:2px">{fmt_time(e.get('start',''))}</div>
-            <div style="color:#475569;font-size:13px">{e.get('venue','')}</div>
-            <div style="margin-top:8px">{cal_row}</div>
-        </td></tr>"""
-    ev_rows = "".join(_event_row(e) for e in events[:8]) or "<tr><td style='color:#94A3B8;padding:12px 0'>No events matching your preferences this week.</td></tr>"
-    up_rows = "".join(
-        f"<li style='margin:8px 0;color:#475569'><b style='color:#0F172A'>{u.get('title','')}</b> — {u.get('body','')[:120]}</li>"
-        for u in updates[:5]
-    )
-    return f"""
-<!DOCTYPE html><html><body style="font-family:Helvetica,Arial,sans-serif;background:#F4F5F7;padding:24px;color:#0F172A">
-  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:600px;margin:0 auto;background:#fff;border-radius:24px;overflow:hidden">
-    <tr><td style="padding:28px 28px 8px">
-      <h1 style="margin:0;font-size:24px">Your Blackrod Now digest 📬</h1>
-      <p style="color:#475569;margin:8px 0 0">Curated for you — following {len(sub.get('followed_orgs',[]))} orgs and {len(sub.get('followed_categories',[]))} categories.</p>
-    </td></tr>
-    <tr><td style="padding:8px 28px">
-      <h2 style="margin:16px 0 4px;font-size:16px;color:#0F172A">What's on</h2>
-      <p style="margin:0 0 8px;font-size:12px;color:#94A3B8">Tap Google / Outlook / Apple to add straight to your calendar.</p>
-      <table role="presentation" width="100%">{ev_rows}</table>
-    </td></tr>
-    {"<tr><td style='padding:8px 28px'><h2 style='margin:16px 0 4px;font-size:16px'>Local updates</h2><ul style='padding-left:16px'>" + up_rows + "</ul></td></tr>" if up_rows else ""}
-    <tr><td style="padding:20px 28px 28px;color:#94A3B8;font-size:12px;text-align:center;border-top:1px solid #E2E8F0">
-      <a href="{pref}" style="color:#0052FF">Edit preferences</a> · <a href="{unsub}" style="color:#94A3B8">Unsubscribe</a><br/>
-      Blackrod Now · Made in Blackrod, Bolton
-    </td></tr>
-  </table>
-</body></html>
-"""
+# ─────────── Automated weekly resident digest ───────────
+NEWSLETTER_TIMEZONE = ZoneInfo("Europe/London")
+NEWSLETTER_AUTO_INTERVAL_SECONDS = max(60, int(os.environ.get("NEWSLETTER_AUTO_INTERVAL", "300")))
+NEWSLETTER_DEFAULT_ENABLED = os.environ.get("NEWSLETTER_AUTO_ENABLED", "true").strip().lower() in {
+    "1", "true", "yes", "on"
+}
+NEWSLETTER_DEFAULT_DAY = os.environ.get("NEWSLETTER_AUTO_DAY", "friday").strip().lower()
+NEWSLETTER_DEFAULT_TIME = os.environ.get("NEWSLETTER_AUTO_TIME", "08:00").strip()
+NEWSLETTER_DEFAULT_SUBJECT = os.environ.get(
+    "NEWSLETTER_AUTO_SUBJECT", "Blackrod Now — Your weekend & week ahead"
+).strip()
+NEWSLETTER_DAY_NAMES = [
+    "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"
+]
 
 
-async def _events_for_sub(sub: dict) -> List[dict]:
-    """Personalised upcoming events for a subscriber."""
-    nowi = now_iso()
+def _safe_newsletter_day(value: str) -> str:
+    day = str(value or "").strip().lower()
+    return day if day in NEWSLETTER_DAY_NAMES else "friday"
+
+
+def _safe_newsletter_time(value: str) -> str:
+    raw = str(value or "").strip()
+    if re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", raw):
+        return raw
+    return "08:00"
+
+
+async def _get_newsletter_automation_settings() -> Dict[str, Any]:
+    doc = await db.site_settings.find_one({"_id": _SITE_SETTINGS_ID}) or {}
+    raw = doc.get("newsletter_automation") or {}
+    return {
+        "enabled": bool(raw.get("enabled", NEWSLETTER_DEFAULT_ENABLED)),
+        "day": _safe_newsletter_day(raw.get("day", NEWSLETTER_DEFAULT_DAY)),
+        "time": _safe_newsletter_time(raw.get("time", NEWSLETTER_DEFAULT_TIME)),
+        "subject": str(raw.get("subject") or NEWSLETTER_DEFAULT_SUBJECT).strip() or NEWSLETTER_DEFAULT_SUBJECT,
+        "intro": str(raw.get("intro") or "").strip(),
+        "timezone": "Europe/London",
+        "updated_at": raw.get("updated_at"),
+    }
+
+
+def _newsletter_week_key(local_dt: datetime) -> str:
+    iso = local_dt.isocalendar()
+    return f"{iso.year}-W{iso.week:02d}"
+
+
+def _newsletter_week_start_utc(local_dt: datetime) -> datetime:
+    monday = local_dt.date() - timedelta(days=local_dt.weekday())
+    local_start = datetime.combine(monday, time_cls.min, tzinfo=NEWSLETTER_TIMEZONE)
+    return local_start.astimezone(timezone.utc)
+
+
+def _next_newsletter_run_local(settings: Dict[str, Any], now_local: Optional[datetime] = None) -> datetime:
+    now_local = now_local or datetime.now(NEWSLETTER_TIMEZONE)
+    target_weekday = NEWSLETTER_DAY_NAMES.index(_safe_newsletter_day(settings.get("day", "friday")))
+    hh, mm = [int(part) for part in _safe_newsletter_time(settings.get("time", "08:00")).split(":")]
+    days_ahead = (target_weekday - now_local.weekday()) % 7
+    candidate_date = now_local.date() + timedelta(days=days_ahead)
+    candidate = datetime.combine(candidate_date, time_cls(hour=hh, minute=mm), tzinfo=NEWSLETTER_TIMEZONE)
+    if candidate <= now_local:
+        candidate += timedelta(days=7)
+    return candidate
+
+
+def _digest_window(now_local: Optional[datetime] = None) -> Dict[str, datetime]:
+    """Return the current/upcoming weekend plus the following Monday-Sunday."""
+    now_local = now_local or datetime.now(NEWSLETTER_TIMEZONE)
+    weekday = now_local.weekday()
+    if weekday <= 4:
+        friday_date = now_local.date() + timedelta(days=4 - weekday)
+    else:
+        friday_date = now_local.date() - timedelta(days=weekday - 4)
+    friday_start = datetime.combine(friday_date, time_cls.min, tzinfo=NEWSLETTER_TIMEZONE)
+    weekend_start = max(now_local, friday_start)
+    sunday_end = datetime.combine(friday_date + timedelta(days=2), time_cls.max, tzinfo=NEWSLETTER_TIMEZONE)
+    next_week_start = datetime.combine(friday_date + timedelta(days=3), time_cls.min, tzinfo=NEWSLETTER_TIMEZONE)
+    next_week_end = datetime.combine(friday_date + timedelta(days=9), time_cls.max, tzinfo=NEWSLETTER_TIMEZONE)
+    return {
+        "weekend_start": weekend_start,
+        "weekend_end": sunday_end,
+        "next_week_start": next_week_start,
+        "next_week_end": next_week_end,
+    }
+
+
+def _event_moment(event: dict) -> Optional[datetime]:
+    raw = event.get("start") or ""
+    if not raw:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(NEWSLETTER_TIMEZONE)
+    except Exception:
+        return None
+
+
+def _event_ends_after(event: dict, point: datetime) -> bool:
+    raw = event.get("end") or event.get("start") or ""
+    try:
+        dt = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(NEWSLETTER_TIMEZONE) >= point
+    except Exception:
+        return False
+
+
+async def _digest_event_sections(sub: dict, now_local: Optional[datetime] = None) -> Dict[str, Any]:
+    now_local = now_local or datetime.now(NEWSLETTER_TIMEZONE)
+    window = _digest_window(now_local)
     q: Dict[str, Any] = {"status": "approved"}
-    ors = []
+    ors: List[Dict[str, Any]] = []
     if sub.get("followed_orgs"):
         ors.append({"orgSlug": {"$in": sub["followed_orgs"]}})
     if sub.get("followed_categories"):
         ors.append({"category": {"$in": sub["followed_categories"]}})
     if ors:
         q["$or"] = ors
-    events = await db.events.find(q, {"_id": 0}).to_list(200)
-    events = [e for e in events if (e.get("end") or e.get("start", "")) >= nowi]
-    events.sort(key=lambda e: e.get("start", ""))
-    if not events:  # fallback: any upcoming
-        events = await db.events.find({"status": "approved"}, {"_id": 0}).to_list(200)
-        events = [e for e in events if (e.get("end") or e.get("start", "")) >= nowi]
-        events.sort(key=lambda e: e.get("start", ""))
-    return events
+
+    events = await db.events.find(q, {"_id": 0}).to_list(300)
+    events = [
+        event for event in events
+        if _event_ends_after(event, now_local)
+        and (_event_moment(event) or now_local) <= window["next_week_end"]
+    ]
+    events.sort(key=lambda event: event.get("start", ""))
+
+    personalised = bool(ors)
+    if personalised and not events:
+        events = await db.events.find({"status": "approved"}, {"_id": 0}).to_list(300)
+        events = [
+            event for event in events
+            if _event_ends_after(event, now_local)
+            and (_event_moment(event) or now_local) <= window["next_week_end"]
+        ]
+        events.sort(key=lambda event: event.get("start", ""))
+        personalised = False
+
+    weekend: List[dict] = []
+    next_week: List[dict] = []
+    for event in events:
+        moment = _event_moment(event)
+        if not moment:
+            continue
+        if window["weekend_start"] <= moment <= window["weekend_end"]:
+            weekend.append(event)
+        elif window["next_week_start"] <= moment <= window["next_week_end"]:
+            next_week.append(event)
+
+    saved_ids = list(dict.fromkeys(sub.get("saved_events") or []))
+    saved: List[dict] = []
+    if saved_ids:
+        saved_rows = await db.events.find(
+            {"id": {"$in": saved_ids}, "status": "approved"}, {"_id": 0}
+        ).to_list(100)
+        saved = [
+            event for event in saved_rows
+            if _event_ends_after(event, now_local)
+            and (_event_moment(event) or now_local) <= window["next_week_end"]
+        ]
+        saved.sort(key=lambda event: event.get("start", ""))
+
+    return {
+        "weekend": weekend[:6],
+        "next_week": next_week[:8],
+        "saved": saved[:4],
+        "personalised": personalised,
+    }
 
 
 async def _updates_for_sub(sub: dict) -> List[dict]:
@@ -8361,18 +8746,245 @@ async def _updates_for_sub(sub: dict) -> List[dict]:
     return await db.feed.find(q, {"_id": 0}).sort("time", -1).to_list(20)
 
 
+def _render_digest(
+    sub: dict,
+    weekend_events: List[dict],
+    next_week_events: List[dict],
+    updates: List[dict],
+    saved_events: Optional[List[dict]] = None,
+    intro: str = "",
+) -> str:
+    unsub = f"{PUBLIC_URL}/unsubscribe/{sub['unsub_token']}"
+    pref = f"{PUBLIC_URL}/preferences/{sub['pref_token']}"
+    all_events_url = f"{PUBLIC_URL}/events"
+
+    def esc(value: Any) -> str:
+        return html.escape(str(value or ""), quote=True)
+
+    def fmt_time(iso: str) -> str:
+        try:
+            dt = datetime.fromisoformat(str(iso).replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.astimezone(NEWSLETTER_TIMEZONE).strftime("%a %d %b · %H:%M")
+        except Exception:
+            return ""
+
+    def _event_row(event: dict) -> str:
+        gcal = esc(_gcal_url(event))
+        outlook = esc(_outlook_url(event))
+        ics = esc(f"{PUBLIC_URL}/api/events/{event.get('id')}.ics" if event.get("id") else "")
+        event_url = esc(f"{PUBLIC_URL}/events/{event.get('id')}" if event.get("id") else PUBLIC_URL)
+        cal_row = "".join([
+            f'<a href="{gcal}" style="display:inline-block;margin-right:6px;padding:6px 10px;border-radius:999px;background:#0052FF;color:#fff;font-size:11px;text-decoration:none;font-weight:700">Google</a>' if gcal else "",
+            f'<a href="{outlook}" style="display:inline-block;margin-right:6px;padding:6px 10px;border-radius:999px;background:#0F172A;color:#fff;font-size:11px;text-decoration:none;font-weight:700">Outlook</a>' if outlook else "",
+            f'<a href="{ics}" style="display:inline-block;padding:6px 10px;border-radius:999px;background:#475569;color:#fff;font-size:11px;text-decoration:none;font-weight:700">Apple / iCal</a>' if ics else "",
+        ])
+        cost = esc(event.get("cost"))
+        cost_html = f'<span style="color:#475569"> · {cost}</span>' if cost else ""
+        return f"""<tr><td style="padding:14px 0;border-bottom:1px solid #E2E8F0">
+            <a href="{event_url}" style="font-weight:800;color:#0F172A;font-size:15px;text-decoration:none">{esc(event.get('title'))}</a>
+            <div style="color:#0052FF;font-size:13px;margin-top:3px">{esc(fmt_time(event.get('start','')))}</div>
+            <div style="color:#475569;font-size:13px">{esc(event.get('venue'))}{cost_html}</div>
+            <div style="margin-top:8px">{cal_row}</div>
+        </td></tr>"""
+
+    def _section(title: str, events: List[dict], empty_text: str) -> str:
+        rows = "".join(_event_row(event) for event in events)
+        if not rows:
+            rows = f'<tr><td style="color:#94A3B8;padding:10px 0;font-size:13px">{esc(empty_text)}</td></tr>'
+        return f"""<tr><td style="padding:8px 28px">
+            <h2 style="margin:16px 0 4px;font-size:17px;color:#0F172A">{esc(title)}</h2>
+            <table role="presentation" width="100%">{rows}</table>
+        </td></tr>"""
+
+    intro_html = ""
+    if intro.strip():
+        intro_html = (
+            '<tr><td style="padding:10px 28px">'
+            f'<div style="padding:14px 16px;border-radius:16px;background:#EFF6FF;color:#334155;font-size:14px;line-height:1.55">{esc(intro.strip())}</div>'
+            '</td></tr>'
+        )
+
+    saved_events = saved_events or []
+    saved_html = _section("Saved by you", saved_events, "Nothing saved in this edition.") if saved_events else ""
+    up_rows = "".join(
+        f"<li style='margin:8px 0;color:#475569'><b style='color:#0F172A'>{esc(update.get('title'))}</b> — {esc((update.get('body') or '')[:160])}</li>"
+        for update in updates[:5]
+    )
+    updates_html = (
+        "<tr><td style='padding:8px 28px'><h2 style='margin:16px 0 4px;font-size:17px;color:#0F172A'>From organisations you follow</h2>"
+        f"<ul style='padding-left:18px'>{up_rows}</ul></td></tr>"
+        if up_rows else ""
+    )
+    follow_count = len(sub.get("followed_orgs", [])) + len(sub.get("followed_categories", []))
+    personalise_line = (
+        f"Based on {follow_count} organisation/category preference{'s' if follow_count != 1 else ''}."
+        if follow_count else
+        "A useful round-up of what's happening across Blackrod."
+    )
+
+    return f"""<!DOCTYPE html><html><body style="font-family:Helvetica,Arial,sans-serif;background:#F4F5F7;padding:24px;color:#0F172A">
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:620px;margin:0 auto;background:#fff;border-radius:24px;overflow:hidden">
+        <tr><td style="padding:28px 28px 8px">
+          <div style="font-size:11px;color:#0052FF;letter-spacing:2px;text-transform:uppercase;font-weight:800">Blackrod Now</div>
+          <h1 style="margin:8px 0 0;font-size:26px">Your weekend & week ahead 📬</h1>
+          <p style="color:#64748B;margin:8px 0 0;font-size:13px">{esc(personalise_line)}</p>
+        </td></tr>
+        {intro_html}
+        {_section("This weekend", weekend_events, "Nothing listed for this weekend yet.")}
+        {_section("Coming up next week", next_week_events, "No matching events next week yet.")}
+        {saved_html}
+        {updates_html}
+        <tr><td style="padding:18px 28px;text-align:center">
+          <a href="{esc(all_events_url)}" style="display:inline-block;padding:11px 18px;border-radius:999px;background:#0052FF;color:#fff;text-decoration:none;font-size:13px;font-weight:800">See everything happening in Blackrod →</a>
+        </td></tr>
+        <tr><td style="padding:20px 28px 28px;color:#94A3B8;font-size:12px;text-align:center;border-top:1px solid #E2E8F0">
+          <a href="{esc(pref)}" style="color:#0052FF">Edit preferences</a> · <a href="{esc(unsub)}" style="color:#94A3B8">Unsubscribe</a><br/>
+          Blackrod Now · Made in Blackrod, Bolton
+        </td></tr>
+      </table>
+    </body></html>"""
+
+
+class NewsletterAutomationPatch(BaseModel):
+    enabled: Optional[bool] = None
+    day: Optional[Literal["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]] = None
+    time: Optional[str] = None
+    subject: Optional[str] = None
+    intro: Optional[str] = None
+
+
+async def _subscriber_digest_sent_this_week(now_local: Optional[datetime] = None) -> bool:
+    now_local = now_local or datetime.now(NEWSLETTER_TIMEZONE)
+    week_start = _newsletter_week_start_utc(now_local).isoformat()
+    existing = await db.newsletter.find_one({
+        "audience": "subscribers",
+        "sent_at": {"$gte": week_start},
+    }, {"_id": 0, "id": 1})
+    return bool(existing)
+
+
+async def _deliver_subscriber_digest(subject: str, intro: str, trigger: str) -> Dict[str, Any]:
+    subscribers = await db.subscribers.find(
+        {"unsubscribed": False, "digest": True}, {"_id": 0}
+    ).to_list(5000)
+    sent = 0
+    failed = 0
+    for sub in subscribers:
+        email_addr = (sub.get("email") or "").strip().lower()
+        if not email_addr:
+            continue
+        sections = await _digest_event_sections(sub)
+        updates = await _updates_for_sub(sub)
+        digest_html = _render_digest(
+            sub,
+            sections["weekend"],
+            sections["next_week"],
+            updates,
+            sections["saved"],
+            intro=intro,
+        )
+        result = await asyncio.to_thread(resend_send, email_addr, subject, digest_html)
+        if result.get("ok"):
+            sent += 1
+        else:
+            failed += 1
+
+    edition = NewsletterEdition(
+        subject=subject,
+        body_intro=intro,
+        sent_at=now_iso(),
+        audience="subscribers",
+        trigger=trigger,
+        sent_count=sent,
+        failed_count=failed,
+        recipient_count=len(subscribers),
+        body_html="",
+    )
+    await db.newsletter.insert_one(edition.model_dump())
+    await _record_analytics_event("newsletter_send", entity_type="site", count=sent)
+    return {
+        "ok": True,
+        "audience": "subscribers",
+        "trigger": trigger,
+        "sent": sent,
+        "failed": failed,
+        "recipient_count": len(subscribers),
+        "mocked": not RESEND_API_KEY,
+        "edition_id": edition.id,
+    }
+
+
+async def _newsletter_automation_status() -> Dict[str, Any]:
+    settings = await _get_newsletter_automation_settings()
+    now_local = datetime.now(NEWSLETTER_TIMEZONE)
+    next_local = _next_newsletter_run_local(settings, now_local)
+    current_week_sent = await _subscriber_digest_sent_this_week(now_local)
+    if current_week_sent and _newsletter_week_key(next_local) == _newsletter_week_key(now_local):
+        next_local += timedelta(days=7)
+    active_subscribers = await db.subscribers.count_documents({"unsubscribed": False, "digest": True})
+    last_edition = await db.newsletter.find_one(
+        {"audience": "subscribers", "sent_at": {"$ne": None}},
+        {"_id": 0},
+        sort=[("sent_at", -1)],
+    )
+    last_auto_run = await db.newsletter_auto_runs.find_one({}, {"_id": 0}, sort=[("started_at", -1)])
+    return {
+        **settings,
+        "active_subscribers": active_subscribers,
+        "next_run_local": next_local.isoformat(),
+        "next_run_utc": next_local.astimezone(timezone.utc).isoformat(),
+        "current_week_sent": current_week_sent,
+        "last_send": last_edition,
+        "last_auto_run": last_auto_run,
+    }
+
+
 @api.get("/admin/newsletter/preview")
-async def newsletter_preview(email: Optional[str] = None):
-    """Returns the personalised HTML for a subscriber (or a generic one)."""
+async def newsletter_preview(
+    request: Request,
+    email: Optional[str] = None,
+    subject: Optional[str] = None,
+    body_intro: Optional[str] = None,
+    authorization: Optional[str] = Header(None),
+    admin_code: Optional[str] = Header(None, alias="X-Admin-Code"),
+):
+    _require_admin_from_request(request, authorization, admin_code)
     sub = None
     if email:
         sub = await db.subscribers.find_one({"email": email.lower(), "unsubscribed": False}, {"_id": 0})
     if not sub:
-        # generic preview: no follows
-        sub = {"email": "preview@example.com", "unsub_token": "PREVIEW", "pref_token": "PREVIEW", "followed_orgs": [], "followed_categories": []}
-    events = await _events_for_sub(sub)
+        sub = {
+            "email": "preview@example.com",
+            "unsub_token": "PREVIEW",
+            "pref_token": "PREVIEW",
+            "followed_orgs": [],
+            "followed_categories": [],
+            "saved_events": [],
+        }
+    settings = await _get_newsletter_automation_settings()
+    sections = await _digest_event_sections(sub)
     updates = await _updates_for_sub(sub)
-    return {"subject": "Your Blackrod Now digest 📬", "html": _render_digest(sub, events, updates), "sub": sub, "matched_events": len(events), "matched_updates": len(updates)}
+    preview_subject = (subject or settings["subject"]).strip()
+    preview_intro = body_intro if body_intro is not None else settings["intro"]
+    return {
+        "subject": preview_subject,
+        "html": _render_digest(
+            sub,
+            sections["weekend"],
+            sections["next_week"],
+            updates,
+            sections["saved"],
+            intro=preview_intro or "",
+        ),
+        "sub": sub,
+        "matched_events": len(sections["weekend"]) + len(sections["next_week"]),
+        "weekend_events": len(sections["weekend"]),
+        "next_week_events": len(sections["next_week"]),
+        "saved_events": len(sections["saved"]),
+        "matched_updates": len(updates),
+    }
 
 
 class NewsletterEditReq(BaseModel):
@@ -8380,7 +8992,7 @@ class NewsletterEditReq(BaseModel):
     body_intro: Optional[str] = ""
     scheduled_for: Optional[str] = None
     audience: Literal["subscribers", "orgs_all", "orgs_selected"] = "subscribers"
-    org_slugs: List[str] = []
+    org_slugs: List[str] = Field(default_factory=list)
 
 
 async def _newsletter_recipients(req: NewsletterEditReq) -> List[Dict[str, Any]]:
@@ -8390,11 +9002,11 @@ async def _newsletter_recipients(req: NewsletterEditReq) -> List[Dict[str, Any]]
     if req.audience == "subscribers":
         subs = await db.subscribers.find({"unsubscribed": False, "digest": True}, {"_id": 0}).to_list(5000)
         for sub in subs:
-            email = (sub.get("email") or "").strip().lower()
-            if not email or email in seen:
+            email_addr = (sub.get("email") or "").strip().lower()
+            if not email_addr or email_addr in seen:
                 continue
-            seen.add(email)
-            recipients.append({"email": email, "kind": "subscriber", "subscriber": sub})
+            seen.add(email_addr)
+            recipients.append({"email": email_addr, "kind": "subscriber", "subscriber": sub})
         return recipients
 
     org_query: Dict[str, Any] = {"status": {"$ne": "rejected"}}
@@ -8406,42 +9018,71 @@ async def _newsletter_recipients(req: NewsletterEditReq) -> List[Dict[str, Any]]
 
     orgs = await db.orgs.find(org_query, {"_id": 0, "slug": 1, "name": 1, "email": 1}).to_list(5000)
     for org in orgs:
-        email = (org.get("email") or "").strip().lower()
-        if not email or not EMAIL_RE.match(email) or email in seen:
+        email_addr = (org.get("email") or "").strip().lower()
+        if not email_addr or not EMAIL_RE.match(email_addr) or email_addr in seen:
             continue
-        seen.add(email)
-        recipients.append({"email": email, "kind": "org", "org": org})
+        seen.add(email_addr)
+        recipients.append({"email": email_addr, "kind": "org", "org": org})
     return recipients
 
 
 @api.post("/admin/newsletter/edition")
-async def upsert_edition(req: NewsletterEditReq):
-    ed = NewsletterEdition(subject=req.subject, body_intro=req.body_intro or "", scheduled_for=req.scheduled_for, body_html="")
+async def upsert_edition(
+    req: NewsletterEditReq,
+    request: Request,
+    authorization: Optional[str] = Header(None),
+    admin_code: Optional[str] = Header(None, alias="X-Admin-Code"),
+):
+    _require_admin_from_request(request, authorization, admin_code)
+    ed = NewsletterEdition(
+        subject=req.subject,
+        body_intro=req.body_intro or "",
+        scheduled_for=req.scheduled_for,
+        body_html="",
+        audience=req.audience,
+    )
     await db.newsletter.insert_one(ed.model_dump())
     return ed
 
 
 @api.post("/admin/newsletter/send")
-async def send_newsletter(req: NewsletterEditReq):
+async def send_newsletter(
+    req: NewsletterEditReq,
+    request: Request,
+    authorization: Optional[str] = Header(None),
+    admin_code: Optional[str] = Header(None, alias="X-Admin-Code"),
+):
+    _require_admin_from_request(request, authorization, admin_code)
+    subject = req.subject.strip()
+    if not subject:
+        raise HTTPException(400, "Subject is required")
+    intro = (req.body_intro or "").strip()
+
+    if req.audience == "subscribers":
+        return await _deliver_subscriber_digest(subject, intro, trigger="manual")
+
     recipients = await _newsletter_recipients(req)
     sent, failed = 0, 0
     for recipient in recipients:
-        if recipient["kind"] == "subscriber":
-            sub = recipient["subscriber"]
-            events = await _events_for_sub(sub)
-            updates = await _updates_for_sub(sub)
-            html = _render_digest(sub, events, updates)
-        else:
-            intro = (req.body_intro or "").strip() or "Community update from Blackrod Now."
-            html = _render_admin_email_html(req.subject, intro, SENDER_EMAIL)
-        result = await asyncio.to_thread(resend_send, recipient["email"], req.subject, html)
+        org_intro = intro or "Community update from Blackrod Now."
+        email_html = _render_admin_email_html(subject, org_intro, SENDER_EMAIL)
+        result = await asyncio.to_thread(resend_send, recipient["email"], subject, email_html)
         if result.get("ok"):
             sent += 1
         else:
             failed += 1
-    await db.newsletter.insert_one(
-        NewsletterEdition(subject=req.subject, body_intro=req.body_intro or "", sent_at=now_iso(), body_html="").model_dump()
+    edition = NewsletterEdition(
+        subject=subject,
+        body_intro=intro,
+        sent_at=now_iso(),
+        audience=req.audience,
+        trigger="manual",
+        sent_count=sent,
+        failed_count=failed,
+        recipient_count=len(recipients),
+        body_html="",
     )
+    await db.newsletter.insert_one(edition.model_dump())
     await _record_analytics_event("newsletter_send", entity_type="site", count=sent)
     return {
         "ok": True,
@@ -8451,6 +9092,154 @@ async def send_newsletter(req: NewsletterEditReq):
         "recipient_count": len(recipients),
         "mocked": not RESEND_API_KEY,
     }
+
+
+@api.get("/admin/newsletter/automation")
+async def get_newsletter_automation(
+    request: Request,
+    authorization: Optional[str] = Header(None),
+    admin_code: Optional[str] = Header(None, alias="X-Admin-Code"),
+):
+    _require_admin_from_request(request, authorization, admin_code)
+    return await _newsletter_automation_status()
+
+
+@api.post("/admin/newsletter/automation")
+async def update_newsletter_automation(
+    patch: NewsletterAutomationPatch,
+    request: Request,
+    authorization: Optional[str] = Header(None),
+    admin_code: Optional[str] = Header(None, alias="X-Admin-Code"),
+):
+    _require_admin_from_request(request, authorization, admin_code)
+    current = await _get_newsletter_automation_settings()
+    updates = patch.model_dump(exclude_none=True)
+    if "time" in updates:
+        if not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", str(updates["time"])):
+            raise HTTPException(400, "Time must be HH:MM in 24-hour format")
+        updates["time"] = _safe_newsletter_time(updates["time"])
+    if "subject" in updates:
+        updates["subject"] = str(updates["subject"]).strip()
+        if not updates["subject"]:
+            raise HTTPException(400, "Subject is required")
+    merged = {**current, **updates, "updated_at": now_iso()}
+    merged.pop("timezone", None)
+    await db.site_settings.update_one(
+        {"_id": _SITE_SETTINGS_ID},
+        {"$set": {"newsletter_automation": merged}},
+        upsert=True,
+    )
+    await _audit(
+        action="newsletter_automation_updated",
+        entity_type="site",
+        entity_id="newsletter",
+        summary="Updated automatic weekly digest settings",
+        meta={key: value for key, value in updates.items() if key != "intro"},
+    )
+    return await _newsletter_automation_status()
+
+
+@api.post("/admin/newsletter/automation/send-now")
+async def send_newsletter_automation_now(
+    request: Request,
+    authorization: Optional[str] = Header(None),
+    admin_code: Optional[str] = Header(None, alias="X-Admin-Code"),
+):
+    _require_admin_from_request(request, authorization, admin_code)
+    settings = await _get_newsletter_automation_settings()
+    result = await _deliver_subscriber_digest(settings["subject"], settings["intro"], trigger="manual_schedule")
+    await _audit(
+        action="newsletter_manual_schedule_send",
+        entity_type="site",
+        entity_id="newsletter",
+        summary=f"Sent weekly digest manually to {result['sent']} subscriber(s)",
+        meta={"sent": result["sent"], "failed": result["failed"]},
+    )
+    return {**result, "automation": await _newsletter_automation_status()}
+
+
+async def _claim_automatic_newsletter_run(week_key: str, settings: Dict[str, Any]) -> bool:
+    doc = {
+        "week_key": week_key,
+        "status": "processing",
+        "scheduled_day": settings["day"],
+        "scheduled_time": settings["time"],
+        "subject": settings["subject"],
+        "started_at": now_iso(),
+        "sent_at": None,
+        "result": None,
+    }
+    try:
+        await db.newsletter_auto_runs.insert_one(doc)
+        return True
+    except DuplicateKeyError:
+        return False
+
+
+async def _maybe_send_automatic_newsletter() -> bool:
+    settings = await _get_newsletter_automation_settings()
+    if not settings["enabled"]:
+        return False
+    now_local = datetime.now(NEWSLETTER_TIMEZONE)
+    target_weekday = NEWSLETTER_DAY_NAMES.index(settings["day"])
+    hh, mm = [int(part) for part in settings["time"].split(":")]
+
+    # Work from the most recent scheduled occurrence. A 36-hour grace window
+    # means a short hosting outage on Friday morning can recover on restart
+    # without sending a stale weekly digest several days later.
+    days_since_target = (now_local.weekday() - target_weekday) % 7
+    scheduled_date = now_local.date() - timedelta(days=days_since_target)
+    scheduled_local = datetime.combine(
+        scheduled_date, time_cls(hour=hh, minute=mm), tzinfo=NEWSLETTER_TIMEZONE
+    )
+    if scheduled_local > now_local:
+        scheduled_local -= timedelta(days=7)
+    if now_local - scheduled_local > timedelta(hours=36):
+        return False
+    if await _subscriber_digest_sent_this_week(scheduled_local):
+        return False
+
+    week_key = _newsletter_week_key(scheduled_local)
+    claimed = await _claim_automatic_newsletter_run(week_key, settings)
+    if not claimed:
+        return False
+
+    try:
+        result = await _deliver_subscriber_digest(settings["subject"], settings["intro"], trigger="automatic")
+        await db.newsletter_auto_runs.update_one(
+            {"week_key": week_key},
+            {"$set": {"status": "sent", "sent_at": now_iso(), "result": result}},
+        )
+        await _audit(
+            action="newsletter_automatic_send",
+            entity_type="site",
+            entity_id="newsletter",
+            summary=f"Automatic weekly digest sent to {result['sent']} subscriber(s)",
+            meta={"week_key": week_key, "sent": result["sent"], "failed": result["failed"]},
+            actor="system",
+        )
+        logger.info("Automatic newsletter %s sent: %s delivered, %s failed", week_key, result["sent"], result["failed"])
+        return True
+    except Exception as exc:
+        await db.newsletter_auto_runs.update_one(
+            {"week_key": week_key},
+            {"$set": {"status": "failed", "result": {"error": str(exc)}, "finished_at": now_iso()}},
+        )
+        logger.exception("Automatic weekly newsletter failed for %s: %s", week_key, exc)
+        return False
+
+
+async def _weekly_newsletter_loop() -> None:
+    if not RESEND_API_KEY:
+        logger.info("Automatic newsletter loop skipped: RESEND_API_KEY not set.")
+        return
+    logger.info("Automatic weekly newsletter loop started (Europe/London)")
+    while True:
+        try:
+            await _maybe_send_automatic_newsletter()
+        except Exception as exc:
+            logger.exception("automatic newsletter loop iteration failed: %s", exc)
+        await asyncio.sleep(NEWSLETTER_AUTO_INTERVAL_SECONDS)
 
 
 class BroadcastReq(BaseModel):
@@ -9137,6 +9926,8 @@ async def startup():
         await db.users.create_index("email", unique=True)
         await db.login_attempts.create_index("identifier")
         await db.event_reminders_sent.create_index([("email", 1), ("event_id", 1), ("kind", 1)], unique=True)
+        await db.newsletter.create_index([("audience", 1), ("sent_at", -1)])
+        await db.newsletter_auto_runs.create_index("week_key", unique=True)
     except Exception as e:
         logger.warning("Index setup: %s", e)
     await _seed_admin_user()
@@ -9162,6 +9953,8 @@ async def startup():
     asyncio.create_task(_event_reminder_loop())
     # Background scheduled-broadcast loop.
     asyncio.create_task(_scheduled_broadcast_loop())
+    # Automatic personalised resident digest (defaults to Friday 08:00 UK time).
+    asyncio.create_task(_weekly_newsletter_loop())
     # Warm the OCR engine so the first flyer upload isn't penalised by model load.
     def _warm_ocr():
         try:

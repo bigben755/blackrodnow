@@ -45,6 +45,8 @@ export default function Admin() {
     const [userSearch, setUserSearch] = useState("");
     const [taxonomy, setTaxonomy] = useState({ event_categories: [], organisation_categories: [] });
     const [taxonomyBusy, setTaxonomyBusy] = useState(false);
+    const [orgAdminSearch, setOrgAdminSearch] = useState("");
+    const [orgAdminStatus, setOrgAdminStatus] = useState("all");
     const navigate = useNavigate();
 
     const loginAsOrg = async (slug, name) => {
@@ -225,7 +227,7 @@ export default function Admin() {
     };
 
     const rejectOrg = async (slug) => {
-        await deleteOrg(slug);
+        await setOrgStatus(slug, "rejected");
         setSelectedOrgSlugs((current) => current.filter((value) => value !== slug));
         toast.info("Organisation rejected");
     };
@@ -243,7 +245,7 @@ export default function Admin() {
         if (!ids.length) return;
         await Promise.all(ids.map((id) => {
             if (kind === "event") return setEventStatus(id, status);
-            if (kind === "org") return status === "approved" ? setOrgStatus(id, status) : deleteOrg(id);
+            if (kind === "org") return setOrgStatus(id, status);
             return api.reviewOrgEditRequest(id, { status });
         }));
         if (kind === "event") setSelectedEventIds([]);
@@ -257,16 +259,24 @@ export default function Admin() {
     };
 
     const resetOrgPassword = async (slug, name) => {
-        if (!adminCodeSession) {
-            toast.error("Admin session code missing. Re-enter admin code from the top-right menu.");
+        const value = window.prompt(
+            `Set a new password for ${name}. It must be at least 8 characters.`,
+            ""
+        );
+
+        if (value === null) return;
+
+        const password = value.trim();
+
+        if (password.length < 8) {
+            toast.error("Password must be at least 8 characters");
             return;
         }
-        const value = window.prompt(`Set a new password for ${name}. Leave blank to reset to default Organisat10n!&`, "");
-        if (value === null) return;
+
         try {
             await api.adminResetOrgPassword(slug, {
-                admin_code: adminCodeSession,
-                ...(value.trim() ? { password: value.trim() } : {}),
+                password,
+                ...(adminCodeSession ? { admin_code: adminCodeSession } : {}),
             });
             toast.success(`Password reset for ${name}`);
         } catch (error) {
@@ -459,16 +469,51 @@ export default function Admin() {
         }
     };
 
+
+    const managedOrgs = React.useMemo(() => {
+        const needle = orgAdminSearch.trim().toLowerCase();
+
+        return [...orgs]
+            .filter((o) => {
+                if (o.status === "pending") return false;
+
+                if (
+                    orgAdminStatus !== "all" &&
+                    (o.status || "approved") !== orgAdminStatus
+                ) {
+                    return false;
+                }
+
+                if (!needle) return true;
+
+                return [
+                    o.name,
+                    o.slug,
+                    o.category,
+                    o.short,
+                    o.email,
+                ]
+                    .filter(Boolean)
+                    .join(" ")
+                    .toLowerCase()
+                    .includes(needle);
+            })
+            .sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+    }, [orgs, orgAdminSearch, orgAdminStatus]);
+
     return (
         <div data-testid="admin-page" className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
             <div className="flex items-end justify-between gap-3 mb-8">
                 <div>
-                    <span className="text-xs font-bold uppercase tracking-[0.2em] text-accent">
-                        Admin · {role === "guest" ? "Demo mode" : role}
+                    <span className="text-xs font-bold uppercase tracking-[0.2em] text-primary">
+                        Blackrod Now · Site administration
                     </span>
                     <h1 className="font-display font-black text-4xl sm:text-5xl tracking-tight mt-2">
-                        Admin dashboard
+                        Control centre
                     </h1>
+                    <p className="mt-2 text-sm text-muted-foreground max-w-2xl">
+                        Review what needs attention, support local organisations and manage publishing across Blackrod Now.
+                    </p>
                 </div>
                 <div className="hidden sm:flex items-center gap-2">
                     <Link
@@ -505,14 +550,520 @@ export default function Admin() {
                 <Stat label="Unread messages" value={stats?.messages_unread || 0} icon={MessageSquare} />
             </div>
 
+            <section className="mt-8">
+                <span className="text-xs font-bold uppercase tracking-[0.18em] text-primary">Priority work</span>
+                <h2 className="font-display font-black text-3xl mt-1">Needs attention</h2>
+                <p className="text-sm text-muted-foreground mt-1">Start here: review incoming content before moving on to routine administration.</p>
+            </section>
+            <section className="mt-8 rounded-[2rem] border border-border bg-surface p-5 sm:p-6">
+                <div className="flex flex-col lg:flex-row lg:items-end gap-4 justify-between">
+                    <div>
+                        <h2 className="font-display font-black text-2xl">Review queue</h2>
+                        <p className="text-sm text-muted-foreground mt-1">New events, organisations, claims and edit requests that need a decision.</p>
+                    </div>
+                    <div className="grid sm:grid-cols-[1fr_220px] gap-3 w-full lg:w-auto">
+                        <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search queue…" className="w-full px-4 py-2.5 rounded-2xl border border-border bg-background text-sm" />
+                        <select value={queueFilter} onChange={(e) => setQueueFilter(e.target.value)} className="w-full px-4 py-2.5 rounded-2xl border border-border bg-background text-sm">
+                            <option value="all">All items</option>
+                            <option value="events">Events</option>
+                            <option value="orgs">Organisations</option>
+                            <option value="claims">Claim requests</option>
+                            <option value="requests">Edit requests</option>
+                            <option value="duplicates">Duplicates only</option>
+                        </select>
+                    </div>
+                </div>
+                <div className="mt-4 flex flex-wrap gap-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                    <span className="px-2.5 py-1 rounded-full bg-muted">Keyboard: `a` approve, `r` reject</span>
+                    <span className="px-2.5 py-1 rounded-full bg-muted">Saved filter: {queueFilter}</span>
+                    <span className="px-2.5 py-1 rounded-full bg-muted">Search saved locally</span>
+                </div>
+            </section>
+
+            <section className="mt-10">
+                <div className="flex items-center justify-between gap-3 mb-3 flex-wrap">
+                    <h2 className="font-display font-bold text-xl">Pending events <span className="text-muted-foreground text-base">({visiblePendingEvents.length})</span></h2>
+                    {selectedEventIds.length > 0 && (
+                        <div className="flex gap-2">
+                            <button onClick={() => bulkReview("event", "approved")} className="px-4 py-2 rounded-full bg-secondary text-secondary-foreground text-xs font-semibold">Approve selected</button>
+                            <button onClick={() => bulkReview("event", "rejected")} className="px-4 py-2 rounded-full border border-foreground text-xs font-semibold">Reject selected</button>
+                        </div>
+                    )}
+                </div>
+                {visiblePendingEvents.length === 0 ? (
+                    <Empty>No events waiting for approval.</Empty>
+                ) : (
+                    <div className="grid gap-3">
+                        {visiblePendingEvents.map((e) => {
+                            const duplicate = approvedEvents.find((approved) => normalize(approved.title) === normalize(e.title) && (approved.start || "").slice(0, 10) === (e.start || "").slice(0, 10));
+                            const selected = selectedEventIds.includes(e.id);
+                            return (
+                                <div key={e.id} data-testid={`admin-event-${e.id}`} onClick={() => setActiveTarget({ kind: "event", id: e.id })}
+                                    className={`rounded-3xl border bg-surface p-5 flex flex-col sm:flex-row sm:items-center gap-4 ${selected ? "border-primary ring-1 ring-primary/30" : "border-border"}`}>
+                                    <label className="flex items-center gap-2 shrink-0 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                                        <input type="checkbox" checked={selected} onChange={(ev) => {
+                                            ev.stopPropagation();
+                                            setSelectedEventIds((current) => current.includes(e.id) ? current.filter((value) => value !== e.id) : [...current, e.id]);
+                                        }} />
+                                        Select
+                                    </label>
+                                    <div className="flex-1">
+                                        <CategoryBadge category={e.category} />
+                                        <h3 className="font-display font-bold text-lg mt-2">{e.title}</h3>
+                                        <p className="text-xs text-muted-foreground mt-1">{formatDate(e.start)} · {formatTime(e.start)} · {e.venue || "No venue yet"}</p>
+                                        {duplicate && <p className="text-xs text-amber-700 dark:text-amber-400 mt-2">Possible duplicate: {duplicate.title}</p>}
+                                    </div>
+                                    <div className="flex gap-2 flex-wrap">
+                                        <Link to={`/edit-event/${e.id}`} data-testid={`admin-edit-event-${e.id}`} className="inline-flex items-center gap-1 px-4 py-2 rounded-full border border-border font-semibold text-xs hover:bg-muted" onClick={(ev) => ev.stopPropagation()}>
+                                            <Pencil className="h-3.5 w-3.5" /> Edit
+                                        </Link>
+                                        <button data-testid={`approve-event-${e.id}`} onClick={(ev) => { ev.stopPropagation(); approveEvent(e.id); }} className="inline-flex items-center gap-1 px-4 py-2 rounded-full bg-secondary text-secondary-foreground font-semibold text-xs">
+                                            <Check className="h-3.5 w-3.5" /> Approve
+                                        </button>
+                                        <button data-testid={`reject-event-${e.id}`} onClick={(ev) => { ev.stopPropagation(); rejectEvent(e.id); }} className="inline-flex items-center gap-1 px-4 py-2 rounded-full border-2 border-foreground font-semibold text-xs">
+                                            <X className="h-3.5 w-3.5" /> Reject
+                                        </button>
+                                    </div>
+                                </div>
+                            );
+                        })}
+                    </div>
+                )}
+            </section>
+
+            <section className="mt-10">
+                <div className="flex items-center justify-between gap-3 mb-3 flex-wrap">
+                    <h2 className="font-display font-bold text-xl">Pending organisations <span className="text-muted-foreground text-base">({visiblePendingOrgs.length})</span></h2>
+                    {selectedOrgSlugs.length > 0 && (
+                        <div className="flex gap-2">
+                            <button onClick={() => bulkReview("org", "approved")} className="px-4 py-2 rounded-full bg-secondary text-secondary-foreground text-xs font-semibold">Approve selected</button>
+                            <button onClick={() => bulkReview("org", "rejected")} className="px-4 py-2 rounded-full border border-foreground text-xs font-semibold">Reject selected</button>
+                        </div>
+                    )}
+                </div>
+                {visiblePendingOrgs.length === 0 ? (
+                    <Empty>No organisations waiting for approval.</Empty>
+                ) : (
+                    <div className="grid sm:grid-cols-2 gap-3">
+                        {visiblePendingOrgs.map((o) => {
+                            const duplicate = pendingOrgDuplicates.get(normalize(o.name));
+                            const selected = selectedOrgSlugs.includes(o.slug);
+                            return (
+                                <div key={o.slug} data-testid={`admin-org-${o.slug}`} onClick={() => setActiveTarget({ kind: "org", id: o.slug })} className={`rounded-3xl border bg-surface p-5 ${selected ? "border-primary ring-1 ring-primary/30" : "border-border"}`}>
+                                    <label className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                                        <input type="checkbox" checked={selected} onChange={(ev) => {
+                                            ev.stopPropagation();
+                                            setSelectedOrgSlugs((current) => current.includes(o.slug) ? current.filter((value) => value !== o.slug) : [...current, o.slug]);
+                                        }} />
+                                        Select
+                                    </label>
+                                    <h3 className="font-display font-bold mt-2">{o.name}</h3>
+                                    <p className="text-xs text-muted-foreground mt-1">{o.category}</p>
+                                    <p className="text-sm mt-2 line-clamp-2">{o.short}</p>
+                                    {duplicate && <p className="text-xs text-amber-700 dark:text-amber-400 mt-2">Possible duplicate: {duplicate.name}</p>}
+                                    <div className="flex gap-2 mt-3 flex-wrap">
+                                        <button data-testid={`approve-org-${o.slug}`} onClick={(ev) => { ev.stopPropagation(); approveOrg(o.slug); }} className="inline-flex items-center gap-1 px-4 py-2 rounded-full bg-secondary text-secondary-foreground font-semibold text-xs"><Check className="h-3.5 w-3.5" /> Approve</button>
+                                        <button data-testid={`reject-org-${o.slug}`} onClick={(ev) => { ev.stopPropagation(); rejectOrg(o.slug); }} className="inline-flex items-center gap-1 px-4 py-2 rounded-full border-2 border-foreground font-semibold text-xs"><X className="h-3.5 w-3.5" /> Reject</button>
+                                    </div>
+                                </div>
+                            );
+                        })}
+                    </div>
+                )}
+            </section>
+
+            <section className="mt-10">
+                <div className="flex items-center justify-between gap-3 mb-3 flex-wrap">
+                    <h2 className="font-display font-bold text-xl">Claim and edit requests <span className="text-muted-foreground text-base">({visibleRequests.length})</span></h2>
+                    {selectedRequestIds.length > 0 && (
+                        <div className="flex gap-2">
+                            <button onClick={() => bulkReview("request", "approved")} className="px-4 py-2 rounded-full bg-secondary text-secondary-foreground text-xs font-semibold">Approve selected</button>
+                            <button onClick={() => bulkReview("request", "rejected")} className="px-4 py-2 rounded-full border border-foreground text-xs font-semibold">Reject selected</button>
+                        </div>
+                    )}
+                </div>
+                {visibleRequests.length === 0 ? (
+                    <Empty>No claim or edit requests waiting.</Empty>
+                ) : (
+                    <div className="grid gap-3">
+                        {visibleRequests.map((request) => {
+                            const selected = selectedRequestIds.includes(request.id);
+                            return (
+                                <div key={request.id} onClick={() => setActiveTarget({ kind: "request", id: request.id })} className={`rounded-3xl border bg-surface p-5 ${selected ? "border-primary ring-1 ring-primary/30" : "border-border"}`}>
+                                    <div className="flex items-start justify-between gap-3">
+                                        <label className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                                            <input type="checkbox" checked={selected} onChange={(ev) => {
+                                                ev.stopPropagation();
+                                                setSelectedRequestIds((current) => current.includes(request.id) ? current.filter((value) => value !== request.id) : [...current, request.id]);
+                                            }} />
+                                            Select
+                                        </label>
+                                        <span className="px-2.5 py-1 rounded-full bg-muted text-[11px] font-bold uppercase tracking-wider">{request.request_type === "claim" ? "Claim" : "Suggest edit"}</span>
+                                    </div>
+                                    <h3 className="font-display font-bold text-lg mt-2">{request.org_name}</h3>
+                                    <p className="text-sm text-muted-foreground mt-1">{request.contact_name} {request.contact_email ? `· ${request.contact_email}` : ""}{request.contact_phone ? ` · 📞 ${request.contact_phone}` : ""}</p>
+                                    {request.message && <p className="text-sm mt-3">{request.message}</p>}
+                                    {request.request_type === "claim" && (
+                                        <textarea
+                                            rows={2}
+                                            value={requestNotes[request.id] || ""}
+                                            onChange={(ev) => { ev.stopPropagation(); setRequestNotes((n) => ({ ...n, [request.id]: ev.target.value })); }}
+                                            onClick={(ev) => ev.stopPropagation()}
+                                            placeholder="Reviewer notes (optional) — included in approval/rejection email"
+                                            className="w-full mt-3 px-3 py-2 rounded-2xl border border-border bg-background text-sm resize-none"
+                                        />
+                                    )}
+                                    {request.request_type === "suggest_edit" && Object.keys(request.payload || {}).length > 0 && (
+                                        <div className="mt-3 flex flex-wrap gap-2 text-[11px]">
+                                            {Object.entries(request.payload).slice(0, 6).map(([key, value]) => (
+                                                <span key={key} className="px-2.5 py-1 rounded-full bg-muted">{key}: {typeof value === "string" ? value : "updated"}</span>
+                                            ))}
+                                        </div>
+                                    )}
+                                    <div className="flex gap-2 mt-3 flex-wrap">
+                                        <button onClick={(ev) => { ev.stopPropagation(); reviewRequest(request.id, "approved"); }} className="inline-flex items-center gap-1 px-4 py-2 rounded-full bg-secondary text-secondary-foreground font-semibold text-xs"><Check className="h-3.5 w-3.5" /> Approve</button>
+                                        <button onClick={(ev) => { ev.stopPropagation(); reviewRequest(request.id, "rejected"); }} className="inline-flex items-center gap-1 px-4 py-2 rounded-full border-2 border-foreground font-semibold text-xs"><X className="h-3.5 w-3.5" /> Reject</button>
+                                    </div>
+                                </div>
+                            );
+                        })}
+                    </div>
+                )}
+            </section>
+
+            <section className="mt-10">
+                <span className="text-xs font-bold uppercase tracking-[0.18em] text-primary">Organisation support</span>
+                <h2 className="font-display font-black text-3xl mt-1">Help local organisations</h2>
+            </section>
+            <section className="mt-10">
+                <div className="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-4 mb-4">
+                    <div>
+                        <span className="text-xs font-bold uppercase tracking-[0.18em] text-primary">Organisation support</span>
+                        <h2 className="font-display font-black text-2xl mt-1">Manage organisations</h2>
+                        <p className="text-sm text-muted-foreground mt-1">
+                            Step into an organisation's dashboard when somebody needs help with events, profile information or other content.
+                        </p>
+                    </div>
+                    <div className="grid sm:grid-cols-[240px_180px] gap-2 w-full lg:w-auto">
+                        <div className="relative">
+                            <Search className="h-4 w-4 absolute left-3 top-2.5 text-muted-foreground" />
+                            <input
+                                value={orgAdminSearch}
+                                onChange={(e) => setOrgAdminSearch(e.target.value)}
+                                placeholder="Search organisations…"
+                                className="w-full pl-9 pr-3 py-2 rounded-2xl border border-border bg-background text-sm"
+                            />
+                        </div>
+                        <select
+                            value={orgAdminStatus}
+                            onChange={(e) => setOrgAdminStatus(e.target.value)}
+                            className="w-full px-3 py-2 rounded-2xl border border-border bg-background text-sm"
+                        >
+                            <option value="all">All statuses</option>
+                            <option value="approved">Approved</option>
+                            <option value="suspended">Suspended</option>
+                            <option value="archived">Archived</option>
+                            <option value="rejected">Rejected</option>
+                        </select>
+                    </div>
+                </div>
+                <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                    {managedOrgs.map((o) => (
+                        <div key={o.slug} className="min-w-0 rounded-3xl border border-border bg-surface p-4" data-testid={`manage-org-card-${o.slug}`}>
+                            <div className="flex items-center gap-3">
+                                <div className="h-10 w-10 rounded-2xl bg-muted grid place-items-center text-xl shrink-0">{o.logo}</div>
+                                <div className="flex-1 min-w-0">
+                                    <div className="font-bold text-sm leading-snug" data-testid={`manage-org-name-${o.slug}`}>{o.name}</div>
+                                    <div className="text-xs text-muted-foreground">{o.category}</div>
+                                </div>
+                            </div>
+                            <div className="mt-3 flex items-center gap-1 flex-wrap">
+                                <button
+                                    data-testid={`impersonate-org-${o.slug}`}
+                                    onClick={() => loginAsOrg(o.slug, o.name)}
+                                    className="inline-flex items-center gap-1 px-3 py-1.5 rounded-full bg-primary text-primary-foreground text-[11px] font-semibold uppercase tracking-wider"
+                                    title={`Manage ${o.name} on their behalf`}
+                                >
+                                    <LogIn className="h-3 w-3" /> Manage on behalf
+                                </button>
+                                <button
+                                    onClick={() => resetOrgPassword(o.slug, o.name)}
+                                    className="inline-flex items-center gap-1 px-3 py-1.5 rounded-full border border-border text-[11px] font-semibold uppercase tracking-wider"
+                                    title="Reset organisation password"
+                                >
+                                    <RefreshCw className="h-3 w-3" /> Reset pwd
+                                </button>
+                                <Link to={`/organisations/${o.slug}`} className="inline-flex items-center gap-1 px-3 py-1.5 rounded-full border border-border text-[11px] font-semibold uppercase tracking-wider"><Eye className="h-3 w-3" /> View</Link>
+                                <Link to={`/edit-organisation/${o.slug}`} data-testid={`edit-org-${o.slug}`} className="inline-flex items-center gap-1 px-3 py-1.5 rounded-full border border-border text-[11px] font-semibold uppercase tracking-wider"><Edit3 className="h-3 w-3" /> Edit</Link>
+                            </div>
+                            <div className="mt-2">
+                                <EntityCheck kind="org" id={o.slug} initial={o.check_result} />
+                            </div>
+                        </div>
+                    ))}
+                </div>
+            </section>
+            <section className="mt-10">
+                <div className="flex items-center justify-between gap-3 mb-3 flex-wrap">
+                    <h2 className="font-display font-bold text-xl">
+                        Manage events{" "}
+                        <span className="text-muted-foreground text-base font-normal">
+                            ({approvedEvents.length})
+                        </span>
+                    </h2>
+                    <div className="flex items-center gap-2 flex-wrap">
+                        <input
+                            data-testid="admin-events-search"
+                            type="search"
+                            value={eventSearch}
+                            onChange={(e) => setEventSearch(e.target.value)}
+                            placeholder="Search title, venue, description…"
+                            className="px-3 py-2 rounded-full border border-border bg-background text-sm w-56"
+                        />
+                        <select
+                            data-testid="admin-events-org-filter"
+                            value={eventOrgFilter}
+                            onChange={(e) => setEventOrgFilter(e.target.value)}
+                            className="px-3 py-2 rounded-full border border-border bg-background text-sm"
+                        >
+                            <option value="">All organisations</option>
+                            {orgs
+                                .filter((o) => o.status !== "rejected")
+                                .sort((a, b) => (a.name || "").localeCompare(b.name || ""))
+                                .map((o) => (
+                                    <option key={o.slug} value={o.slug}>{o.name}</option>
+                                ))}
+                        </select>
+                        <select
+                            data-testid="admin-events-category-filter"
+                            value={eventCategoryFilter}
+                            onChange={(e) => setEventCategoryFilter(e.target.value)}
+                            className="px-3 py-2 rounded-full border border-border bg-background text-sm"
+                        >
+                            <option value="">All categories</option>
+                            {[...new Set(approvedEvents.map((e) => e.category).filter(Boolean))]
+                                .sort()
+                                .map((cat) => (
+                                    <option key={cat} value={cat}>{cat}</option>
+                                ))}
+                        </select>
+                        {(eventSearch || eventOrgFilter || eventCategoryFilter) && (
+                            <button
+                                type="button"
+                                data-testid="admin-events-clear-filters"
+                                onClick={() => { setEventSearch(""); setEventOrgFilter(""); setEventCategoryFilter(""); }}
+                                className="text-xs uppercase tracking-wider font-bold text-primary hover:underline"
+                            >
+                                Clear
+                            </button>
+                        )}
+                    </div>
+                </div>
+                <div className="rounded-3xl border border-border bg-surface overflow-hidden">
+                    <div className="max-h-[65vh] overflow-y-auto">
+                        <table className="w-full text-sm">
+                            <thead className="bg-muted text-xs uppercase tracking-wider text-muted-foreground sticky top-0 z-10">
+                                <tr>
+                                    <th className="text-left px-4 py-3">Event</th>
+                                    <th className="text-left px-4 py-3 hidden sm:table-cell">Date</th>
+                                    <th className="text-left px-4 py-3 hidden md:table-cell">Category</th>
+                                    <th className="text-right px-4 py-3">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {filteredApprovedEvents.map((e) => (
+                                    <tr key={e.id} className="border-t border-border" data-testid={`admin-manage-event-row-${e.id}`}>
+                                        <td className="px-4 py-3 font-medium">
+                                            <Link to={`/events/${e.id}`} className="hover:text-primary">{e.title}</Link>
+                                            {e.recurrence && ((e.recurrence.freq && e.recurrence.freq !== "none") || e.recurrence.extra_dates?.length > 0) && (
+                                                <span className="ml-2 inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-secondary/25 text-secondary-foreground text-[9px] font-black uppercase tracking-wider">
+                                                    {e.recurrence.freq === "monthly_weekday"
+                                                        ? "Repeats monthly (same weekday)"
+                                                        : e.recurrence.freq && e.recurrence.freq !== "none"
+                                                            ? `Repeats ${e.recurrence.interval > 1 ? `every ${e.recurrence.interval} ` : ""}${e.recurrence.freq}`
+                                                            : `+${e.recurrence.extra_dates.length} extra date${e.recurrence.extra_dates.length > 1 ? "s" : ""}`}
+                                                </span>
+                                            )}
+                                            <div className="text-[11px] text-muted-foreground truncate">
+                                                {orgs.find((o) => o.slug === e.orgSlug)?.name || e.orgSlug}
+                                            </div>
+                                            <div className="mt-1.5">
+                                                <EntityCheck kind="event" id={e.id} initial={e.check_result} />
+                                            </div>
+                                        </td>
+                                        <td className="px-4 py-3 text-muted-foreground hidden sm:table-cell">{formatDate(e.start)}</td>
+                                        <td className="px-4 py-3 hidden md:table-cell"><CategoryBadge category={e.category} /></td>
+                                        <td className="px-4 py-3">
+                                            <div className="flex gap-1 justify-end">
+                                                <Link to={`/edit-event/${e.id}`} data-testid={`admin-edit-approved-${e.id}`} className="h-8 w-8 grid place-items-center rounded-full bg-muted hover:bg-primary hover:text-primary-foreground" title="Edit event"><Pencil className="h-3.5 w-3.5" /></Link>
+                                                <button data-testid={`feature-event-${e.id}`} onClick={async () => { await toggleEventFeatured(e.id); toast.success(e.featured ? "Unfeatured" : "Featured"); }} className={`h-8 w-8 grid place-items-center rounded-full ${e.featured ? "bg-secondary text-secondary-foreground" : "bg-muted"}`} title={e.featured ? "Unfeature" : "Feature on homepage"}><Star className="h-3.5 w-3.5" /></button>
+                                                <button
+                                                    data-testid={`delete-event-${e.id}`}
+                                                    onClick={async () => {
+                                                        if (!window.confirm(`Permanently delete "${e.title}"? This cannot be undone.`)) return;
+                                                        await deleteEvent(e.id);
+                                                        toast.info("Event deleted");
+                                                    }}
+                                                    className="h-8 w-8 grid place-items-center rounded-full bg-muted hover:bg-destructive hover:text-destructive-foreground"
+                                                    title="Permanently delete"
+                                                >
+                                                    <Trash2 className="h-3.5 w-3.5" />
+                                                </button>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                ))}
+                                {filteredApprovedEvents.length === 0 && (
+                                    <tr>
+                                        <td colSpan={4} className="px-4 py-8 text-center text-muted-foreground text-sm">
+                                            {approvedEvents.length === 0 ? "No approved events yet." : "No events match your filters."}
+                                        </td>
+                                    </tr>
+                                )}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </section>
+
+            <section className="mt-12">
+                <span className="text-xs font-bold uppercase tracking-[0.18em] text-primary">Publishing</span>
+                <h2 className="font-display font-black text-3xl mt-1">Create, import & communicate</h2>
+                <p className="text-sm text-muted-foreground mt-1">Routine publishing tools are kept together below the action queues.</p>
+            </section>
+            <section className="mt-8">
+                <QuickAddContentCard orgs={orgs} onCreated={refresh} />
+            </section>
+            <section className="mt-10" data-testid="admin-bulk-import-section">
+                <BulkDocumentImportCard orgs={orgs} />
+            </section>
+
+            <section className="mt-10 grid lg:grid-cols-2 gap-4">
+                <BroadcastCard onSent={refresh} />
+                <NewsletterCard orgs={orgs} />
+            </section>
+
+            <section className="mt-10">
+                <AdminEmailCentre orgs={orgs} onChange={refresh} />
+            </section>
+
+            <section className="mt-10 grid lg:grid-cols-2 gap-4">
+                <ScheduledBroadcastsCard />
+                <ModerationQueueCard />
+            </section>
+
+            <section className="mt-10 grid lg:grid-cols-2 gap-4">
+                <NotifyOrgCard orgs={orgs} />
+                <SubscribersCard />
+            </section>
+
+            <section className="mt-12">
+                <span className="text-xs font-bold uppercase tracking-[0.18em] text-primary">Performance</span>
+                <h2 className="font-display font-black text-3xl mt-1">Insights & system controls</h2>
+            </section>
+            <section className="mt-8 space-y-4" data-testid="admin-analytics-section">
+                <div>
+                    <h2 className="font-display font-black text-2xl">Success metrics</h2>
+                    <p className="text-sm text-muted-foreground mt-1">
+                        Reach, engagement and content health for the last {analytics.window_days || 30} days.
+                    </p>
+                </div>
+
+                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+                    <Stat label="Event views" value={siteEngagement.event_views_30d || 0} icon={Eye} tone="primary" />
+                    <Stat label="Org views" value={siteEngagement.org_views_30d || 0} icon={BarChart3} />
+                    <Stat label="Share clicks" value={siteEngagement.share_clicks_30d || 0} icon={RefreshCw} />
+                    <Stat label="Follower links" value={siteOverview.org_follow_links || 0} icon={Users} />
+                    <Stat label="Digest subs" value={siteOverview.digest_subscribers || 0} icon={Mail} />
+                    <Stat label="Active orgs" value={siteOverview.orgs_with_upcoming_events || 0} icon={HandHeart} />
+                </div>
+
+                <div className="grid lg:grid-cols-3 gap-4">
+                    <div className="rounded-3xl border border-border bg-surface p-5">
+                        <h3 className="font-display font-bold text-lg">Health snapshot</h3>
+                        <div className="mt-4 grid grid-cols-2 gap-3 text-sm">
+                            <MiniMetric label="Upcoming events" value={siteOverview.upcoming_events || 0} />
+                            <MiniMetric label="Approved orgs" value={siteOverview.approved_orgs || 0} />
+                            <MiniMetric label="Avg event views" value={siteHealth.avg_event_views_30d || 0} />
+                            <MiniMetric label="Share rate" value={`${Math.round((siteHealth.share_click_rate || 0) * 100)}%`} />
+                            <MiniMetric label="Orgs with upcoming" value={`${Math.round((siteHealth.orgs_with_upcoming_rate || 0) * 100)}%`} />
+                            <MiniMetric label="Pending content" value={`${Math.round((siteHealth.pending_content_ratio || 0) * 100)}%`} />
+                        </div>
+                    </div>
+
+                    <div className="rounded-3xl border border-border bg-surface p-5">
+                        <h3 className="font-display font-bold text-lg">Top organisations</h3>
+                        {topOrgs.length === 0 ? (
+                            <p className="mt-4 text-sm text-muted-foreground">No engagement data yet.</p>
+                        ) : (
+                            <div className="mt-4 space-y-3">
+                                {topOrgs.map((orgItem) => (
+                                    <div key={orgItem.slug} className="flex items-start justify-between gap-3 text-sm">
+                                        <div>
+                                            <Link to={`/organisations/${orgItem.slug}`} className="font-semibold hover:text-primary">{orgItem.name}</Link>
+                                            <div className="text-xs text-muted-foreground mt-1">
+                                                {orgItem.page_views} profile views · {orgItem.event_views} event views · {orgItem.share_clicks} shares
+                                            </div>
+                                        </div>
+                                        <div className="text-right text-xs text-muted-foreground">
+                                            <div>{orgItem.followers} followers</div>
+                                            <div>{orgItem.upcoming_events} upcoming</div>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                    </div>
+
+                    <div className="rounded-3xl border border-border bg-surface p-5">
+                        <h3 className="font-display font-bold text-lg">Top events</h3>
+                        {topEvents.length === 0 ? (
+                            <p className="mt-4 text-sm text-muted-foreground">No event engagement data yet.</p>
+                        ) : (
+                            <div className="mt-4 space-y-3">
+                                {topEvents.map((eventItem) => (
+                                    <div key={eventItem.id} className="flex items-start justify-between gap-3 text-sm">
+                                        <div>
+                                            <Link to={`/events/${eventItem.id}`} className="font-semibold hover:text-primary">{eventItem.title}</Link>
+                                            <div className="text-xs text-muted-foreground mt-1">
+                                                {eventItem.views} views · {eventItem.shares} shares
+                                            </div>
+                                        </div>
+                                        <div className="text-right text-xs text-muted-foreground">{eventItem.org_slug}</div>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                    </div>
+                </div>
+
+                <div className="rounded-3xl border border-border bg-surface p-5">
+                    <h3 className="font-display font-bold text-lg">Share channels</h3>
+                    {sharePlatforms.length === 0 ? (
+                        <p className="mt-4 text-sm text-muted-foreground">Share data will appear once residents or admins use the share buttons.</p>
+                    ) : (
+                        <div className="mt-4 flex flex-wrap gap-2">
+                            {sharePlatforms.map((item) => (
+                                <span key={item.platform} className="px-3 py-2 rounded-full bg-muted text-sm">
+                                    {item.platform} · {item.count}
+                                </span>
+                            ))}
+                        </div>
+                    )}
+                </div>
+            </section>
+
+            <section className="mt-8">
+                <SiteModeCard />
+            </section>
             <section className="mt-8 space-y-4" data-testid="site-admin-controls">
                 <div className="flex flex-wrap items-end justify-between gap-3">
                     <div>
                         <h2 className="font-display font-black text-2xl inline-flex items-center gap-2">
-                            <ShieldCheck className="h-6 w-6 text-primary" /> Site Administrator
+                            <ShieldCheck className="h-6 w-6 text-primary" /> Advanced administration
                         </h2>
                         <p className="text-sm text-muted-foreground mt-1">
-                            Ownership, verification, moderation and quality controls.
+                            Ownership, members, taxonomy, audit history and other less frequent controls.
                         </p>
                     </div>
                     <button onClick={mergeDuplicateOrgs} className="inline-flex items-center gap-1.5 px-4 py-2 rounded-full border border-border text-xs font-semibold">
@@ -673,454 +1224,6 @@ export default function Admin() {
                 </div>
             </section>
 
-            <section className="mt-8 space-y-4" data-testid="admin-analytics-section">
-                <div>
-                    <h2 className="font-display font-black text-2xl">Success metrics</h2>
-                    <p className="text-sm text-muted-foreground mt-1">
-                        Reach, engagement and content health for the last {analytics.window_days || 30} days.
-                    </p>
-                </div>
-
-                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
-                    <Stat label="Event views" value={siteEngagement.event_views_30d || 0} icon={Eye} tone="primary" />
-                    <Stat label="Org views" value={siteEngagement.org_views_30d || 0} icon={BarChart3} />
-                    <Stat label="Share clicks" value={siteEngagement.share_clicks_30d || 0} icon={RefreshCw} />
-                    <Stat label="Follower links" value={siteOverview.org_follow_links || 0} icon={Users} />
-                    <Stat label="Digest subs" value={siteOverview.digest_subscribers || 0} icon={Mail} />
-                    <Stat label="Active orgs" value={siteOverview.orgs_with_upcoming_events || 0} icon={HandHeart} />
-                </div>
-
-                <div className="grid lg:grid-cols-3 gap-4">
-                    <div className="rounded-3xl border border-border bg-surface p-5">
-                        <h3 className="font-display font-bold text-lg">Health snapshot</h3>
-                        <div className="mt-4 grid grid-cols-2 gap-3 text-sm">
-                            <MiniMetric label="Upcoming events" value={siteOverview.upcoming_events || 0} />
-                            <MiniMetric label="Approved orgs" value={siteOverview.approved_orgs || 0} />
-                            <MiniMetric label="Avg event views" value={siteHealth.avg_event_views_30d || 0} />
-                            <MiniMetric label="Share rate" value={`${Math.round((siteHealth.share_click_rate || 0) * 100)}%`} />
-                            <MiniMetric label="Orgs with upcoming" value={`${Math.round((siteHealth.orgs_with_upcoming_rate || 0) * 100)}%`} />
-                            <MiniMetric label="Pending content" value={`${Math.round((siteHealth.pending_content_ratio || 0) * 100)}%`} />
-                        </div>
-                    </div>
-
-                    <div className="rounded-3xl border border-border bg-surface p-5">
-                        <h3 className="font-display font-bold text-lg">Top organisations</h3>
-                        {topOrgs.length === 0 ? (
-                            <p className="mt-4 text-sm text-muted-foreground">No engagement data yet.</p>
-                        ) : (
-                            <div className="mt-4 space-y-3">
-                                {topOrgs.map((orgItem) => (
-                                    <div key={orgItem.slug} className="flex items-start justify-between gap-3 text-sm">
-                                        <div>
-                                            <Link to={`/organisations/${orgItem.slug}`} className="font-semibold hover:text-primary">{orgItem.name}</Link>
-                                            <div className="text-xs text-muted-foreground mt-1">
-                                                {orgItem.page_views} profile views · {orgItem.event_views} event views · {orgItem.share_clicks} shares
-                                            </div>
-                                        </div>
-                                        <div className="text-right text-xs text-muted-foreground">
-                                            <div>{orgItem.followers} followers</div>
-                                            <div>{orgItem.upcoming_events} upcoming</div>
-                                        </div>
-                                    </div>
-                                ))}
-                            </div>
-                        )}
-                    </div>
-
-                    <div className="rounded-3xl border border-border bg-surface p-5">
-                        <h3 className="font-display font-bold text-lg">Top events</h3>
-                        {topEvents.length === 0 ? (
-                            <p className="mt-4 text-sm text-muted-foreground">No event engagement data yet.</p>
-                        ) : (
-                            <div className="mt-4 space-y-3">
-                                {topEvents.map((eventItem) => (
-                                    <div key={eventItem.id} className="flex items-start justify-between gap-3 text-sm">
-                                        <div>
-                                            <Link to={`/events/${eventItem.id}`} className="font-semibold hover:text-primary">{eventItem.title}</Link>
-                                            <div className="text-xs text-muted-foreground mt-1">
-                                                {eventItem.views} views · {eventItem.shares} shares
-                                            </div>
-                                        </div>
-                                        <div className="text-right text-xs text-muted-foreground">{eventItem.org_slug}</div>
-                                    </div>
-                                ))}
-                            </div>
-                        )}
-                    </div>
-                </div>
-
-                <div className="rounded-3xl border border-border bg-surface p-5">
-                    <h3 className="font-display font-bold text-lg">Share channels</h3>
-                    {sharePlatforms.length === 0 ? (
-                        <p className="mt-4 text-sm text-muted-foreground">Share data will appear once residents or admins use the share buttons.</p>
-                    ) : (
-                        <div className="mt-4 flex flex-wrap gap-2">
-                            {sharePlatforms.map((item) => (
-                                <span key={item.platform} className="px-3 py-2 rounded-full bg-muted text-sm">
-                                    {item.platform} · {item.count}
-                                </span>
-                            ))}
-                        </div>
-                    )}
-                </div>
-            </section>
-
-            <section className="mt-8">
-                <SiteModeCard />
-            </section>
-
-            <section className="mt-8">
-                <QuickAddContentCard orgs={orgs} onCreated={refresh} />
-            </section>
-
-            <section className="mt-8 rounded-[2rem] border border-border bg-surface p-5 sm:p-6">
-                <div className="flex flex-col lg:flex-row lg:items-end gap-4 justify-between">
-                    <div>
-                        <h2 className="font-display font-black text-2xl">Triage queue</h2>
-                        <p className="text-sm text-muted-foreground mt-1">Search, filter, bulk-approve and use `a` / `r` on the focused item.</p>
-                    </div>
-                    <div className="grid sm:grid-cols-[1fr_220px] gap-3 w-full lg:w-auto">
-                        <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search queue…" className="w-full px-4 py-2.5 rounded-2xl border border-border bg-background text-sm" />
-                        <select value={queueFilter} onChange={(e) => setQueueFilter(e.target.value)} className="w-full px-4 py-2.5 rounded-2xl border border-border bg-background text-sm">
-                            <option value="all">All items</option>
-                            <option value="events">Events</option>
-                            <option value="orgs">Organisations</option>
-                            <option value="claims">Claim requests</option>
-                            <option value="requests">Edit requests</option>
-                            <option value="duplicates">Duplicates only</option>
-                        </select>
-                    </div>
-                </div>
-                <div className="mt-4 flex flex-wrap gap-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-                    <span className="px-2.5 py-1 rounded-full bg-muted">Keyboard: `a` approve, `r` reject</span>
-                    <span className="px-2.5 py-1 rounded-full bg-muted">Saved filter: {queueFilter}</span>
-                    <span className="px-2.5 py-1 rounded-full bg-muted">Search saved locally</span>
-                </div>
-            </section>
-
-            <section className="mt-10" data-testid="admin-bulk-import-section">
-                <BulkDocumentImportCard orgs={orgs} />
-            </section>
-
-            <section className="mt-10 grid lg:grid-cols-2 gap-4">
-                <BroadcastCard onSent={refresh} />
-                <NewsletterCard orgs={orgs} />
-            </section>
-
-            <section className="mt-10">
-                <AdminEmailCentre orgs={orgs} onChange={refresh} />
-            </section>
-
-            <section className="mt-10 grid lg:grid-cols-2 gap-4">
-                <ScheduledBroadcastsCard />
-                <ModerationQueueCard />
-            </section>
-
-            <section className="mt-10 grid lg:grid-cols-2 gap-4">
-                <NotifyOrgCard orgs={orgs} />
-                <SubscribersCard />
-            </section>
-
-            <section className="mt-10">
-                <div className="flex items-center justify-between gap-3 mb-3 flex-wrap">
-                    <h2 className="font-display font-bold text-xl">Pending events <span className="text-muted-foreground text-base">({visiblePendingEvents.length})</span></h2>
-                    {selectedEventIds.length > 0 && (
-                        <div className="flex gap-2">
-                            <button onClick={() => bulkReview("event", "approved")} className="px-4 py-2 rounded-full bg-secondary text-secondary-foreground text-xs font-semibold">Approve selected</button>
-                            <button onClick={() => bulkReview("event", "rejected")} className="px-4 py-2 rounded-full border border-foreground text-xs font-semibold">Reject selected</button>
-                        </div>
-                    )}
-                </div>
-                {visiblePendingEvents.length === 0 ? (
-                    <Empty>No events waiting for approval.</Empty>
-                ) : (
-                    <div className="grid gap-3">
-                        {visiblePendingEvents.map((e) => {
-                            const duplicate = approvedEvents.find((approved) => normalize(approved.title) === normalize(e.title) && (approved.start || "").slice(0, 10) === (e.start || "").slice(0, 10));
-                            const selected = selectedEventIds.includes(e.id);
-                            return (
-                                <div key={e.id} data-testid={`admin-event-${e.id}`} onClick={() => setActiveTarget({ kind: "event", id: e.id })}
-                                    className={`rounded-3xl border bg-surface p-5 flex flex-col sm:flex-row sm:items-center gap-4 ${selected ? "border-primary ring-1 ring-primary/30" : "border-border"}`}>
-                                    <label className="flex items-center gap-2 shrink-0 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                                        <input type="checkbox" checked={selected} onChange={(ev) => {
-                                            ev.stopPropagation();
-                                            setSelectedEventIds((current) => current.includes(e.id) ? current.filter((value) => value !== e.id) : [...current, e.id]);
-                                        }} />
-                                        Select
-                                    </label>
-                                    <div className="flex-1">
-                                        <CategoryBadge category={e.category} />
-                                        <h3 className="font-display font-bold text-lg mt-2">{e.title}</h3>
-                                        <p className="text-xs text-muted-foreground mt-1">{formatDate(e.start)} · {formatTime(e.start)} · {e.venue || "No venue yet"}</p>
-                                        {duplicate && <p className="text-xs text-amber-700 dark:text-amber-400 mt-2">Possible duplicate: {duplicate.title}</p>}
-                                    </div>
-                                    <div className="flex gap-2 flex-wrap">
-                                        <Link to={`/edit-event/${e.id}`} data-testid={`admin-edit-event-${e.id}`} className="inline-flex items-center gap-1 px-4 py-2 rounded-full border border-border font-semibold text-xs hover:bg-muted" onClick={(ev) => ev.stopPropagation()}>
-                                            <Pencil className="h-3.5 w-3.5" /> Edit
-                                        </Link>
-                                        <button data-testid={`approve-event-${e.id}`} onClick={(ev) => { ev.stopPropagation(); approveEvent(e.id); }} className="inline-flex items-center gap-1 px-4 py-2 rounded-full bg-secondary text-secondary-foreground font-semibold text-xs">
-                                            <Check className="h-3.5 w-3.5" /> Approve
-                                        </button>
-                                        <button data-testid={`reject-event-${e.id}`} onClick={(ev) => { ev.stopPropagation(); rejectEvent(e.id); }} className="inline-flex items-center gap-1 px-4 py-2 rounded-full border-2 border-foreground font-semibold text-xs">
-                                            <X className="h-3.5 w-3.5" /> Reject
-                                        </button>
-                                    </div>
-                                </div>
-                            );
-                        })}
-                    </div>
-                )}
-            </section>
-
-            <section className="mt-10">
-                <div className="flex items-center justify-between gap-3 mb-3 flex-wrap">
-                    <h2 className="font-display font-bold text-xl">
-                        Manage events{" "}
-                        <span className="text-muted-foreground text-base font-normal">
-                            ({approvedEvents.length})
-                        </span>
-                    </h2>
-                    <div className="flex items-center gap-2 flex-wrap">
-                        <input
-                            data-testid="admin-events-search"
-                            type="search"
-                            value={eventSearch}
-                            onChange={(e) => setEventSearch(e.target.value)}
-                            placeholder="Search title, venue, description…"
-                            className="px-3 py-2 rounded-full border border-border bg-background text-sm w-56"
-                        />
-                        <select
-                            data-testid="admin-events-org-filter"
-                            value={eventOrgFilter}
-                            onChange={(e) => setEventOrgFilter(e.target.value)}
-                            className="px-3 py-2 rounded-full border border-border bg-background text-sm"
-                        >
-                            <option value="">All organisations</option>
-                            {orgs
-                                .filter((o) => o.status !== "rejected")
-                                .sort((a, b) => (a.name || "").localeCompare(b.name || ""))
-                                .map((o) => (
-                                    <option key={o.slug} value={o.slug}>{o.name}</option>
-                                ))}
-                        </select>
-                        <select
-                            data-testid="admin-events-category-filter"
-                            value={eventCategoryFilter}
-                            onChange={(e) => setEventCategoryFilter(e.target.value)}
-                            className="px-3 py-2 rounded-full border border-border bg-background text-sm"
-                        >
-                            <option value="">All categories</option>
-                            {[...new Set(approvedEvents.map((e) => e.category).filter(Boolean))]
-                                .sort()
-                                .map((cat) => (
-                                    <option key={cat} value={cat}>{cat}</option>
-                                ))}
-                        </select>
-                        {(eventSearch || eventOrgFilter || eventCategoryFilter) && (
-                            <button
-                                type="button"
-                                data-testid="admin-events-clear-filters"
-                                onClick={() => { setEventSearch(""); setEventOrgFilter(""); setEventCategoryFilter(""); }}
-                                className="text-xs uppercase tracking-wider font-bold text-primary hover:underline"
-                            >
-                                Clear
-                            </button>
-                        )}
-                    </div>
-                </div>
-                <div className="rounded-3xl border border-border bg-surface overflow-hidden">
-                    <div className="max-h-[65vh] overflow-y-auto">
-                        <table className="w-full text-sm">
-                            <thead className="bg-muted text-xs uppercase tracking-wider text-muted-foreground sticky top-0 z-10">
-                                <tr>
-                                    <th className="text-left px-4 py-3">Event</th>
-                                    <th className="text-left px-4 py-3 hidden sm:table-cell">Date</th>
-                                    <th className="text-left px-4 py-3 hidden md:table-cell">Category</th>
-                                    <th className="text-right px-4 py-3">Actions</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {filteredApprovedEvents.map((e) => (
-                                    <tr key={e.id} className="border-t border-border" data-testid={`admin-manage-event-row-${e.id}`}>
-                                        <td className="px-4 py-3 font-medium">
-                                            <Link to={`/events/${e.id}`} className="hover:text-primary">{e.title}</Link>
-                                            {e.recurrence && ((e.recurrence.freq && e.recurrence.freq !== "none") || e.recurrence.extra_dates?.length > 0) && (
-                                                <span className="ml-2 inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-secondary/25 text-secondary-foreground text-[9px] font-black uppercase tracking-wider">
-                                                    {e.recurrence.freq === "monthly_weekday"
-                                                        ? "Repeats monthly (same weekday)"
-                                                        : e.recurrence.freq && e.recurrence.freq !== "none"
-                                                            ? `Repeats ${e.recurrence.interval > 1 ? `every ${e.recurrence.interval} ` : ""}${e.recurrence.freq}`
-                                                            : `+${e.recurrence.extra_dates.length} extra date${e.recurrence.extra_dates.length > 1 ? "s" : ""}`}
-                                                </span>
-                                            )}
-                                            <div className="text-[11px] text-muted-foreground truncate">
-                                                {orgs.find((o) => o.slug === e.orgSlug)?.name || e.orgSlug}
-                                            </div>
-                                            <div className="mt-1.5">
-                                                <EntityCheck kind="event" id={e.id} initial={e.check_result} />
-                                            </div>
-                                        </td>
-                                        <td className="px-4 py-3 text-muted-foreground hidden sm:table-cell">{formatDate(e.start)}</td>
-                                        <td className="px-4 py-3 hidden md:table-cell"><CategoryBadge category={e.category} /></td>
-                                        <td className="px-4 py-3">
-                                            <div className="flex gap-1 justify-end">
-                                                <Link to={`/edit-event/${e.id}`} data-testid={`admin-edit-approved-${e.id}`} className="h-8 w-8 grid place-items-center rounded-full bg-muted hover:bg-primary hover:text-primary-foreground" title="Edit event"><Pencil className="h-3.5 w-3.5" /></Link>
-                                                <button data-testid={`feature-event-${e.id}`} onClick={async () => { await toggleEventFeatured(e.id); toast.success(e.featured ? "Unfeatured" : "Featured"); }} className={`h-8 w-8 grid place-items-center rounded-full ${e.featured ? "bg-secondary text-secondary-foreground" : "bg-muted"}`} title={e.featured ? "Unfeature" : "Feature on homepage"}><Star className="h-3.5 w-3.5" /></button>
-                                                <button data-testid={`delete-event-${e.id}`} onClick={async () => { await deleteEvent(e.id); toast.info("Event deleted"); }} className="h-8 w-8 grid place-items-center rounded-full bg-muted hover:bg-destructive hover:text-destructive-foreground" title="Delete"><Trash2 className="h-3.5 w-3.5" /></button>
-                                            </div>
-                                        </td>
-                                    </tr>
-                                ))}
-                                {filteredApprovedEvents.length === 0 && (
-                                    <tr>
-                                        <td colSpan={4} className="px-4 py-8 text-center text-muted-foreground text-sm">
-                                            {approvedEvents.length === 0 ? "No approved events yet." : "No events match your filters."}
-                                        </td>
-                                    </tr>
-                                )}
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-            </section>
-
-            <section className="mt-10">
-                <div className="flex items-center justify-between gap-3 mb-3 flex-wrap">
-                    <h2 className="font-display font-bold text-xl">Pending organisations <span className="text-muted-foreground text-base">({visiblePendingOrgs.length})</span></h2>
-                    {selectedOrgSlugs.length > 0 && (
-                        <div className="flex gap-2">
-                            <button onClick={() => bulkReview("org", "approved")} className="px-4 py-2 rounded-full bg-secondary text-secondary-foreground text-xs font-semibold">Approve selected</button>
-                            <button onClick={() => bulkReview("org", "rejected")} className="px-4 py-2 rounded-full border border-foreground text-xs font-semibold">Reject selected</button>
-                        </div>
-                    )}
-                </div>
-                {visiblePendingOrgs.length === 0 ? (
-                    <Empty>No organisations waiting for approval.</Empty>
-                ) : (
-                    <div className="grid sm:grid-cols-2 gap-3">
-                        {visiblePendingOrgs.map((o) => {
-                            const duplicate = pendingOrgDuplicates.get(normalize(o.name));
-                            const selected = selectedOrgSlugs.includes(o.slug);
-                            return (
-                                <div key={o.slug} data-testid={`admin-org-${o.slug}`} onClick={() => setActiveTarget({ kind: "org", id: o.slug })} className={`rounded-3xl border bg-surface p-5 ${selected ? "border-primary ring-1 ring-primary/30" : "border-border"}`}>
-                                    <label className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                                        <input type="checkbox" checked={selected} onChange={(ev) => {
-                                            ev.stopPropagation();
-                                            setSelectedOrgSlugs((current) => current.includes(o.slug) ? current.filter((value) => value !== o.slug) : [...current, o.slug]);
-                                        }} />
-                                        Select
-                                    </label>
-                                    <h3 className="font-display font-bold mt-2">{o.name}</h3>
-                                    <p className="text-xs text-muted-foreground mt-1">{o.category}</p>
-                                    <p className="text-sm mt-2 line-clamp-2">{o.short}</p>
-                                    {duplicate && <p className="text-xs text-amber-700 dark:text-amber-400 mt-2">Possible duplicate: {duplicate.name}</p>}
-                                    <div className="flex gap-2 mt-3 flex-wrap">
-                                        <button data-testid={`approve-org-${o.slug}`} onClick={(ev) => { ev.stopPropagation(); approveOrg(o.slug); }} className="inline-flex items-center gap-1 px-4 py-2 rounded-full bg-secondary text-secondary-foreground font-semibold text-xs"><Check className="h-3.5 w-3.5" /> Approve</button>
-                                        <button data-testid={`reject-org-${o.slug}`} onClick={(ev) => { ev.stopPropagation(); rejectOrg(o.slug); }} className="inline-flex items-center gap-1 px-4 py-2 rounded-full border-2 border-foreground font-semibold text-xs"><X className="h-3.5 w-3.5" /> Reject</button>
-                                    </div>
-                                </div>
-                            );
-                        })}
-                    </div>
-                )}
-            </section>
-
-            <section className="mt-10">
-                <div className="flex items-center justify-between gap-3 mb-3 flex-wrap">
-                    <h2 className="font-display font-bold text-xl">Claim and edit requests <span className="text-muted-foreground text-base">({visibleRequests.length})</span></h2>
-                    {selectedRequestIds.length > 0 && (
-                        <div className="flex gap-2">
-                            <button onClick={() => bulkReview("request", "approved")} className="px-4 py-2 rounded-full bg-secondary text-secondary-foreground text-xs font-semibold">Approve selected</button>
-                            <button onClick={() => bulkReview("request", "rejected")} className="px-4 py-2 rounded-full border border-foreground text-xs font-semibold">Reject selected</button>
-                        </div>
-                    )}
-                </div>
-                {visibleRequests.length === 0 ? (
-                    <Empty>No claim or edit requests waiting.</Empty>
-                ) : (
-                    <div className="grid gap-3">
-                        {visibleRequests.map((request) => {
-                            const selected = selectedRequestIds.includes(request.id);
-                            return (
-                                <div key={request.id} onClick={() => setActiveTarget({ kind: "request", id: request.id })} className={`rounded-3xl border bg-surface p-5 ${selected ? "border-primary ring-1 ring-primary/30" : "border-border"}`}>
-                                    <div className="flex items-start justify-between gap-3">
-                                        <label className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                                            <input type="checkbox" checked={selected} onChange={(ev) => {
-                                                ev.stopPropagation();
-                                                setSelectedRequestIds((current) => current.includes(request.id) ? current.filter((value) => value !== request.id) : [...current, request.id]);
-                                            }} />
-                                            Select
-                                        </label>
-                                        <span className="px-2.5 py-1 rounded-full bg-muted text-[11px] font-bold uppercase tracking-wider">{request.request_type === "claim" ? "Claim" : "Suggest edit"}</span>
-                                    </div>
-                                    <h3 className="font-display font-bold text-lg mt-2">{request.org_name}</h3>
-                                    <p className="text-sm text-muted-foreground mt-1">{request.contact_name} {request.contact_email ? `· ${request.contact_email}` : ""}{request.contact_phone ? ` · 📞 ${request.contact_phone}` : ""}</p>
-                                    {request.message && <p className="text-sm mt-3">{request.message}</p>}
-                                    {request.request_type === "claim" && (
-                                        <textarea
-                                            rows={2}
-                                            value={requestNotes[request.id] || ""}
-                                            onChange={(ev) => { ev.stopPropagation(); setRequestNotes((n) => ({ ...n, [request.id]: ev.target.value })); }}
-                                            onClick={(ev) => ev.stopPropagation()}
-                                            placeholder="Reviewer notes (optional) — included in approval/rejection email"
-                                            className="w-full mt-3 px-3 py-2 rounded-2xl border border-border bg-background text-sm resize-none"
-                                        />
-                                    )}
-                                    {request.request_type === "suggest_edit" && Object.keys(request.payload || {}).length > 0 && (
-                                        <div className="mt-3 flex flex-wrap gap-2 text-[11px]">
-                                            {Object.entries(request.payload).slice(0, 6).map(([key, value]) => (
-                                                <span key={key} className="px-2.5 py-1 rounded-full bg-muted">{key}: {typeof value === "string" ? value : "updated"}</span>
-                                            ))}
-                                        </div>
-                                    )}
-                                    <div className="flex gap-2 mt-3 flex-wrap">
-                                        <button onClick={(ev) => { ev.stopPropagation(); reviewRequest(request.id, "approved"); }} className="inline-flex items-center gap-1 px-4 py-2 rounded-full bg-secondary text-secondary-foreground font-semibold text-xs"><Check className="h-3.5 w-3.5" /> Approve</button>
-                                        <button onClick={(ev) => { ev.stopPropagation(); reviewRequest(request.id, "rejected"); }} className="inline-flex items-center gap-1 px-4 py-2 rounded-full border-2 border-foreground font-semibold text-xs"><X className="h-3.5 w-3.5" /> Reject</button>
-                                    </div>
-                                </div>
-                            );
-                        })}
-                    </div>
-                )}
-            </section>
-
-            <section className="mt-10">
-                <h2 className="font-display font-bold text-xl mb-3">Manage organisations</h2>
-                <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
-                    {orgs.filter((o) => o.status !== "pending").map((o) => (
-                        <div key={o.slug} className="min-w-0 rounded-3xl border border-border bg-surface p-4" data-testid={`manage-org-card-${o.slug}`}>
-                            <div className="flex items-center gap-3">
-                                <div className="h-10 w-10 rounded-2xl bg-muted grid place-items-center text-xl shrink-0">{o.logo}</div>
-                                <div className="flex-1 min-w-0">
-                                    <div className="font-bold text-sm leading-snug" data-testid={`manage-org-name-${o.slug}`}>{o.name}</div>
-                                    <div className="text-xs text-muted-foreground">{o.category}</div>
-                                </div>
-                            </div>
-                            <div className="mt-3 flex items-center gap-1 flex-wrap">
-                                <button
-                                    data-testid={`impersonate-org-${o.slug}`}
-                                    onClick={() => loginAsOrg(o.slug, o.name)}
-                                    className="inline-flex items-center gap-1 px-3 py-1.5 rounded-full bg-primary text-primary-foreground text-[11px] font-semibold uppercase tracking-wider"
-                                    title={`Log in as ${o.name}`}
-                                >
-                                    <LogIn className="h-3 w-3" /> Log in as
-                                </button>
-                                <button
-                                    onClick={() => resetOrgPassword(o.slug, o.name)}
-                                    className="inline-flex items-center gap-1 px-3 py-1.5 rounded-full border border-border text-[11px] font-semibold uppercase tracking-wider"
-                                    title="Reset organisation password"
-                                >
-                                    <RefreshCw className="h-3 w-3" /> Reset pwd
-                                </button>
-                                <Link to={`/edit-organisation/${o.slug}`} data-testid={`edit-org-${o.slug}`} className="inline-flex items-center gap-1 px-3 py-1.5 rounded-full border border-border text-[11px] font-semibold uppercase tracking-wider"><Edit3 className="h-3 w-3" /> Edit</Link>
-                            </div>
-                            <div className="mt-2">
-                                <EntityCheck kind="org" id={o.slug} initial={o.check_result} />
-                            </div>
-                        </div>
-                    ))}
-                </div>
-            </section>
         </div>
     );
 }
@@ -3325,13 +3428,45 @@ function BroadcastCard() {
 
 // ─────────── Newsletter card ───────────
 function NewsletterCard({ orgs }) {
-    const [subject, setSubject] = useState("Your Blackrod Now digest 📬");
+    const [subject, setSubject] = useState("Blackrod Now — Your weekend & week ahead");
     const [intro, setIntro] = useState("");
     const [audience, setAudience] = useState("subscribers");
     const [selectedOrgSlugs, setSelectedOrgSlugs] = useState([]);
     const [preview, setPreview] = useState(null);
     const [busy, setBusy] = useState(false);
     const [open, setOpen] = useState(false);
+    const [automationBusy, setAutomationBusy] = useState(false);
+    const [automationLoading, setAutomationLoading] = useState(true);
+    const [automation, setAutomation] = useState({
+        enabled: true,
+        day: "friday",
+        time: "08:00",
+        subject: "Blackrod Now — Your weekend & week ahead",
+        intro: "",
+        timezone: "Europe/London",
+        active_subscribers: 0,
+        next_run_local: "",
+        last_send: null,
+        last_auto_run: null,
+    });
+
+    const loadAutomation = async () => {
+        setAutomationLoading(true);
+        try {
+            const data = await api.newsletterAutomation();
+            setAutomation((current) => ({ ...current, ...(data || {}) }));
+            if (data?.subject) setSubject(data.subject);
+            if (typeof data?.intro === "string") setIntro(data.intro);
+        } catch (error) {
+            toast.error(error?.response?.data?.detail || "Could not load newsletter schedule");
+        } finally {
+            setAutomationLoading(false);
+        }
+    };
+
+    useEffect(() => {
+        loadAutomation();
+    }, []);
 
     const toggleOrg = (slug) => {
         setSelectedOrgSlugs((current) => (
@@ -3341,82 +3476,336 @@ function NewsletterCard({ orgs }) {
         ));
     };
 
-    const previewIt = async () => {
-        try {
-            const res = await api.newsletterPreview();
-            setPreview(res); setOpen(true);
-        } catch { toast.error("Preview failed"); }
+    const formatWhen = (value) => {
+        if (!value) return "Not yet";
+        const d = new Date(value);
+        if (Number.isNaN(d.getTime())) return "Not yet";
+        return d.toLocaleString("en-GB", {
+            weekday: "short",
+            day: "numeric",
+            month: "short",
+            hour: "2-digit",
+            minute: "2-digit",
+        });
     };
+
+    const previewIt = async (useAutomaticSettings = false) => {
+        try {
+            const previewSubject = useAutomaticSettings ? automation.subject : subject;
+            const previewIntro = useAutomaticSettings ? automation.intro : intro;
+            const res = await api.newsletterPreview(null, {
+                subject: previewSubject,
+                body_intro: previewIntro,
+            });
+            setPreview(res);
+            setOpen(true);
+        } catch (error) {
+            toast.error(error?.response?.data?.detail || "Preview failed");
+        }
+    };
+
+    const saveAutomation = async () => {
+        if (!automation.subject?.trim()) {
+            toast.error("Automatic digest needs a subject");
+            return;
+        }
+        setAutomationBusy(true);
+        try {
+            const data = await api.updateNewsletterAutomation({
+                enabled: Boolean(automation.enabled),
+                day: automation.day,
+                time: automation.time,
+                subject: automation.subject.trim(),
+                intro: automation.intro || "",
+            });
+            setAutomation((current) => ({ ...current, ...(data || {}) }));
+            setSubject(data?.subject || automation.subject);
+            setIntro(typeof data?.intro === "string" ? data.intro : automation.intro);
+            toast.success(
+                data?.enabled
+                    ? `Automatic digest set for ${String(data.day || "Friday").replace(/^./, (c) => c.toUpperCase())} at ${data.time} UK time`
+                    : "Automatic digest disabled"
+            );
+        } catch (error) {
+            toast.error(error?.response?.data?.detail || "Could not save newsletter schedule");
+        } finally {
+            setAutomationBusy(false);
+        }
+    };
+
+    const sendAutomaticNow = async () => {
+        const count = Number(automation.active_subscribers || 0);
+        const message = count > 0
+            ? `Send the personalised weekly digest now to ${count} active subscriber${count === 1 ? "" : "s"}?`
+            : "Send the personalised weekly digest now?";
+        if (!window.confirm(message)) return;
+        setAutomationBusy(true);
+        try {
+            const res = await api.sendNewsletterAutomationNow();
+            toast.success(`Digest sent — ${res.sent} delivered${res.failed ? `, ${res.failed} failed` : ""}${res.mocked ? " (mocked)" : ""}`);
+            if (res.automation) {
+                setAutomation((current) => ({ ...current, ...res.automation }));
+            } else {
+                await loadAutomation();
+            }
+        } catch (error) {
+            toast.error(error?.response?.data?.detail || "Could not send digest");
+        } finally {
+            setAutomationBusy(false);
+        }
+    };
+
     const send = async () => {
         if (audience === "orgs_selected" && !selectedOrgSlugs.length) {
             toast.error("Pick at least one organisation");
             return;
         }
+        if (!subject.trim()) {
+            toast.error("Enter a subject");
+            return;
+        }
+        const label = audience === "subscribers"
+            ? "all active digest subscribers"
+            : audience === "orgs_all"
+                ? "all organisations with an email address"
+                : `${selectedOrgSlugs.length} selected organisation${selectedOrgSlugs.length === 1 ? "" : "s"}`;
+        if (!window.confirm(`Send this email now to ${label}?`)) return;
         setBusy(true);
         try {
             const res = await api.sendNewsletter({
-                subject,
+                subject: subject.trim(),
                 body_intro: intro,
                 audience,
                 org_slugs: audience === "orgs_selected" ? selectedOrgSlugs : [],
             });
-            toast.success(`Newsletter sent — ${res.sent} delivered${res.mocked ? " (mocked)" : ""}`);
-        } catch { toast.error("Send failed"); }
-        finally { setBusy(false); }
+            toast.success(`Newsletter sent — ${res.sent} delivered${res.failed ? `, ${res.failed} failed` : ""}${res.mocked ? " (mocked)" : ""}`);
+            if (audience === "subscribers") await loadAutomation();
+        } catch (error) {
+            toast.error(error?.response?.data?.detail || "Send failed");
+        } finally {
+            setBusy(false);
+        }
     };
+
+    const dayOptions = [
+        "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
+    ];
 
     return (
         <div className="rounded-3xl border border-border bg-surface p-5">
-            <div className="flex items-center gap-2 mb-2">
-                <div className="h-9 w-9 rounded-2xl bg-primary/10 text-primary grid place-items-center"><Mail className="h-4 w-4" /></div>
-                <h3 className="font-display font-bold">Weekly newsletter</h3>
-            </div>
-            <p className="text-xs text-muted-foreground mb-3">Choose who to send to: digest subscribers, all organisations, or selected organisations.</p>
-            <select
-                data-testid="newsletter-audience"
-                value={audience}
-                onChange={(e) => setAudience(e.target.value)}
-                className="w-full mb-2 px-3 py-2 rounded-2xl border border-border bg-background text-sm"
-            >
-                <option value="subscribers">Subscribers (digest-enabled)</option>
-                <option value="orgs_all">All organisations with email</option>
-                <option value="orgs_selected">Selected organisations</option>
-            </select>
-            <input data-testid="newsletter-subject" value={subject} onChange={(e) => setSubject(e.target.value)} placeholder="Subject" className="w-full mb-2 px-3 py-2 rounded-2xl border border-border bg-background text-sm" />
-            <textarea data-testid="newsletter-intro" value={intro} onChange={(e) => setIntro(e.target.value)} rows={2} placeholder={audience === "subscribers" ? "Optional intro line…" : "Message for organisations…"} className="w-full mb-2 px-3 py-2 rounded-2xl border border-border bg-background text-sm" />
-            {audience === "orgs_selected" && (
-                <div className="mb-2 max-h-40 overflow-y-auto rounded-2xl border border-border bg-background p-2">
-                    {orgs
-                        .filter((org) => org.status !== "rejected")
-                        .sort((a, b) => (a.name || "").localeCompare(b.name || ""))
-                        .map((org) => (
-                            <label key={org.slug} className="flex items-center justify-between gap-3 px-2 py-1.5 rounded-xl hover:bg-muted text-sm">
-                                <span className="truncate">{org.name}</span>
-                                <input
-                                    type="checkbox"
-                                    checked={selectedOrgSlugs.includes(org.slug)}
-                                    onChange={() => toggleOrg(org.slug)}
-                                />
-                            </label>
-                        ))}
+            <div className="flex items-start justify-between gap-3 flex-wrap mb-4">
+                <div>
+                    <div className="flex items-center gap-2">
+                        <div className="h-9 w-9 rounded-2xl bg-primary/10 text-primary grid place-items-center">
+                            <Mail className="h-4 w-4" />
+                        </div>
+                        <div>
+                            <h3 className="font-display font-bold">Weekly newsletter</h3>
+                            <p className="text-xs text-muted-foreground">Personalised resident digest + organisation email tools.</p>
+                        </div>
+                    </div>
                 </div>
-            )}
-            <div className="flex gap-2">
-                <button data-testid="newsletter-preview" onClick={previewIt} className="inline-flex items-center gap-1 px-4 py-2 rounded-full border-2 border-foreground font-semibold text-xs">
-                    <Eye className="h-3.5 w-3.5" /> Preview
-                </button>
-                <button data-testid="newsletter-send" disabled={busy} onClick={send} className="inline-flex items-center gap-1 px-4 py-2 rounded-full bg-primary text-primary-foreground font-semibold text-xs disabled:opacity-60">
-                    <Send className="h-3.5 w-3.5" /> Send newsletter
-                </button>
+                <span className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider ${automation.enabled ? "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300" : "bg-muted text-muted-foreground"}`}>
+                    {automationLoading ? "Loading…" : automation.enabled ? "Automatic · on" : "Automatic · off"}
+                </span>
             </div>
+
+            <div className="rounded-2xl border border-primary/20 bg-primary/5 p-4">
+                <div className="flex items-center justify-between gap-3 flex-wrap">
+                    <div>
+                        <div className="text-xs font-black uppercase tracking-wider text-primary">Automatic resident digest</div>
+                        <div className="text-sm font-semibold mt-1">
+                            {automation.enabled
+                                ? `${String(automation.day || "friday").replace(/^./, (c) => c.toUpperCase())} at ${automation.time || "08:00"} · UK time`
+                                : "Automatic sending is disabled"}
+                        </div>
+                    </div>
+                    <label className="inline-flex items-center gap-2 text-xs font-semibold cursor-pointer">
+                        <input
+                            type="checkbox"
+                            checked={Boolean(automation.enabled)}
+                            onChange={(e) => setAutomation((current) => ({ ...current, enabled: e.target.checked }))}
+                            className="h-4 w-4 accent-primary"
+                        />
+                        Enabled
+                    </label>
+                </div>
+
+                <div className="grid sm:grid-cols-2 gap-2 mt-4">
+                    <label className="block">
+                        <span className="text-[10px] uppercase tracking-wider font-bold text-muted-foreground">Day</span>
+                        <select
+                            value={automation.day || "friday"}
+                            onChange={(e) => setAutomation((current) => ({ ...current, day: e.target.value }))}
+                            className="w-full mt-1 px-3 py-2 rounded-2xl border border-border bg-background text-sm"
+                        >
+                            {dayOptions.map((day) => (
+                                <option key={day} value={day}>{day.replace(/^./, (c) => c.toUpperCase())}</option>
+                            ))}
+                        </select>
+                    </label>
+                    <label className="block">
+                        <span className="text-[10px] uppercase tracking-wider font-bold text-muted-foreground">Time</span>
+                        <input
+                            type="time"
+                            value={automation.time || "08:00"}
+                            onChange={(e) => setAutomation((current) => ({ ...current, time: e.target.value }))}
+                            className="w-full mt-1 px-3 py-2 rounded-2xl border border-border bg-background text-sm"
+                        />
+                    </label>
+                </div>
+
+                <label className="block mt-2">
+                    <span className="text-[10px] uppercase tracking-wider font-bold text-muted-foreground">Automatic subject</span>
+                    <input
+                        value={automation.subject || ""}
+                        onChange={(e) => setAutomation((current) => ({ ...current, subject: e.target.value }))}
+                        className="w-full mt-1 px-3 py-2 rounded-2xl border border-border bg-background text-sm"
+                    />
+                </label>
+                <label className="block mt-2">
+                    <span className="text-[10px] uppercase tracking-wider font-bold text-muted-foreground">Editor's intro</span>
+                    <textarea
+                        value={automation.intro || ""}
+                        onChange={(e) => setAutomation((current) => ({ ...current, intro: e.target.value }))}
+                        rows={2}
+                        placeholder="Optional short message at the top of every weekly digest…"
+                        className="w-full mt-1 px-3 py-2 rounded-2xl border border-border bg-background text-sm"
+                    />
+                </label>
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 mt-3 text-xs">
+                    <div className="rounded-xl bg-background border border-border p-3">
+                        <div className="text-muted-foreground">Active subscribers</div>
+                        <div className="font-black text-lg mt-0.5">{automation.active_subscribers || 0}</div>
+                    </div>
+                    <div className="rounded-xl bg-background border border-border p-3">
+                        <div className="text-muted-foreground">Next automatic send</div>
+                        <div className="font-bold mt-1">{automation.enabled ? formatWhen(automation.next_run_local) : "Disabled"}</div>
+                    </div>
+                    <div className="rounded-xl bg-background border border-border p-3">
+                        <div className="text-muted-foreground">Last resident digest</div>
+                        <div className="font-bold mt-1">{formatWhen(automation.last_send?.sent_at)}</div>
+                        {automation.last_send?.sent_count !== undefined && automation.last_send?.sent_at && (
+                            <div className="text-[10px] text-muted-foreground mt-1">
+                                {automation.last_send.sent_count || 0} sent
+                                {automation.last_send.failed_count ? ` · ${automation.last_send.failed_count} failed` : ""}
+                            </div>
+                        )}
+                    </div>
+                </div>
+
+                {automation.last_auto_run?.status === "failed" && (
+                    <div className="mt-3 rounded-xl border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+                        Last automatic send failed: {automation.last_auto_run?.result?.error || "Unknown error"}
+                    </div>
+                )}
+
+                <div className="flex gap-2 flex-wrap mt-4">
+                    <button
+                        type="button"
+                        disabled={automationBusy || automationLoading}
+                        onClick={saveAutomation}
+                        className="px-4 py-2 rounded-full bg-primary text-primary-foreground font-semibold text-xs disabled:opacity-60"
+                    >
+                        {automationBusy ? "Saving…" : "Save schedule"}
+                    </button>
+                    <button
+                        type="button"
+                        disabled={automationBusy || automationLoading}
+                        onClick={() => previewIt(true)}
+                        className="inline-flex items-center gap-1 px-4 py-2 rounded-full border border-border bg-background font-semibold text-xs disabled:opacity-60"
+                    >
+                        <Eye className="h-3.5 w-3.5" /> Preview digest
+                    </button>
+                    <button
+                        type="button"
+                        disabled={automationBusy || automationLoading}
+                        onClick={sendAutomaticNow}
+                        className="inline-flex items-center gap-1 px-4 py-2 rounded-full border-2 border-foreground font-semibold text-xs disabled:opacity-60"
+                    >
+                        <Send className="h-3.5 w-3.5" /> Send now
+                    </button>
+                </div>
+            </div>
+
+            <div className="mt-5 pt-5 border-t border-border">
+                <div className="text-xs font-black uppercase tracking-wider text-muted-foreground mb-2">Manual / organisation email</div>
+                <p className="text-xs text-muted-foreground mb-3">
+                    Use this for an extra resident digest or to email all/selected organisations. Automatic Friday sending is controlled above.
+                </p>
+                <select
+                    data-testid="newsletter-audience"
+                    value={audience}
+                    onChange={(e) => setAudience(e.target.value)}
+                    className="w-full mb-2 px-3 py-2 rounded-2xl border border-border bg-background text-sm"
+                >
+                    <option value="subscribers">Subscribers (digest-enabled)</option>
+                    <option value="orgs_all">All organisations with email</option>
+                    <option value="orgs_selected">Selected organisations</option>
+                </select>
+                <input
+                    data-testid="newsletter-subject"
+                    value={subject}
+                    onChange={(e) => setSubject(e.target.value)}
+                    placeholder="Subject"
+                    className="w-full mb-2 px-3 py-2 rounded-2xl border border-border bg-background text-sm"
+                />
+                <textarea
+                    data-testid="newsletter-intro"
+                    value={intro}
+                    onChange={(e) => setIntro(e.target.value)}
+                    rows={2}
+                    placeholder={audience === "subscribers" ? "Optional intro line…" : "Message for organisations…"}
+                    className="w-full mb-2 px-3 py-2 rounded-2xl border border-border bg-background text-sm"
+                />
+                {audience === "orgs_selected" && (
+                    <div className="mb-2 max-h-40 overflow-y-auto rounded-2xl border border-border bg-background p-2">
+                        {orgs
+                            .filter((org) => org.status !== "rejected")
+                            .sort((a, b) => (a.name || "").localeCompare(b.name || ""))
+                            .map((org) => (
+                                <label key={org.slug} className="flex items-center justify-between gap-3 px-2 py-1.5 rounded-xl hover:bg-muted text-sm">
+                                    <span className="truncate">{org.name}</span>
+                                    <input
+                                        type="checkbox"
+                                        checked={selectedOrgSlugs.includes(org.slug)}
+                                        onChange={() => toggleOrg(org.slug)}
+                                    />
+                                </label>
+                            ))}
+                    </div>
+                )}
+                <div className="flex gap-2 flex-wrap">
+                    <button
+                        data-testid="newsletter-preview"
+                        onClick={() => previewIt(false)}
+                        className="inline-flex items-center gap-1 px-4 py-2 rounded-full border-2 border-foreground font-semibold text-xs"
+                    >
+                        <Eye className="h-3.5 w-3.5" /> Preview
+                    </button>
+                    <button
+                        data-testid="newsletter-send"
+                        disabled={busy}
+                        onClick={send}
+                        className="inline-flex items-center gap-1 px-4 py-2 rounded-full bg-primary text-primary-foreground font-semibold text-xs disabled:opacity-60"
+                    >
+                        <Send className="h-3.5 w-3.5" /> {busy ? "Sending…" : "Send now"}
+                    </button>
+                </div>
+            </div>
+
             <Dialog open={open} onOpenChange={setOpen}>
                 <DialogContent className="max-w-2xl">
                     <DialogHeader><DialogTitle>Newsletter preview</DialogTitle></DialogHeader>
                     {preview && (
                         <div>
                             <div className="text-xs text-muted-foreground mb-3">
-                                Preview shown with no personalisation — real emails will be tailored per subscriber.
-                                Matched events: <b>{preview.matched_events}</b>, updates: <b>{preview.matched_updates}</b>
+                                <div className="font-semibold text-foreground mb-1">{preview.subject}</div>
+                                Generic preview — real emails are personalised per subscriber.
+                                <div className="mt-1">
+                                    Weekend: <b>{preview.weekend_events ?? 0}</b> · Next week: <b>{preview.next_week_events ?? 0}</b> · Saved: <b>{preview.saved_events ?? 0}</b> · Updates: <b>{preview.matched_updates ?? 0}</b>
+                                </div>
                             </div>
                             <iframe title="preview" srcDoc={preview.html} className="w-full h-[500px] rounded-2xl border border-border" />
                         </div>
@@ -3858,7 +4247,28 @@ function SubscribersCard() {
                 {items.length === 0 && <p className="text-sm text-muted-foreground">No subscribers found.</p>}
                 {items.map((sub) => (
                     <div key={sub.id} className="rounded-2xl border border-border bg-background p-3">
-                        <div className="text-sm font-semibold truncate">{sub.email}</div>
+                        <div className="flex items-center justify-between gap-2">
+                            <div className="text-sm font-semibold truncate">{sub.email}</div>
+                            <button
+                                type="button"
+                                data-testid={`delete-subscriber-${sub.id}`}
+                                onClick={async () => {
+                                    if (!window.confirm(`Delete and unsubscribe ${sub.email}? They'll stop receiving all emails immediately.`)) return;
+                                    try {
+                                        await api.adminDeleteSubscriber(sub.id);
+                                        setItems((cur) => cur.filter((s) => s.id !== sub.id));
+                                        setSummary((s) => ({ ...s, total_active: Math.max(0, s.total_active - (sub.unsubscribed ? 0 : 1)) }));
+                                        toast.success(`${sub.email} deleted and unsubscribed`);
+                                    } catch {
+                                        toast.error("Could not delete subscriber");
+                                    }
+                                }}
+                                className="p-1.5 rounded-full hover:bg-red-50 text-red-600 shrink-0"
+                                title="Delete and unsubscribe"
+                            >
+                                <Trash2 className="h-3.5 w-3.5" />
+                            </button>
+                        </div>
                         <div className="text-xs text-muted-foreground mt-1 flex flex-wrap gap-x-3 gap-y-1">
                             <span>Digest: {sub.digest ? "Yes" : "No"}</span>
                             <span>Status: {sub.unsubscribed ? "Unsubscribed" : "Active"}</span>
@@ -4132,4 +4542,3 @@ function ModerationQueueCard() {
         </div>
     );
 }
-

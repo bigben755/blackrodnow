@@ -9,9 +9,13 @@ import {
     Menu,
     X,
     MapPin,
-    Mail,
-    Sparkles,
-    HelpCircle,
+    Heart,
+    Building2,
+    CalendarPlus,
+    LogIn,
+    UserPlus,
+    Users,
+    ChevronDown,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
@@ -32,31 +36,188 @@ import {
     DialogTitle,
 } from "@/components/ui/dialog";
 
-const ADMIN_LAUNCH_CODE = (process.env.REACT_APP_ADMIN_LAUNCH_CODE || "").trim();
+const ADMIN_LAUNCH_CODE = (
+    process.env.REACT_APP_ADMIN_LAUNCH_CODE || ""
+).trim();
 
 const NAV = [
-    { to: "/", label: "Home" },
-    { to: "/events", label: "Events" },
-    { to: "/saved-events", label: "Saved" },
-    { to: "/organisations", label: "Organisations" },
-    { to: "/local-feed", label: "Local Feed" },
-    { to: "/volunteering", label: "Volunteering" },
-    { to: "/venues", label: "Venues" },
-    { to: "/contact", label: "Contact" },
+    {
+        to: "/events",
+        label: "What's On",
+        testId: "events",
+    },
+    {
+        to: "/organisations",
+        label: "Local Directory",
+        testId: "organisations",
+    },
+    {
+        to: "/local-feed",
+        label: "Community Updates",
+        testId: "local-feed",
+    },
+    {
+        to: "/volunteering",
+        label: "Volunteering",
+        testId: "volunteering",
+    },
 ];
 
 export const Brand = ({ size = "default" }) => (
-    <Link to="/" data-testid="brand-link" className="flex items-center gap-2 group">
+    <Link
+        to="/"
+        data-testid="brand-link"
+        className="flex items-center gap-2 group shrink-0"
+    >
         <img
             src="/logo.png"
             alt="Blackrod Now"
-            className={`${size === "lg" ? "h-12 w-12" : "h-10 w-10"} object-contain group-hover:rotate-[-6deg] transition-transform duration-300`}
+            className={`${
+                size === "lg" ? "h-12 w-12" : "h-10 w-10"
+            } object-contain group-hover:rotate-[-6deg] transition-transform duration-300`}
         />
-        <span className="font-display font-black tracking-tight text-foreground text-xl leading-none">
+
+        <span
+            className={`font-display font-black tracking-tight text-foreground leading-none ${
+                size === "lg" ? "text-2xl" : "text-xl"
+            }`}
+        >
             Blackrod<span className="text-primary"> Now</span>
         </span>
     </Link>
 );
+
+function AdminSignInDialog({ open, onOpenChange }) {
+    const { unlockAdmin, loginAdmin } = useApp();
+
+    const [adminEmailInput, setAdminEmailInput] = useState("");
+    const [adminPasswordInput, setAdminPasswordInput] = useState("");
+    const [adminLoginBusy, setAdminLoginBusy] = useState(false);
+
+    const submitAdminLogin = async () => {
+        const email = (adminEmailInput || "").trim();
+        const password = adminPasswordInput || "";
+
+        // Legacy development/fallback route retained for compatibility.
+        // This should not be relied upon as the production authentication method.
+        if (
+            !email &&
+            ADMIN_LAUNCH_CODE &&
+            password.trim() === ADMIN_LAUNCH_CODE
+        ) {
+            unlockAdmin(password.trim());
+            setAdminEmailInput("");
+            setAdminPasswordInput("");
+            onOpenChange(false);
+            toast.success("Admin mode unlocked");
+            return;
+        }
+
+        if (!email || !password) {
+            toast.error("Enter admin email and password");
+            return;
+        }
+
+        setAdminLoginBusy(true);
+
+        try {
+            await loginAdmin(email, password);
+
+            setAdminEmailInput("");
+            setAdminPasswordInput("");
+            onOpenChange(false);
+
+            toast.success("Signed in as admin");
+        } catch (error) {
+            const detail = error?.response?.data?.detail;
+
+            toast.error(
+                typeof detail === "string" ? detail : "Login failed"
+            );
+        } finally {
+            setAdminLoginBusy(false);
+        }
+    };
+
+    return (
+        <Dialog open={open} onOpenChange={onOpenChange}>
+            <DialogContent
+                className="sm:max-w-md"
+                data-testid="admin-login-dialog"
+            >
+                <DialogHeader>
+                    <DialogTitle>Admin sign in</DialogTitle>
+
+                    <DialogDescription>
+                        Sign in with your Blackrod Now admin email and password.
+                        Access lasts 12 hours.
+                    </DialogDescription>
+                </DialogHeader>
+
+                <div className="space-y-4">
+                    <label className="text-sm block">
+                        <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                            Email
+                        </span>
+
+                        <input
+                            type="email"
+                            autoComplete="username"
+                            data-testid="admin-email-input"
+                            value={adminEmailInput}
+                            onChange={(e) =>
+                                setAdminEmailInput(e.target.value)
+                            }
+                            className="mt-1 w-full px-3 py-2 rounded-2xl border border-border bg-background text-base sm:text-sm"
+                        />
+                    </label>
+
+                    <label className="text-sm block">
+                        <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                            Password
+                        </span>
+
+                        <input
+                            type="password"
+                            autoComplete="current-password"
+                            data-testid="admin-password-input"
+                            value={adminPasswordInput}
+                            onChange={(e) =>
+                                setAdminPasswordInput(e.target.value)
+                            }
+                            onKeyDown={(e) => {
+                                if (e.key === "Enter") {
+                                    submitAdminLogin();
+                                }
+                            }}
+                            className="mt-1 w-full px-3 py-2 rounded-2xl border border-border bg-background text-base sm:text-sm"
+                        />
+                    </label>
+                </div>
+
+                <DialogFooter className="gap-2">
+                    <button
+                        type="button"
+                        onClick={() => onOpenChange(false)}
+                        className="px-4 py-2 rounded-full border border-border text-sm font-semibold"
+                    >
+                        Cancel
+                    </button>
+
+                    <button
+                        type="button"
+                        disabled={adminLoginBusy}
+                        data-testid="admin-login-submit"
+                        onClick={submitAdminLogin}
+                        className="px-4 py-2 rounded-full bg-primary text-primary-foreground text-sm font-semibold disabled:opacity-60"
+                    >
+                        {adminLoginBusy ? "Signing in…" : "Sign in"}
+                    </button>
+                </DialogFooter>
+            </DialogContent>
+        </Dialog>
+    );
+}
 
 function Navbar() {
     const {
@@ -65,486 +226,646 @@ function Navbar() {
         role,
         setRole,
         adminUnlocked,
-        unlockAdmin,
-        loginAdmin,
         lockAdmin,
         orgs,
         unlockOrgAccess,
         setActiveOrgSlug,
+        savedEventIds,
     } = useApp();
+
     const [open, setOpen] = useState(false);
-    const [adminLoginOpen, setAdminLoginOpen] = useState(false);
-    const [adminEmailInput, setAdminEmailInput] = useState("");
-    const [adminPasswordInput, setAdminPasswordInput] = useState("");
-    const [adminLoginBusy, setAdminLoginBusy] = useState(false);
+
     const [orgLoginOpen, setOrgLoginOpen] = useState(false);
     const [orgLoginBusy, setOrgLoginBusy] = useState(false);
     const [orgSlugInput, setOrgSlugInput] = useState("");
     const [orgPasswordInput, setOrgPasswordInput] = useState("");
+
     const location = useLocation();
     const navigate = useNavigate();
 
+    const savedCount = Array.isArray(savedEventIds)
+        ? savedEventIds.length
+        : 0;
+
     useEffect(() => {
-        if (!orgSlugInput && orgs.length) setOrgSlugInput(orgs[0].slug);
+        if (!orgSlugInput && orgs.length) {
+            setOrgSlugInput(orgs[0].slug);
+        }
     }, [orgs, orgSlugInput]);
 
     useEffect(() => {
         setOpen(false);
     }, [location.pathname]);
 
-    const submitAdminLogin = async () => {
-        const email = (adminEmailInput || "").trim();
-        const password = adminPasswordInput || "";
-        // Legacy: launch-code-only path (dev/fallback). If email is empty and
-        // the password field contains the launch code, keep the old behaviour.
-        if (!email && ADMIN_LAUNCH_CODE && password.trim() === ADMIN_LAUNCH_CODE) {
-            unlockAdmin(password.trim());
-            setAdminEmailInput("");
-            setAdminPasswordInput("");
-            setAdminLoginOpen(false);
-            toast.success("Admin mode unlocked (legacy)");
-            return;
-        }
-        if (!email || !password) {
-            toast.error("Enter admin email and password");
-            return;
-        }
-        setAdminLoginBusy(true);
-        try {
-            await loginAdmin(email, password);
-            setAdminEmailInput("");
-            setAdminPasswordInput("");
-            setAdminLoginOpen(false);
-            toast.success("Signed in as admin");
-        } catch (error) {
-            const detail = error?.response?.data?.detail;
-            toast.error(typeof detail === "string" ? detail : "Login failed");
-        } finally {
-            setAdminLoginBusy(false);
-        }
-    };
-
     const submitOrgLogin = async () => {
         if (!orgSlugInput) {
             toast.error("Select an organisation");
             return;
         }
+
         if (!orgPasswordInput.trim()) {
             toast.error("Enter organisation password");
             return;
         }
+
         setOrgLoginBusy(true);
+
         try {
-            const result = await api.loginOrgAccess(orgSlugInput, { password: orgPasswordInput.trim() });
-            unlockOrgAccess(orgSlugInput, result?.token || "");
+            const result = await api.loginOrgAccess(orgSlugInput, {
+                password: orgPasswordInput.trim(),
+            });
+
+            unlockOrgAccess(
+                orgSlugInput,
+                result?.token || ""
+            );
+
             setActiveOrgSlug(orgSlugInput);
             setRole("org");
+
             setOrgPasswordInput("");
             setOrgLoginOpen(false);
+
             toast.success("Organisation access granted");
+
             navigate("/organisation-dashboard");
         } catch (error) {
-            toast.error(error?.response?.data?.detail || "Organisation login failed");
+            toast.error(
+                error?.response?.data?.detail ||
+                    "Organisation login failed"
+            );
         } finally {
             setOrgLoginBusy(false);
         }
     };
 
     return (
-        <header
-            data-testid="site-header"
-            className="sticky top-0 z-[100] w-full backdrop-blur-xl bg-background/80 border-b border-border/60"
-        >
-            <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
-                <div className="flex items-center gap-8">
-                    <Brand />
+        <>
+            <header
+                data-testid="site-header"
+                className="sticky top-0 z-[100] w-full border-b border-border/60 bg-background/90 backdrop-blur-xl"
+            >
+                <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-4">
+                    <div className="flex items-center gap-7 min-w-0">
+                        <Brand />
 
-                    <nav className="hidden lg:flex items-center gap-1">
-                        {NAV.map((n) => (
-                            <NavLink
-                                key={n.to}
-                                to={n.to}
-                                end={n.to === "/"}
-                                data-testid={`nav-${n.label
-                                    .toLowerCase()
-                                    .replace(/\s+/g, "-")}`}
-                                className={({ isActive }) =>
-                                    `px-3 py-2 rounded-full text-sm font-medium transition-colors ${
-                                        isActive
-                                            ? "bg-foreground text-background"
-                                            : "text-foreground/70 hover:text-foreground hover:bg-muted"
-                                    }`
-                                }
-                            >
-                                {n.label}
-                            </NavLink>
-                        ))}
-                    </nav>
-                </div>
+                        <nav
+                            className="hidden lg:flex items-center gap-1"
+                            aria-label="Main navigation"
+                        >
+                            {NAV.map((n) => (
+                                <NavLink
+                                    key={n.to}
+                                    to={n.to}
+                                    data-testid={`nav-${n.testId}`}
+                                    className={({ isActive }) =>
+                                        `px-3 py-2 rounded-full text-sm font-medium whitespace-nowrap transition-colors ${
+                                            isActive
+                                                ? "bg-foreground text-background"
+                                                : "text-foreground/70 hover:text-foreground hover:bg-muted"
+                                        }`
+                                    }
+                                >
+                                    {n.label}
+                                </NavLink>
+                            ))}
+                        </nav>
+                    </div>
 
-                <div className="flex items-center gap-2">
-                    <Link
-                        to="/submit-event"
-                        data-testid="nav-add-event"
-                        className="hidden md:inline-flex items-center gap-1 px-4 py-2 rounded-full text-sm font-semibold bg-secondary text-secondary-foreground hover:scale-105 transition-transform shadow-sm shadow-secondary/30"
-                    >
-                        <Sparkles className="h-4 w-4" /> Add Event
-                    </Link>
+                    <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+                        <Link
+                            to="/saved-events"
+                            data-testid="nav-saved"
+                            className="hidden sm:inline-flex items-center gap-1.5 h-9 px-3 rounded-full text-sm font-semibold text-foreground/75 hover:text-foreground hover:bg-muted transition"
+                        >
+                            <Heart className="h-4 w-4" />
 
-                    <Link
-                        to="/add-organisation"
-                        data-testid="nav-add-org"
-                        className="hidden md:inline-flex items-center px-4 py-2 rounded-full text-sm font-semibold border-2 border-foreground text-foreground hover:bg-foreground hover:text-background transition"
-                    >
-                        Add Organisation
-                    </Link>
+                            <span>Saved</span>
 
-                    <Link
-                        to="/faq"
-                        data-testid="nav-help-centre-button"
-                        className="hidden xl:inline-flex items-center gap-1 px-4 py-2 rounded-full text-sm font-semibold border border-border bg-surface text-foreground hover:bg-muted transition"
-                    >
-                        <HelpCircle className="h-4 w-4" />
-                        Help
-                    </Link>
+                            {savedCount > 0 && (
+                                <span className="min-w-5 h-5 px-1.5 rounded-full bg-primary text-primary-foreground text-[10px] font-bold grid place-items-center">
+                                    {savedCount > 99
+                                        ? "99+"
+                                        : savedCount}
+                                </span>
+                            )}
+                        </Link>
 
-                    {adminUnlocked ? (
                         <DropdownMenu>
                             <DropdownMenuTrigger asChild>
                                 <Button
-                                    data-testid="role-switcher"
-                                    variant="ghost"
+                                    data-testid="nav-for-organisations"
+                                    variant="outline"
                                     size="sm"
-                                    className="rounded-full text-xs font-bold uppercase tracking-wider"
+                                    className="hidden md:inline-flex rounded-full gap-1.5 font-semibold border-foreground/20"
                                 >
-                                    {role === "guest"
-                                        ? "Resident"
-                                        : role === "org"
-                                        ? "Organisation"
-                                        : "Site Admin"}
+                                    <Building2 className="h-4 w-4" />
+
+                                    For organisations
+
+                                    <ChevronDown className="h-3.5 w-3.5 opacity-60" />
                                 </Button>
                             </DropdownMenuTrigger>
 
-                            <DropdownMenuContent align="end" className="rounded-2xl">
-                                <DropdownMenuLabel>Launch day role switcher</DropdownMenuLabel>
+                            <DropdownMenuContent
+                                align="end"
+                                className="w-72 rounded-2xl p-2"
+                            >
+                                <DropdownMenuLabel className="px-3 py-2">
+                                    <div className="font-display font-bold text-base text-foreground">
+                                        For organisations
+                                    </div>
+
+                                    <div className="font-normal text-xs text-muted-foreground mt-1 leading-relaxed">
+                                        Manage your presence or add something
+                                        to Blackrod Now.
+                                    </div>
+                                </DropdownMenuLabel>
+
                                 <DropdownMenuSeparator />
 
                                 <DropdownMenuItem
-                                    data-testid="role-guest"
-                                    onClick={() => setRole("guest")}
-                                >
-                                    <div className="flex flex-col gap-0.5">
-                                        <span>Resident</span>
-                                        <span className="text-[11px] text-muted-foreground">
-                                            Public browsing view seen by residents.
-                                        </span>
-                                    </div>
-                                </DropdownMenuItem>
-
-                                <DropdownMenuItem
-                                    data-testid="role-org"
-                                    onClick={() => setRole("org")}
-                                >
-                                    <div className="flex flex-col gap-0.5">
-                                        <span>Organisation</span>
-                                        <span className="text-[11px] text-muted-foreground">
-                                            Organisation tools and dashboard access.
-                                        </span>
-                                    </div>
-                                </DropdownMenuItem>
-
-                                <DropdownMenuItem
-                                    data-testid="role-admin"
-                                    onClick={() => setRole("admin")}
-                                >
-                                    <div className="flex flex-col gap-0.5">
-                                        <span>Site Admin</span>
-                                        <span className="text-[11px] text-muted-foreground">
-                                            Full moderation and publishing tools.
-                                        </span>
-                                    </div>
-                                </DropdownMenuItem>
-
-                                <DropdownMenuSeparator />
-
-                                <DropdownMenuItem asChild>
-                                    <Link to="/admin" data-testid="goto-admin">
-                                        Admin dashboard
-                                    </Link>
-                                </DropdownMenuItem>
-
-                                <DropdownMenuItem asChild>
-                                    <Link
-                                        to="/organisation-dashboard"
-                                        data-testid="goto-org-dashboard"
-                                    >
-                                        Organisation dashboard
-                                    </Link>
-                                </DropdownMenuItem>
-
-                                <DropdownMenuItem
-                                    data-testid="admin-logout"
-                                    onClick={() => {
-                                        lockAdmin();
-                                        toast.success("Returned to resident mode");
+                                    onSelect={(e) => {
+                                        e.preventDefault();
+                                        setOrgLoginOpen(true);
                                     }}
+                                    className="rounded-xl cursor-pointer"
                                 >
-                                    Exit admin mode
+                                    <LogIn className="h-4 w-4 mr-2" />
+
+                                    <div className="flex flex-col">
+                                        <span className="font-medium">
+                                            Manage your organisation
+                                        </span>
+
+                                        <span className="text-[11px] text-muted-foreground">
+                                            Sign in to your dashboard
+                                        </span>
+                                    </div>
+                                </DropdownMenuItem>
+
+                                <DropdownMenuItem
+                                    asChild
+                                    className="rounded-xl cursor-pointer"
+                                >
+                                    <Link to="/submit-event">
+                                        <CalendarPlus className="h-4 w-4 mr-2" />
+
+                                        <div className="flex flex-col">
+                                            <span className="font-medium">
+                                                Add an event
+                                            </span>
+
+                                            <span className="text-[11px] text-muted-foreground">
+                                                Tell Blackrod what's happening
+                                            </span>
+                                        </div>
+                                    </Link>
+                                </DropdownMenuItem>
+
+                                <DropdownMenuItem
+                                    asChild
+                                    className="rounded-xl cursor-pointer"
+                                >
+                                    <Link to="/add-organisation">
+                                        <UserPlus className="h-4 w-4 mr-2" />
+
+                                        <div className="flex flex-col">
+                                            <span className="font-medium">
+                                                Add your organisation
+                                            </span>
+
+                                            <span className="text-[11px] text-muted-foreground">
+                                                Create a free local listing
+                                            </span>
+                                        </div>
+                                    </Link>
+                                </DropdownMenuItem>
+
+                                <DropdownMenuSeparator />
+
+                                <DropdownMenuItem
+                                    asChild
+                                    className="rounded-xl cursor-pointer"
+                                >
+                                    <Link to="/organisation/member/login">
+                                        <Users className="h-4 w-4 mr-2" />
+                                        Member login or invite
+                                    </Link>
                                 </DropdownMenuItem>
                             </DropdownMenuContent>
                         </DropdownMenu>
-                    ) : (
-                        <>
-                            <Button
-                                data-testid="org-login-open"
-                                variant="ghost"
-                                size="sm"
-                                onClick={() => setOrgLoginOpen(true)}
-                                className="rounded-full text-xs font-bold uppercase tracking-wider"
-                            >
-                                Org login
-                            </Button>
-                            <Button
-                                data-testid="admin-login-open"
-                                variant="ghost"
-                                size="sm"
-                                onClick={() => setAdminLoginOpen(true)}
-                                className="rounded-full text-xs font-bold uppercase tracking-wider"
-                            >
-                                Admin login
-                            </Button>
-                        </>
-                    )}
 
-                    <button
-                        data-testid="theme-toggle"
-                        onClick={toggleTheme}
-                        className="h-9 w-9 grid place-items-center rounded-full border border-border bg-surface hover:bg-muted transition"
-                        aria-label="Toggle theme"
-                    >
-                        {theme === "dark" ? (
-                            <Sun className="h-4 w-4" />
-                        ) : (
-                            <Moon className="h-4 w-4" />
+                        {adminUnlocked && (
+                            <DropdownMenu>
+                                <DropdownMenuTrigger asChild>
+                                    <Button
+                                        data-testid="role-switcher"
+                                        variant="ghost"
+                                        size="sm"
+                                        className="hidden sm:inline-flex rounded-full text-xs font-bold uppercase tracking-wider"
+                                    >
+                                        {role === "guest"
+                                            ? "Resident"
+                                            : role === "org"
+                                            ? "Organisation"
+                                            : "Site Admin"}
+                                    </Button>
+                                </DropdownMenuTrigger>
+
+                                <DropdownMenuContent
+                                    align="end"
+                                    className="rounded-2xl w-64"
+                                >
+                                    <DropdownMenuLabel>
+                                        View site as
+                                    </DropdownMenuLabel>
+
+                                    <DropdownMenuSeparator />
+
+                                    <DropdownMenuItem
+                                        data-testid="role-guest"
+                                        onClick={() => setRole("guest")}
+                                    >
+                                        <div className="flex flex-col gap-0.5">
+                                            <span>Resident</span>
+
+                                            <span className="text-[11px] text-muted-foreground">
+                                                Public browsing experience.
+                                            </span>
+                                        </div>
+                                    </DropdownMenuItem>
+
+                                    <DropdownMenuItem
+                                        data-testid="role-org"
+                                        onClick={() => setRole("org")}
+                                    >
+                                        <div className="flex flex-col gap-0.5">
+                                            <span>Organisation</span>
+
+                                            <span className="text-[11px] text-muted-foreground">
+                                                Organisation tools and
+                                                dashboard.
+                                            </span>
+                                        </div>
+                                    </DropdownMenuItem>
+
+                                    <DropdownMenuItem
+                                        data-testid="role-admin"
+                                        onClick={() => setRole("admin")}
+                                    >
+                                        <div className="flex flex-col gap-0.5">
+                                            <span>Site Admin</span>
+
+                                            <span className="text-[11px] text-muted-foreground">
+                                                Moderation and publishing
+                                                tools.
+                                            </span>
+                                        </div>
+                                    </DropdownMenuItem>
+
+                                    <DropdownMenuSeparator />
+
+                                    <DropdownMenuItem asChild>
+                                        <Link
+                                            to="/admin"
+                                            data-testid="goto-admin"
+                                        >
+                                            Admin dashboard
+                                        </Link>
+                                    </DropdownMenuItem>
+
+                                    <DropdownMenuItem asChild>
+                                        <Link
+                                            to="/organisation-dashboard"
+                                            data-testid="goto-org-dashboard"
+                                        >
+                                            Organisation dashboard
+                                        </Link>
+                                    </DropdownMenuItem>
+
+                                    <DropdownMenuSeparator />
+
+                                    <DropdownMenuItem
+                                        data-testid="admin-logout"
+                                        onClick={() => {
+                                            lockAdmin();
+                                            toast.success(
+                                                "Returned to resident mode"
+                                            );
+                                        }}
+                                    >
+                                        Exit admin mode
+                                    </DropdownMenuItem>
+                                </DropdownMenuContent>
+                            </DropdownMenu>
                         )}
-                    </button>
 
-                    <button
-                        data-testid="mobile-menu-toggle"
-                        className="lg:hidden h-9 w-9 grid place-items-center rounded-full border border-border bg-surface"
-                        onClick={() => setOpen((o) => !o)}
-                        aria-label="Open menu"
-                    >
-                        {open ? (
-                            <X className="h-4 w-4" />
-                        ) : (
-                            <Menu className="h-4 w-4" />
-                        )}
-                    </button>
-                </div>
-            </div>
-
-            {open && (
-                <div
-                    data-testid="mobile-menu"
-                    className="lg:hidden border-t border-border bg-background px-4 py-3 space-y-1"
-                >
-                    {NAV.map((n) => (
-                        <NavLink
-                            key={n.to}
-                            to={n.to}
-                            end={n.to === "/"}
-                            onClick={() => setOpen(false)}
-                            data-testid={`mobile-nav-${n.label
-                                .toLowerCase()
-                                .replace(/\s+/g, "-")}`}
-                            className={({ isActive }) =>
-                                `block px-3 py-2 rounded-xl text-sm font-medium ${
-                                    isActive
-                                        ? "bg-foreground text-background"
-                                        : "text-foreground/80"
-                                }`
+                        <button
+                            data-testid="theme-toggle"
+                            onClick={toggleTheme}
+                            className="h-9 w-9 grid place-items-center rounded-full border border-border bg-surface hover:bg-muted transition"
+                            aria-label={
+                                theme === "dark"
+                                    ? "Switch to light mode"
+                                    : "Switch to dark mode"
                             }
                         >
-                            {n.label}
-                        </NavLink>
-                    ))}
+                            {theme === "dark" ? (
+                                <Sun className="h-4 w-4" />
+                            ) : (
+                                <Moon className="h-4 w-4" />
+                            )}
+                        </button>
 
-                    <div className="flex gap-2 pt-2">
-                        <Link
-                            to="/submit-event"
-                            onClick={() => setOpen(false)}
-                            className="flex-1 text-center px-3 py-2 rounded-full text-sm font-semibold bg-secondary text-secondary-foreground"
+                        <button
+                            data-testid="mobile-menu-toggle"
+                            className="lg:hidden h-9 w-9 grid place-items-center rounded-full border border-border bg-surface hover:bg-muted transition"
+                            onClick={() => setOpen((o) => !o)}
+                            aria-label={
+                                open
+                                    ? "Close navigation menu"
+                                    : "Open navigation menu"
+                            }
+                            aria-expanded={open}
                         >
-                            Add Event
-                        </Link>
-
-                        <Link
-                            to="/add-organisation"
-                            onClick={() => setOpen(false)}
-                            className="flex-1 text-center px-3 py-2 rounded-full text-sm font-semibold border-2 border-foreground"
-                        >
-                            Add Org
-                        </Link>
+                            {open ? (
+                                <X className="h-4 w-4" />
+                            ) : (
+                                <Menu className="h-4 w-4" />
+                            )}
+                        </button>
                     </div>
-
-                    {!adminUnlocked && (
-                        <>
-                            <button
-                                type="button"
-                                onClick={() => {
-                                    setOpen(false);
-                                    setOrgLoginOpen(true);
-                                }}
-                                className="w-full mt-2 px-3 py-2 rounded-full text-sm font-semibold border border-border"
-                            >
-                                Org login
-                            </button>
-                            <button
-                                type="button"
-                                onClick={() => {
-                                    setOpen(false);
-                                    setAdminLoginOpen(true);
-                                }}
-                                className="w-full mt-2 px-3 py-2 rounded-full text-sm font-semibold border border-border"
-                            >
-                                Admin login
-                            </button>
-                        </>
-                    )}
                 </div>
-            )}
 
-            {orgLoginOpen && (
-                <Dialog open={orgLoginOpen} onOpenChange={setOrgLoginOpen}>
-                    <DialogContent className="sm:max-w-md">
-                        <DialogHeader>
-                            <DialogTitle>Organisation access</DialogTitle>
-                            <DialogDescription>
-                                Enter your organisation password to open your dashboard.
-                            </DialogDescription>
-                        </DialogHeader>
+                {open && (
+                    <div
+                        data-testid="mobile-menu"
+                        className="lg:hidden border-t border-border bg-background"
+                    >
+                        <div className="max-w-7xl mx-auto px-4 sm:px-6 py-4">
+                            <nav
+                                className="space-y-1"
+                                aria-label="Mobile navigation"
+                            >
+                                {NAV.map((n) => (
+                                    <NavLink
+                                        key={n.to}
+                                        to={n.to}
+                                        onClick={() =>
+                                            setOpen(false)
+                                        }
+                                        data-testid={`mobile-nav-${n.testId}`}
+                                        className={({ isActive }) =>
+                                            `block px-4 py-3 rounded-2xl text-sm font-semibold ${
+                                                isActive
+                                                    ? "bg-foreground text-background"
+                                                    : "text-foreground/80 hover:bg-muted"
+                                            }`
+                                        }
+                                    >
+                                        {n.label}
+                                    </NavLink>
+                                ))}
 
-                        <label className="text-sm">
-                            <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Organisation</span>
+                                <NavLink
+                                    to="/saved-events"
+                                    onClick={() => setOpen(false)}
+                                    data-testid="mobile-nav-saved"
+                                    className={({ isActive }) =>
+                                        `flex items-center justify-between px-4 py-3 rounded-2xl text-sm font-semibold ${
+                                            isActive
+                                                ? "bg-foreground text-background"
+                                                : "text-foreground/80 hover:bg-muted"
+                                        }`
+                                    }
+                                >
+                                    <span className="inline-flex items-center gap-2">
+                                        <Heart className="h-4 w-4" />
+                                        Saved events
+                                    </span>
+
+                                    {savedCount > 0 && (
+                                        <span className="min-w-6 h-6 px-1.5 rounded-full bg-primary text-primary-foreground text-[10px] font-bold grid place-items-center">
+                                            {savedCount > 99
+                                                ? "99+"
+                                                : savedCount}
+                                        </span>
+                                    )}
+                                </NavLink>
+                            </nav>
+
+                            <div className="my-4 border-t border-border" />
+
+                            <div className="rounded-3xl border border-border bg-surface p-4">
+                                <div className="flex items-start gap-3">
+                                    <div className="h-10 w-10 rounded-2xl bg-primary/10 flex items-center justify-center shrink-0">
+                                        <Building2 className="h-5 w-5 text-primary" />
+                                    </div>
+
+                                    <div>
+                                        <h3 className="font-display font-bold text-base">
+                                            For organisations
+                                        </h3>
+
+                                        <p className="text-xs text-muted-foreground mt-1 leading-relaxed">
+                                            Manage your page, publish events
+                                            or get your organisation listed.
+                                        </p>
+                                    </div>
+                                </div>
+
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        setOpen(false);
+                                        setOrgLoginOpen(true);
+                                    }}
+                                    className="mt-4 w-full px-4 py-2.5 rounded-full bg-primary text-primary-foreground text-sm font-semibold"
+                                >
+                                    Manage your organisation
+                                </button>
+
+                                <div className="grid grid-cols-2 gap-2 mt-2">
+                                    <Link
+                                        to="/submit-event"
+                                        onClick={() =>
+                                            setOpen(false)
+                                        }
+                                        className="text-center px-3 py-2.5 rounded-full border border-border text-sm font-semibold hover:bg-muted transition"
+                                    >
+                                        Add event
+                                    </Link>
+
+                                    <Link
+                                        to="/add-organisation"
+                                        onClick={() =>
+                                            setOpen(false)
+                                        }
+                                        className="text-center px-3 py-2.5 rounded-full border border-border text-sm font-semibold hover:bg-muted transition"
+                                    >
+                                        Get listed
+                                    </Link>
+                                </div>
+
+                                <Link
+                                    to="/organisation/member/login"
+                                    onClick={() =>
+                                        setOpen(false)
+                                    }
+                                    className="mt-3 block text-center text-xs font-semibold text-primary hover:underline"
+                                >
+                                    Organisation member login or invite
+                                </Link>
+                            </div>
+
+                            {adminUnlocked && (
+                                <div className="mt-3 rounded-2xl border border-border px-4 py-3">
+                                    <div className="text-xs uppercase tracking-wider font-bold text-muted-foreground">
+                                        Admin mode
+                                    </div>
+
+                                    <div className="flex gap-2 mt-2">
+                                        <Link
+                                            to="/admin"
+                                            onClick={() =>
+                                                setOpen(false)
+                                            }
+                                            className="flex-1 text-center px-3 py-2 rounded-full bg-foreground text-background text-sm font-semibold"
+                                        >
+                                            Admin
+                                        </Link>
+
+                                        <Link
+                                            to="/organisation-dashboard"
+                                            onClick={() =>
+                                                setOpen(false)
+                                            }
+                                            className="flex-1 text-center px-3 py-2 rounded-full border border-border text-sm font-semibold"
+                                        >
+                                            Organisations
+                                        </Link>
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                )}
+            </header>
+
+            <Dialog
+                open={orgLoginOpen}
+                onOpenChange={setOrgLoginOpen}
+            >
+                <DialogContent className="sm:max-w-md">
+                    <DialogHeader>
+                        <DialogTitle>
+                            Manage your organisation
+                        </DialogTitle>
+
+                        <DialogDescription>
+                            Choose your organisation and enter its password
+                            to open the management dashboard.
+                        </DialogDescription>
+                    </DialogHeader>
+
+                    <div className="space-y-4">
+                        <label className="text-sm block">
+                            <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                                Organisation
+                            </span>
+
                             <select
                                 value={orgSlugInput}
-                                onChange={(e) => setOrgSlugInput(e.target.value)}
-                                className="mt-1 w-full px-3 py-2 rounded-2xl border border-border bg-background"
+                                onChange={(e) =>
+                                    setOrgSlugInput(
+                                        e.target.value
+                                    )
+                                }
+                                className="mt-1 w-full px-3 py-2.5 rounded-2xl border border-border bg-background text-base sm:text-sm"
                             >
                                 {orgs.map((o) => (
-                                    <option key={o.slug} value={o.slug}>{o.name}</option>
+                                    <option
+                                        key={o.slug}
+                                        value={o.slug}
+                                    >
+                                        {o.name}
+                                    </option>
                                 ))}
                             </select>
                         </label>
 
-                        <label className="text-sm">
-                            <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Password</span>
-                            <input
-                                type="password"
-                                value={orgPasswordInput}
-                                onChange={(e) => setOrgPasswordInput(e.target.value)}
-                                onKeyDown={(e) => {
-                                    if (e.key === "Enter") submitOrgLogin();
-                                }}
-                                className="mt-1 w-full px-3 py-2 rounded-2xl border border-border bg-background"
-                            />
-                        </label>
-
-                        <DialogFooter>
-                            <Link
-                                to="/organisation/member/login"
-                                onClick={() => setOrgLoginOpen(false)}
-                                className="mr-auto text-xs font-semibold text-primary hover:underline"
-                            >
-                                Member login or invite redeem
-                            </Link>
-                            <button
-                                type="button"
-                                onClick={() => setOrgLoginOpen(false)}
-                                className="px-4 py-2 rounded-full border border-border text-sm font-semibold"
-                            >
-                                Cancel
-                            </button>
-                            <button
-                                type="button"
-                                disabled={orgLoginBusy}
-                                onClick={submitOrgLogin}
-                                className="px-4 py-2 rounded-full bg-primary text-primary-foreground text-sm font-semibold disabled:opacity-60"
-                            >
-                                Unlock
-                            </button>
-                        </DialogFooter>
-                    </DialogContent>
-                </Dialog>
-            )}
-
-            {adminLoginOpen && (
-                <Dialog open={adminLoginOpen} onOpenChange={setAdminLoginOpen}>
-                    <DialogContent className="sm:max-w-md" data-testid="admin-login-dialog">
-                        <DialogHeader>
-                            <DialogTitle>Admin sign in</DialogTitle>
-                            <DialogDescription>
-                                Sign in with your admin email and password. Access lasts 12 hours.
-                            </DialogDescription>
-                        </DialogHeader>
-
                         <label className="text-sm block">
-                            <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Email</span>
-                            <input
-                                type="email"
-                                autoComplete="username"
-                                data-testid="admin-email-input"
-                                value={adminEmailInput}
-                                onChange={(e) => setAdminEmailInput(e.target.value)}
-                                className="mt-1 w-full px-3 py-2 rounded-2xl border border-border bg-background"
-                            />
-                        </label>
+                            <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                                Organisation password
+                            </span>
 
-                        <label className="text-sm block mt-3">
-                            <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Password</span>
                             <input
                                 type="password"
                                 autoComplete="current-password"
-                                data-testid="admin-password-input"
-                                value={adminPasswordInput}
-                                onChange={(e) => setAdminPasswordInput(e.target.value)}
+                                value={orgPasswordInput}
+                                onChange={(e) =>
+                                    setOrgPasswordInput(
+                                        e.target.value
+                                    )
+                                }
                                 onKeyDown={(e) => {
-                                    if (e.key === "Enter") submitAdminLogin();
+                                    if (e.key === "Enter") {
+                                        submitOrgLogin();
+                                    }
                                 }}
-                                className="mt-1 w-full px-3 py-2 rounded-2xl border border-border bg-background"
+                                className="mt-1 w-full px-3 py-2.5 rounded-2xl border border-border bg-background text-base sm:text-sm"
                             />
                         </label>
 
-                        <DialogFooter>
-                            <button
-                                type="button"
-                                onClick={() => setAdminLoginOpen(false)}
-                                className="px-4 py-2 rounded-full border border-border text-sm font-semibold"
-                            >
-                                Cancel
-                            </button>
-                            <button
-                                type="button"
-                                disabled={adminLoginBusy}
-                                data-testid="admin-login-submit"
-                                onClick={submitAdminLogin}
-                                className="px-4 py-2 rounded-full bg-primary text-primary-foreground text-sm font-semibold disabled:opacity-60"
-                            >
-                                {adminLoginBusy ? "Signing in…" : "Sign in"}
-                            </button>
-                        </DialogFooter>
-                    </DialogContent>
-                </Dialog>
-            )}
-        </header>
+                        <div className="rounded-2xl bg-muted/40 p-3 text-xs text-muted-foreground">
+                            Are you an organisation member with an invitation?
+                            Use the member login instead.
+                        </div>
+                    </div>
+
+                    <DialogFooter className="gap-2">
+                        <Link
+                            to="/organisation/member/login"
+                            onClick={() =>
+                                setOrgLoginOpen(false)
+                            }
+                            className="mr-auto text-xs font-semibold text-primary hover:underline"
+                        >
+                            Member login or invite
+                        </Link>
+
+                        <button
+                            type="button"
+                            onClick={() =>
+                                setOrgLoginOpen(false)
+                            }
+                            className="px-4 py-2 rounded-full border border-border text-sm font-semibold"
+                        >
+                            Cancel
+                        </button>
+
+                        <button
+                            type="button"
+                            disabled={orgLoginBusy}
+                            onClick={submitOrgLogin}
+                            className="px-4 py-2 rounded-full bg-primary text-primary-foreground text-sm font-semibold disabled:opacity-60"
+                        >
+                            {orgLoginBusy
+                                ? "Signing in…"
+                                : "Open dashboard"}
+                        </button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
+        </>
     );
 }
 
-function Footer() {
-    const { role } = useApp();
+function Footer({ onAdminLoginOpen }) {
     const [wizardOpen, setWizardOpen] = useState(false);
     const [wizardBusy, setWizardBusy] = useState(false);
+
     const [wizardForm, setWizardForm] = useState({
         name: "",
         email: "",
@@ -556,11 +877,19 @@ function Footer() {
     });
 
     const submitWizardForm = async () => {
-        if (!wizardForm.name || !wizardForm.email || !wizardForm.details) {
-            toast.error("Please add your name, email and project details");
+        if (
+            !wizardForm.name ||
+            !wizardForm.email ||
+            !wizardForm.details
+        ) {
+            toast.error(
+                "Please add your name, email and project details"
+            );
             return;
         }
+
         setWizardBusy(true);
+
         try {
             await api.webWizardEnquiry({
                 from_name: wizardForm.name,
@@ -571,8 +900,13 @@ function Footer() {
                 timeline: wizardForm.timeline,
                 details: wizardForm.details,
             });
-            toast.success("Thanks, your Web Design Wizard enquiry has been sent");
+
+            toast.success(
+                "Thanks, your Web Design Wizard enquiry has been sent"
+            );
+
             setWizardOpen(false);
+
             setWizardForm({
                 name: "",
                 email: "",
@@ -583,7 +917,9 @@ function Footer() {
                 details: "",
             });
         } catch {
-            toast.error("Could not send your enquiry right now");
+            toast.error(
+                "Could not send your enquiry right now"
+            );
         } finally {
             setWizardBusy(false);
         }
@@ -594,18 +930,22 @@ function Footer() {
             data-testid="site-footer"
             className="mt-24 border-t border-border bg-surface"
         >
-            <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12 grid gap-10 grid-cols-2 md:grid-cols-4">
-                <div className="col-span-2">
+            <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12 grid gap-10 sm:grid-cols-2 lg:grid-cols-4">
+                <div className="sm:col-span-2 lg:col-span-2">
                     <Brand size="lg" />
 
-                    <p className="mt-4 text-sm text-muted-foreground max-w-sm leading-relaxed">
-                        What's on, what's new, what's next. Blackrod's community hub
-                        for events, groups, clubs, schools, businesses and projects.
+                    <p className="mt-4 text-sm text-muted-foreground max-w-md leading-relaxed">
+                        What's on, what's new, what's next.
+                        Blackrod's community hub for local events,
+                        groups, clubs, schools, businesses,
+                        volunteering and community projects.
                     </p>
 
                     <div className="flex items-center gap-3 mt-4 text-muted-foreground">
                         <MapPin className="h-4 w-4" />
-                        <span className="text-sm">Blackrod, Bolton</span>
+                        <span className="text-sm">
+                            Blackrod, Bolton
+                        </span>
                     </div>
                 </div>
 
@@ -614,35 +954,58 @@ function Footer() {
                         Explore
                     </div>
 
-                    <ul className="space-y-2 text-sm text-muted-foreground">
+                    <ul className="space-y-2.5 text-sm text-muted-foreground">
                         <li>
-                            <Link to="/events" className="hover:text-foreground">
-                                Events
+                            <Link
+                                to="/events"
+                                className="hover:text-foreground transition"
+                            >
+                                What's On
                             </Link>
                         </li>
+
                         <li>
-                            <Link to="/organisations" className="hover:text-foreground">
-                                Organisations
+                            <Link
+                                to="/organisations"
+                                className="hover:text-foreground transition"
+                            >
+                                Local Directory
                             </Link>
                         </li>
+
                         <li>
-                            <Link to="/local-feed" className="hover:text-foreground">
-                                Local Feed
+                            <Link
+                                to="/local-feed"
+                                className="hover:text-foreground transition"
+                            >
+                                Community Updates
                             </Link>
                         </li>
+
                         <li>
-                            <Link to="/volunteering" className="hover:text-foreground">
+                            <Link
+                                to="/volunteering"
+                                className="hover:text-foreground transition"
+                            >
                                 Volunteering
                             </Link>
                         </li>
+
                         <li>
-                            <Link to="/venues" className="hover:text-foreground">
-                                Venues
+                            <Link
+                                to="/venues"
+                                className="hover:text-foreground transition"
+                            >
+                                Local venues
                             </Link>
                         </li>
+
                         <li>
-                            <Link to="/faq" className="hover:text-foreground">
-                                Help Centre
+                            <Link
+                                to="/saved-events"
+                                className="hover:text-foreground transition"
+                            >
+                                Saved events
                             </Link>
                         </li>
                     </ul>
@@ -650,36 +1013,61 @@ function Footer() {
 
                 <div>
                     <div className="font-display font-bold text-sm uppercase tracking-wider mb-3">
-                        Contribute
+                        Get involved
                     </div>
 
-                    <ul className="space-y-2 text-sm text-muted-foreground">
+                    <ul className="space-y-2.5 text-sm text-muted-foreground">
                         <li>
-                            <Link to="/submit-event" className="hover:text-foreground">
-                                Submit Event
+                            <Link
+                                to="/submit-event"
+                                className="hover:text-foreground transition"
+                            >
+                                Add an event
                             </Link>
                         </li>
+
                         <li>
                             <Link
                                 to="/add-organisation"
-                                className="hover:text-foreground"
+                                className="hover:text-foreground transition"
                             >
-                                Add Organisation
+                                Add your organisation
                             </Link>
                         </li>
+
                         <li>
-                            <Link to="/notifications" className="hover:text-foreground">
+                            <Link
+                                to="/organisation/member/login"
+                                className="hover:text-foreground transition"
+                            >
+                                Organisation member login
+                            </Link>
+                        </li>
+
+                        <li>
+                            <Link
+                                to="/notifications"
+                                className="hover:text-foreground transition"
+                            >
                                 Notification settings
                             </Link>
                         </li>
+
                         <li>
-                            <Link to="/faq" className="hover:text-foreground">
+                            <Link
+                                to="/faq"
+                                className="hover:text-foreground transition"
+                            >
                                 Help & FAQs
                             </Link>
                         </li>
+
                         <li>
-                            <Link to="/contact" className="hover:text-foreground">
-                                Contact
+                            <Link
+                                to="/contact"
+                                className="hover:text-foreground transition"
+                            >
+                                Contact Blackrod Now
                             </Link>
                         </li>
                     </ul>
@@ -687,125 +1075,304 @@ function Footer() {
             </div>
 
             <div className="border-t border-border">
-                <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-5 flex flex-col sm:flex-row gap-3 items-center justify-between text-xs text-muted-foreground">
-                    <span>
-                        © {new Date().getFullYear()} Blackrod Now. A community
-                        project.
-                    </span>
-
-                    <div className="flex items-center gap-3 text-sm font-semibold text-foreground">
-                        <span>This website was designed and created by The Web Design Wizard</span>
-                        <button
-                            type="button"
-                            onClick={() => setWizardOpen(true)}
-                            className="rounded-2xl p-1 hover:bg-muted transition-colors"
-                            aria-label="Open Web Design Wizard contact form"
-                        >
-                            <img
-                                src="/webwizard.png"
-                                alt="The Web Design Wizard logo"
-                                className="h-[5.625rem] sm:h-[6.75rem] w-auto"
-                                loading="lazy"
-                            />
-                        </button>
+                <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-5 flex flex-col lg:flex-row gap-5 lg:items-center lg:justify-between text-xs text-muted-foreground">
+                    <div>
+                        © {new Date().getFullYear()} Blackrod Now.
+                        A community project.
                     </div>
 
-                    <div className="flex items-center gap-4">
-                        <Link to="/privacy" className="hover:text-foreground">
+                    <button
+                        type="button"
+                        onClick={() => setWizardOpen(true)}
+                        className="inline-flex w-fit items-center gap-2 text-muted-foreground hover:text-foreground transition"
+                        aria-label="Contact The Web Design Wizard"
+                    >
+                        <span>
+                            Website by{" "}
+                            <span className="font-semibold">
+                                The Web Design Wizard
+                            </span>
+                        </span>
+
+                        <img
+                            src="/webwizard.png"
+                            alt=""
+                            className="h-8 w-auto object-contain"
+                            loading="lazy"
+                        />
+                    </button>
+
+                    <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+                        <Link
+                            to="/privacy"
+                            className="hover:text-foreground transition"
+                        >
                             Privacy
                         </Link>
 
-                        <Link to="/terms" className="hover:text-foreground">
+                        <Link
+                            to="/terms"
+                            className="hover:text-foreground transition"
+                        >
                             Terms
                         </Link>
 
-                        <Link to="/faq" className="hover:text-foreground">
+                        <Link
+                            to="/faq"
+                            className="hover:text-foreground transition"
+                        >
                             Help
                         </Link>
 
+                        <button
+                            type="button"
+                            onClick={onAdminLoginOpen}
+                            className="hover:text-foreground transition"
+                        >
+                            Site admin
+                        </button>
                     </div>
                 </div>
             </div>
 
-            {wizardOpen && (
-                <Dialog open={wizardOpen} onOpenChange={setWizardOpen}>
-                    <DialogContent className="w-[calc(100vw-1.25rem)] sm:max-w-xl max-h-[88vh] overflow-y-auto p-4 sm:p-6">
+            <Dialog
+                open={wizardOpen}
+                onOpenChange={setWizardOpen}
+            >
+                <DialogContent className="w-[calc(100vw-1.25rem)] sm:max-w-xl max-h-[88vh] overflow-y-auto p-4 sm:p-6">
                     <DialogHeader>
-                        <DialogTitle>The Web Design Wizard</DialogTitle>
+                        <DialogTitle>
+                            The Web Design Wizard
+                        </DialogTitle>
+
                         <DialogDescription>
-                            Tell us what you need and we will follow up with service options and a quote.
+                            Tell us what you need and we will follow
+                            up with service options and a quote.
                         </DialogDescription>
                     </DialogHeader>
 
                     <div className="space-y-3">
                         <div className="rounded-2xl border border-border bg-muted/30 p-3 text-sm">
-                            <p className="font-semibold">Web design and development services</p>
-                            <p className="text-muted-foreground mt-1">Brand-led websites, UX improvements, and full build support for local organisations and businesses.</p>
+                            <p className="font-semibold">
+                                Web design and development services
+                            </p>
+
+                            <p className="text-muted-foreground mt-1">
+                                Brand-led websites, UX improvements,
+                                and full build support for local
+                                organisations and businesses.
+                            </p>
                         </div>
 
                         <div className="grid sm:grid-cols-2 gap-3">
                             <label className="text-sm">
-                                <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Name</span>
-                                <input value={wizardForm.name} onChange={(e) => setWizardForm((prev) => ({ ...prev, name: e.target.value }))} className="mt-1 w-full px-3 py-2 rounded-2xl border border-border bg-background text-base sm:text-sm" />
+                                <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                                    Name
+                                </span>
+
+                                <input
+                                    value={wizardForm.name}
+                                    onChange={(e) =>
+                                        setWizardForm((prev) => ({
+                                            ...prev,
+                                            name: e.target.value,
+                                        }))
+                                    }
+                                    className="mt-1 w-full px-3 py-2 rounded-2xl border border-border bg-background text-base sm:text-sm"
+                                />
                             </label>
+
                             <label className="text-sm">
-                                <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Email</span>
-                                <input type="email" value={wizardForm.email} onChange={(e) => setWizardForm((prev) => ({ ...prev, email: e.target.value }))} className="mt-1 w-full px-3 py-2 rounded-2xl border border-border bg-background text-base sm:text-sm" />
+                                <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                                    Email
+                                </span>
+
+                                <input
+                                    type="email"
+                                    value={wizardForm.email}
+                                    onChange={(e) =>
+                                        setWizardForm((prev) => ({
+                                            ...prev,
+                                            email: e.target.value,
+                                        }))
+                                    }
+                                    className="mt-1 w-full px-3 py-2 rounded-2xl border border-border bg-background text-base sm:text-sm"
+                                />
                             </label>
                         </div>
 
                         <div className="grid sm:grid-cols-2 gap-3">
                             <label className="text-sm">
-                                <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Business or organisation</span>
-                                <input value={wizardForm.business} onChange={(e) => setWizardForm((prev) => ({ ...prev, business: e.target.value }))} className="mt-1 w-full px-3 py-2 rounded-2xl border border-border bg-background text-base sm:text-sm" />
+                                <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                                    Business or organisation
+                                </span>
+
+                                <input
+                                    value={wizardForm.business}
+                                    onChange={(e) =>
+                                        setWizardForm((prev) => ({
+                                            ...prev,
+                                            business:
+                                                e.target.value,
+                                        }))
+                                    }
+                                    className="mt-1 w-full px-3 py-2 rounded-2xl border border-border bg-background text-base sm:text-sm"
+                                />
                             </label>
+
                             <label className="text-sm">
-                                <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Service required</span>
-                                <select value={wizardForm.service} onChange={(e) => setWizardForm((prev) => ({ ...prev, service: e.target.value }))} className="mt-1 w-full px-3 py-2 rounded-2xl border border-border bg-background text-base sm:text-sm">
-                                    <option>Website design and build</option>
-                                    <option>Website redesign</option>
-                                    <option>Landing page and conversion optimisation</option>
-                                    <option>Ongoing website support</option>
-                                    <option>Branding and web strategy</option>
+                                <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                                    Service required
+                                </span>
+
+                                <select
+                                    value={wizardForm.service}
+                                    onChange={(e) =>
+                                        setWizardForm((prev) => ({
+                                            ...prev,
+                                            service:
+                                                e.target.value,
+                                        }))
+                                    }
+                                    className="mt-1 w-full px-3 py-2 rounded-2xl border border-border bg-background text-base sm:text-sm"
+                                >
+                                    <option>
+                                        Website design and build
+                                    </option>
+
+                                    <option>
+                                        Website redesign
+                                    </option>
+
+                                    <option>
+                                        Landing page and conversion
+                                        optimisation
+                                    </option>
+
+                                    <option>
+                                        Ongoing website support
+                                    </option>
+
+                                    <option>
+                                        Branding and web strategy
+                                    </option>
                                 </select>
                             </label>
                         </div>
 
                         <div className="grid sm:grid-cols-2 gap-3">
                             <label className="text-sm">
-                                <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Budget range</span>
-                                <input value={wizardForm.budget} onChange={(e) => setWizardForm((prev) => ({ ...prev, budget: e.target.value }))} placeholder="e.g. GBP2,000 to GBP5,000" className="mt-1 w-full px-3 py-2 rounded-2xl border border-border bg-background text-base sm:text-sm" />
+                                <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                                    Budget range
+                                </span>
+
+                                <input
+                                    value={wizardForm.budget}
+                                    onChange={(e) =>
+                                        setWizardForm((prev) => ({
+                                            ...prev,
+                                            budget:
+                                                e.target.value,
+                                        }))
+                                    }
+                                    placeholder="e.g. GBP2,000 to GBP5,000"
+                                    className="mt-1 w-full px-3 py-2 rounded-2xl border border-border bg-background text-base sm:text-sm"
+                                />
                             </label>
+
                             <label className="text-sm">
-                                <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Timeline</span>
-                                <input value={wizardForm.timeline} onChange={(e) => setWizardForm((prev) => ({ ...prev, timeline: e.target.value }))} placeholder="e.g. Launch in 6 weeks" className="mt-1 w-full px-3 py-2 rounded-2xl border border-border bg-background text-base sm:text-sm" />
+                                <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                                    Timeline
+                                </span>
+
+                                <input
+                                    value={wizardForm.timeline}
+                                    onChange={(e) =>
+                                        setWizardForm((prev) => ({
+                                            ...prev,
+                                            timeline:
+                                                e.target.value,
+                                        }))
+                                    }
+                                    placeholder="e.g. Launch in 6 weeks"
+                                    className="mt-1 w-full px-3 py-2 rounded-2xl border border-border bg-background text-base sm:text-sm"
+                                />
                             </label>
                         </div>
 
                         <label className="text-sm block">
-                            <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Project details</span>
-                            <textarea rows={5} value={wizardForm.details} onChange={(e) => setWizardForm((prev) => ({ ...prev, details: e.target.value }))} placeholder="Tell us about goals, pages, functionality and style preferences" className="mt-1 w-full px-3 py-2 rounded-2xl border border-border bg-background text-base sm:text-sm" />
+                            <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                                Project details
+                            </span>
+
+                            <textarea
+                                rows={5}
+                                value={wizardForm.details}
+                                onChange={(e) =>
+                                    setWizardForm((prev) => ({
+                                        ...prev,
+                                        details:
+                                            e.target.value,
+                                    }))
+                                }
+                                placeholder="Tell us about goals, pages, functionality and style preferences"
+                                className="mt-1 w-full px-3 py-2 rounded-2xl border border-border bg-background text-base sm:text-sm"
+                            />
                         </label>
                     </div>
 
                     <DialogFooter className="mt-2 gap-2">
-                        <button type="button" onClick={() => setWizardOpen(false)} className="px-4 py-2 rounded-full border border-border text-sm font-semibold">Close</button>
-                        <button type="button" onClick={submitWizardForm} disabled={wizardBusy} className="px-4 py-2 rounded-full bg-primary text-primary-foreground text-sm font-semibold disabled:opacity-60">Request quote</button>
+                        <button
+                            type="button"
+                            onClick={() =>
+                                setWizardOpen(false)
+                            }
+                            className="px-4 py-2 rounded-full border border-border text-sm font-semibold"
+                        >
+                            Close
+                        </button>
+
+                        <button
+                            type="button"
+                            onClick={submitWizardForm}
+                            disabled={wizardBusy}
+                            className="px-4 py-2 rounded-full bg-primary text-primary-foreground text-sm font-semibold disabled:opacity-60"
+                        >
+                            {wizardBusy
+                                ? "Sending…"
+                                : "Request quote"}
+                        </button>
                     </DialogFooter>
-                    </DialogContent>
-                </Dialog>
-            )}
+                </DialogContent>
+            </Dialog>
         </footer>
     );
 }
 
 export default function Layout({ children }) {
+    const [adminLoginOpen, setAdminLoginOpen] =
+        useState(false);
+
     return (
         <div className="min-h-screen flex flex-col bg-background text-foreground">
             <Navbar />
-            <main className="flex-1">{children}</main>
-            <Footer />
+
+            <main className="flex-1">
+                {children}
+            </main>
+
+            <Footer
+                onAdminLoginOpen={() =>
+                    setAdminLoginOpen(true)
+                }
+            />
+
             <DemoTour />
+
+            <AdminSignInDialog
+                open={adminLoginOpen}
+                onOpenChange={setAdminLoginOpen}
+            />
         </div>
     );
 }

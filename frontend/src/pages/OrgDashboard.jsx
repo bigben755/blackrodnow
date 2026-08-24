@@ -1,18 +1,42 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { useApp } from "@/context/AppContext";
 import { api } from "@/lib/api";
 import { CategoryBadge, formatDate, formatTime, Stat } from "@/components/Cards";
 import OrgAvatar from "@/components/OrgAvatar";
 import {
-    Wand2, Copy, Calendar, Megaphone, Bell, Sparkles, Loader2,
-    Image as ImageIcon, FileText, UploadCloud,
-    Send, Edit3, Trash2, Mail, ChevronRight,
-    Eye, Users, BarChart3, Rocket,
+    Wand2,
+    Copy,
+    Calendar,
+    Megaphone,
+    Bell,
+    Sparkles,
+    Loader2,
+    FileText,
+    UploadCloud,
+    Send,
+    Edit3,
+    Trash2,
+    Mail,
+    ChevronRight,
+    Eye,
+    Users,
+    BarChart3,
+    Rocket,
+    Plus,
+    Settings,
+    Building2,
+    ExternalLink,
+    Search,
+    CalendarClock,
 } from "lucide-react";
 import { toast } from "sonner";
 import {
-    Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription,
+    Dialog,
+    DialogContent,
+    DialogHeader,
+    DialogTitle,
+    DialogDescription,
 } from "@/components/ui/dialog";
 import ShareButtons from "@/components/ShareButtons";
 import PostNowDialog from "@/components/PostNowDialog";
@@ -23,6 +47,40 @@ const EXAMPLE = `Summer Fair! Saturday 14 June, 11am-4pm at Blackrod Community C
 Also, Youth Football Open Day - Sunday 15 June, 10am-12:30pm at Aspull Common. Ages 5-14, free to try. Just turn up in trainers.
 
 Community Clean-Up: Village Green, Saturday 21 June, 10am-12pm. Bags & brew provided.`;
+
+const EVENT_FILTERS = [
+    { key: "upcoming", label: "Upcoming" },
+    { key: "pending", label: "Pending" },
+    { key: "past", label: "Past" },
+    { key: "all", label: "All" },
+];
+
+const eventIsFuture = (event) =>
+    new Date(event.end || event.start) >= new Date();
+
+const statusLabel = (status) => {
+    if (status === "approved") return "Published";
+    if (status === "pending") return "Awaiting approval";
+    if (status === "cancelled") return "Cancelled";
+    if (status === "rejected") return "Needs attention";
+    return status || "Draft";
+};
+
+const statusClass = (status) => {
+    if (status === "approved") {
+        return "bg-secondary text-secondary-foreground";
+    }
+
+    if (status === "pending") {
+        return "bg-accent text-accent-foreground";
+    }
+
+    if (status === "cancelled" || status === "rejected") {
+        return "bg-destructive/10 text-destructive";
+    }
+
+    return "bg-muted text-foreground";
+};
 
 export default function OrgDashboard() {
     const {
@@ -39,48 +97,148 @@ export default function OrgDashboard() {
         adminCodeSession,
     } = useApp();
 
-    const [selectedOrgSlug, setSelectedOrgSlug] = useState(activeOrgSlug || orgs[0]?.slug || "");
+    const [selectedOrgSlug, setSelectedOrgSlug] = useState(
+        activeOrgSlug || orgs[0]?.slug || ""
+    );
+
     const [text, setText] = useState("");
     const [loading, setLoading] = useState(false);
-    const [items, setItems] = useState([]); // multi-parse result
+    const [items, setItems] = useState([]);
+
     const [notifications, setNotifications] = useState([]);
     const [docs, setDocs] = useState([]);
     const [contactOpen, setContactOpen] = useState(false);
+    const [settingsOpen, setSettingsOpen] = useState(false);
+
     const [analytics, setAnalytics] = useState(null);
+
     const [orgPasswordInput, setOrgPasswordInput] = useState("");
     const [unlockBusy, setUnlockBusy] = useState(false);
+
     const [passwordBusy, setPasswordBusy] = useState(false);
-    const [passwordForm, setPasswordForm] = useState({ current: "", next: "" });
+    const [passwordForm, setPasswordForm] = useState({
+        current: "",
+        next: "",
+    });
+
     const [postNowEvent, setPostNowEvent] = useState(null);
 
-    useEffect(() => {
-        if (!selectedOrgSlug && orgs.length) setSelectedOrgSlug(orgs[0].slug);
-    }, [orgs, selectedOrgSlug]);
-    useEffect(() => { if (selectedOrgSlug) setActiveOrgSlug(selectedOrgSlug); }, [selectedOrgSlug, setActiveOrgSlug]);
+    const [eventFilter, setEventFilter] = useState("upcoming");
+    const [eventSearch, setEventSearch] = useState("");
+    const [duplicatingId, setDuplicatingId] = useState("");
 
-    const org = orgs.find((o) => o.slug === selectedOrgSlug);
-    const myEvents = events.filter((e) => e.orgSlug === selectedOrgSlug);
+    useEffect(() => {
+        if (!selectedOrgSlug && orgs.length) {
+            setSelectedOrgSlug(orgs[0].slug);
+        }
+    }, [orgs, selectedOrgSlug]);
+
+    useEffect(() => {
+        if (selectedOrgSlug) {
+            setActiveOrgSlug(selectedOrgSlug);
+        }
+    }, [selectedOrgSlug, setActiveOrgSlug]);
+
+    useEffect(() => {
+        setEventFilter("upcoming");
+        setEventSearch("");
+    }, [selectedOrgSlug]);
+
+    const org = orgs.find((item) => item.slug === selectedOrgSlug);
+
+    const myEvents = useMemo(
+        () => events.filter((event) => event.orgSlug === selectedOrgSlug),
+        [events, selectedOrgSlug]
+    );
+
+    const eventCounts = useMemo(() => {
+        const upcoming = myEvents.filter(
+            (event) => event.status === "approved" && eventIsFuture(event)
+        ).length;
+
+        const pending = myEvents.filter(
+            (event) => event.status === "pending"
+        ).length;
+
+        const past = myEvents.filter(
+            (event) => !eventIsFuture(event)
+        ).length;
+
+        return {
+            upcoming,
+            pending,
+            past,
+            all: myEvents.length,
+        };
+    }, [myEvents]);
+
+    const visibleEvents = useMemo(() => {
+        const query = eventSearch.trim().toLowerCase();
+
+        return [...myEvents]
+            .filter((event) => {
+                if (!query) return true;
+
+                return [
+                    event.title,
+                    event.venue,
+                    event.category,
+                    event.description,
+                ]
+                    .filter(Boolean)
+                    .join(" ")
+                    .toLowerCase()
+                    .includes(query);
+            })
+            .filter((event) => {
+                if (eventFilter === "upcoming") {
+                    return event.status === "approved" && eventIsFuture(event);
+                }
+
+                if (eventFilter === "pending") {
+                    return event.status === "pending";
+                }
+
+                if (eventFilter === "past") {
+                    return !eventIsFuture(event);
+                }
+
+                return true;
+            })
+            .sort((a, b) => {
+                if (eventFilter === "past") {
+                    return new Date(b.start) - new Date(a.start);
+                }
+
+                return new Date(a.start) - new Date(b.start);
+            });
+    }, [myEvents, eventFilter, eventSearch]);
 
     const loadNotifications = async () => {
         if (!selectedOrgSlug) return;
+
         try {
             const list = await api.orgNotifications(selectedOrgSlug);
             setNotifications(list);
         } catch {
-            /* ignore */
+            // Keep the dashboard usable if messages cannot be loaded.
         }
     };
+
     const loadDocs = async () => {
         if (!selectedOrgSlug) return;
+
         try {
             const list = await api.listDocs(selectedOrgSlug);
             setDocs(list);
         } catch {
-            /* ignore */
+            // Keep the dashboard usable if documents cannot be loaded.
         }
     };
+
     const loadAnalytics = async () => {
         if (!selectedOrgSlug) return;
+
         try {
             const result = await api.orgAnalytics(selectedOrgSlug);
             setAnalytics(result);
@@ -96,114 +254,210 @@ export default function OrgDashboard() {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [selectedOrgSlug]);
 
-    const unreadCount = notifications.filter((n) => !n.read).length;
+    const unreadCount = notifications.filter((item) => !item.read).length;
+
     const metrics = analytics?.overview || {};
     const sharePlatforms = analytics?.share_platforms_30d || [];
     const topEvents = analytics?.top_events_30d || [];
-    const requiresOrgPassword = role === "org" && !!selectedOrgSlug && !hasOrgAccess(selectedOrgSlug);
+
+    const requiresOrgPassword =
+        role === "org" &&
+        Boolean(selectedOrgSlug) &&
+        !hasOrgAccess(selectedOrgSlug);
 
     const parse = async () => {
-        if (!text.trim()) return toast.error("Paste some content first");
+        if (!text.trim()) {
+            toast.error("Paste some content first");
+            return;
+        }
+
         setLoading(true);
+
         try {
-            const res = await api.parseContent(text);
-            setItems(res.items || []);
-            toast.success(`Parsed — ${res.items.length} item${res.items.length !== 1 ? "s" : ""} found`);
+            const result = await api.parseContent(text);
+            const parsedItems = result.items || [];
+
+            setItems(parsedItems);
+
+            toast.success(
+                `Parsed — ${parsedItems.length} item${
+                    parsedItems.length === 1 ? "" : "s"
+                } found`
+            );
         } catch {
             toast.error("Couldn't parse — try again");
-        } finally { setLoading(false); }
+        } finally {
+            setLoading(false);
+        }
     };
 
-    const copy = async (val, label) => {
-        try { await navigator.clipboard.writeText(val); toast.success(`${label} copied`); }
-        catch { toast.error("Copy failed"); }
-    };
-
-    const publishEvent = async (it, { recurrenceFreq = "none", recurrenceUntil = "" } = {}) => {
-        let start;
+    const copy = async (value, label) => {
         try {
-            let d;
-            if (it.date) {
-                d = new Date(it.date);
-            } else if (it.recurrence_weekday) {
-                // Weekly recurrence with no explicit start date — use the next matching weekday.
-                const weekdayIdx = { Sunday: 0, Monday: 1, Tuesday: 2, Wednesday: 3, Thursday: 4, Friday: 5, Saturday: 6 }[it.recurrence_weekday];
-                d = new Date();
-                if (typeof weekdayIdx === "number") {
-                    const daysAhead = (weekdayIdx - d.getDay() + 7) % 7 || 7;
-                    d.setDate(d.getDate() + daysAhead);
+            await navigator.clipboard.writeText(value);
+            toast.success(`${label} copied`);
+        } catch {
+            toast.error("Copy failed");
+        }
+    };
+
+    const localDateFromParser = (value) => {
+        if (!value) return null;
+
+        const isoDate = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+
+        if (isoDate) {
+            return new Date(
+                Number(isoDate[1]),
+                Number(isoDate[2]) - 1,
+                Number(isoDate[3])
+            );
+        }
+
+        const parsed = new Date(value);
+
+        return Number.isNaN(parsed.getTime()) ? null : parsed;
+    };
+
+    const publishEvent = async (
+        item,
+        { recurrenceFreq = "none", recurrenceUntil = "" } = {}
+    ) => {
+        let start;
+
+        try {
+            let date = localDateFromParser(item.date);
+
+            if (!date && item.recurrence_weekday) {
+                const weekdayIndex = {
+                    Sunday: 0,
+                    Monday: 1,
+                    Tuesday: 2,
+                    Wednesday: 3,
+                    Thursday: 4,
+                    Friday: 5,
+                    Saturday: 6,
+                }[item.recurrence_weekday];
+
+                date = new Date();
+
+                if (typeof weekdayIndex === "number") {
+                    const daysAhead =
+                        (weekdayIndex - date.getDay() + 7) % 7 || 7;
+
+                    date.setDate(date.getDate() + daysAhead);
                 }
-            } else {
-                d = new Date(Date.now() + 86400000);
             }
-            if (it.start_time) {
-                const m = /(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i.exec(it.start_time || "");
-                if (m) {
-                    let h = parseInt(m[1], 10);
-                    const min = m[2] ? parseInt(m[2], 10) : 0;
-                    const ap = (m[3] || "").toLowerCase();
-                    if (ap === "pm" && h < 12) h += 12;
-                    if (ap === "am" && h === 12) h = 0;
-                    d.setHours(h, min, 0, 0);
+
+            if (!date) {
+                date = new Date(Date.now() + 86400000);
+            }
+
+            if (item.start_time) {
+                const match = /(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i.exec(
+                    item.start_time || ""
+                );
+
+                if (match) {
+                    let hour = parseInt(match[1], 10);
+                    const minute = match[2] ? parseInt(match[2], 10) : 0;
+                    const period = (match[3] || "").toLowerCase();
+
+                    if (period === "pm" && hour < 12) hour += 12;
+                    if (period === "am" && hour === 12) hour = 0;
+
+                    date.setHours(hour, minute, 0, 0);
                 }
             }
-            start = d.toISOString();
-        } catch { start = new Date(Date.now() + 86400000).toISOString(); }
-        const end = new Date(new Date(start).getTime() + 2 * 60 * 60 * 1000).toISOString();
+
+            start = date.toISOString();
+        } catch {
+            start = new Date(Date.now() + 86400000).toISOString();
+        }
+
+        const end = new Date(
+            new Date(start).getTime() + 2 * 60 * 60 * 1000
+        ).toISOString();
+
         try {
             await addEvent({
-                title: it.title,
+                title: item.title,
                 orgSlug: selectedOrgSlug,
-                category: it.category || "Community",
-                start, end,
-                venue: it.location || "TBC",
-                address: it.location || "Blackrod",
-                description: it.description,
-                cost: "Free", age: "All ages",
-                accessibility: "Please contact us for details",
+                category: item.category || "Community",
+                start,
+                end,
+                venue: item.location || "TBC",
+                address: "",
+                description: item.description,
+                cost: "",
+                age: "All ages",
+                accessibility: "",
                 booking: "",
                 contactEmail: org?.email || "",
                 contactPhone: org?.phone || "",
                 image: "",
-                recurrence: buildRecurrencePayload(recurrenceFreq, recurrenceUntil),
+                recurrence: buildRecurrencePayload(
+                    recurrenceFreq,
+                    recurrenceUntil
+                ),
             });
+
+            await refresh();
+
+            setEventFilter("pending");
+
             toast.success(
                 recurrenceFreq !== "none"
-                    ? `Recurring event draft created (${recurrenceFreq}) — pending approval`
-                    : "Event draft created — pending approval",
-                { description: "Use the share buttons below to post it to your socials." }
+                    ? `Recurring event draft created (${recurrenceFreq})`
+                    : "Event draft created",
+                {
+                    description:
+                        "Review the event details while it is awaiting approval.",
+                }
             );
         } catch {
             toast.error("Couldn't create event");
         }
     };
 
-    const publishUpdate = async (it) => {
+    const publishUpdate = async (item) => {
         try {
             await addFeedPost({
                 orgSlug: selectedOrgSlug,
                 type: "Club update",
-                title: it.title,
-                body: it.description,
+                title: item.title,
+                body: item.description,
             });
-            toast.success("Update published to Local Feed");
-        } catch { toast.error("Couldn't publish"); }
+
+            toast.success("Update published to Community Updates");
+        } catch {
+            toast.error("Couldn't publish");
+        }
     };
 
     const unlockOrganisation = async () => {
         if (!selectedOrgSlug) return;
+
         if (!orgPasswordInput.trim()) {
             toast.error("Enter the organisation password");
             return;
         }
+
         setUnlockBusy(true);
+
         try {
-            const result = await api.loginOrgAccess(selectedOrgSlug, { password: orgPasswordInput.trim() });
+            const result = await api.loginOrgAccess(selectedOrgSlug, {
+                password: orgPasswordInput.trim(),
+            });
+
             unlockOrgAccess(selectedOrgSlug, result?.token || "");
             setOrgPasswordInput("");
+
             toast.success("Organisation dashboard unlocked");
         } catch (error) {
-            toast.error(error?.response?.data?.detail || "Could not unlock organisation dashboard");
+            toast.error(
+                error?.response?.data?.detail ||
+                    "Could not unlock organisation dashboard"
+            );
         } finally {
             setUnlockBusy(false);
         }
@@ -211,391 +465,817 @@ export default function OrgDashboard() {
 
     const changePassword = async () => {
         if (!selectedOrgSlug) return;
+
         if (!passwordForm.next.trim()) {
             toast.error("Enter a new password");
             return;
         }
+
         setPasswordBusy(true);
+
         try {
             if (role === "admin") {
                 await api.changeOrgPassword(selectedOrgSlug, {
                     new_password: passwordForm.next.trim(),
                     admin_code: adminCodeSession,
                 });
+
                 toast.success("Organisation password updated by site admin");
             } else {
+                if (!passwordForm.current.trim()) {
+                    toast.error("Enter your current password");
+                    setPasswordBusy(false);
+                    return;
+                }
+
                 await api.changeOrgPassword(selectedOrgSlug, {
                     current_password: passwordForm.current.trim(),
                     new_password: passwordForm.next.trim(),
                 });
+
                 toast.success("Organisation password changed");
             }
-            setPasswordForm({ current: "", next: "" });
+
+            setPasswordForm({
+                current: "",
+                next: "",
+            });
+
+            setSettingsOpen(false);
         } catch (error) {
-            toast.error(error?.response?.data?.detail || "Password update failed");
+            toast.error(
+                error?.response?.data?.detail || "Password update failed"
+            );
         } finally {
             setPasswordBusy(false);
         }
     };
 
+    const duplicateEvent = async (event) => {
+        setDuplicatingId(event.id);
+
+        try {
+            const duplicate = await api.duplicateEvent(event.id);
+
+            toast.success("Event duplicated", {
+                description:
+                    "Update the new event's date and details before publishing.",
+            });
+
+            await refresh();
+
+            if (duplicate?.id) {
+                window.location.assign(`/edit-event/${duplicate.id}`);
+            }
+        } catch (error) {
+            toast.error(
+                error?.response?.data?.detail || "Could not duplicate event"
+            );
+        } finally {
+            setDuplicatingId("");
+        }
+    };
+
     if (requiresOrgPassword) {
         return (
-            <div data-testid="org-dashboard-lock" className="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 py-16">
-                <div className="rounded-3xl border border-border bg-surface p-8">
-                    <h1 className="font-display font-black text-3xl">Organisation access required</h1>
+            <div
+                data-testid="org-dashboard-lock"
+                className="max-w-xl mx-auto px-4 sm:px-6 lg:px-8 py-16"
+            >
+                <div className="rounded-3xl border border-border bg-surface p-7 sm:p-8">
+                    <div className="h-12 w-12 rounded-2xl bg-primary/10 text-primary grid place-items-center">
+                        <Building2 className="h-5 w-5" />
+                    </div>
+
+                    <h1 className="font-display font-black text-3xl mt-5">
+                        Organisation access
+                    </h1>
+
                     <p className="mt-2 text-sm text-muted-foreground">
-                        Enter the organisation password to access this dashboard.
+                        Choose your organisation and enter the password provided
+                        for its Blackrod Now dashboard.
                     </p>
-                    <div className="mt-5 grid gap-3">
+
+                    <div className="mt-6 grid gap-3">
                         <select
                             value={selectedOrgSlug}
-                            onChange={(e) => setSelectedOrgSlug(e.target.value)}
-                            className="w-full px-4 py-2.5 rounded-2xl border border-border bg-background text-sm"
+                            onChange={(event) =>
+                                setSelectedOrgSlug(event.target.value)
+                            }
+                            className="w-full px-4 py-2.5 rounded-2xl border border-border bg-background text-base sm:text-sm"
                         >
-                            {orgs.map((o) => (
-                                <option key={o.slug} value={o.slug}>{o.name}</option>
+                            {orgs.map((item) => (
+                                <option key={item.slug} value={item.slug}>
+                                    {item.name}
+                                </option>
                             ))}
                         </select>
+
                         <input
                             type="password"
                             value={orgPasswordInput}
-                            onChange={(e) => setOrgPasswordInput(e.target.value)}
+                            onChange={(event) =>
+                                setOrgPasswordInput(event.target.value)
+                            }
+                            onKeyDown={(event) => {
+                                if (event.key === "Enter") {
+                                    unlockOrganisation();
+                                }
+                            }}
                             placeholder="Organisation password"
-                            className="w-full px-4 py-2.5 rounded-2xl border border-border bg-background text-sm"
+                            className="w-full px-4 py-2.5 rounded-2xl border border-border bg-background text-base sm:text-sm"
                         />
+
                         <button
+                            type="button"
                             onClick={unlockOrganisation}
                             disabled={unlockBusy}
                             className="inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-full bg-primary text-primary-foreground text-sm font-semibold disabled:opacity-60"
                         >
-                            {unlockBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-                            Unlock dashboard
+                            {unlockBusy && (
+                                <Loader2 className="h-4 w-4 animate-spin" />
+                            )}
+
+                            Open dashboard
                         </button>
                     </div>
-                    <p className="mt-3 text-xs text-muted-foreground">
-                        Default password for new organisations: Organisat10n!&
-                    </p>
                 </div>
             </div>
         );
     }
 
     return (
-        <div data-testid="org-dashboard" className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
-            <ImpersonationBanner selectedOrgSlug={selectedOrgSlug} orgName={org?.name} />
-            {/* Header */}
-            <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4 mb-8">
+        <div
+            data-testid="org-dashboard"
+            className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10 sm:py-12"
+        >
+            <ImpersonationBanner
+                selectedOrgSlug={selectedOrgSlug}
+                orgName={org?.name}
+            />
+
+            {/* HEADER */}
+            <header className="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-5 mb-8">
                 <div className="flex items-start gap-4">
-                    {org && <OrgAvatar org={org} size={64} rounded="rounded-2xl" className="shadow-sm" />}
+                    {org && (
+                        <OrgAvatar
+                            org={org}
+                            size={64}
+                            rounded="rounded-2xl"
+                            className="shadow-sm"
+                        />
+                    )}
+
                     <div>
                         <span className="text-xs font-bold uppercase tracking-[0.2em] text-primary">
                             Organisation dashboard
                         </span>
-                        <h1 className="font-display font-black text-4xl sm:text-5xl tracking-tight mt-2">
-                            Hi, {org?.name || "team"} 👋
+
+                        <h1 className="font-display font-black text-3xl sm:text-4xl tracking-tight mt-2">
+                            {org?.name || "Your organisation"}
                         </h1>
+
                         <p className="mt-2 text-muted-foreground text-sm max-w-xl">
-                            Edit your profile, add events, post updates, and use our AI tool to publish
-                            everywhere at once.
+                            Manage your events, public profile and community
+                            content from one place.
                         </p>
                     </div>
                 </div>
-                <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
+
+                <div className="flex flex-wrap items-center gap-2">
                     <NotificationBell
                         count={unreadCount}
                         notifications={notifications}
                         org={org}
                         onRead={async (id) => {
                             await api.markNotificationRead(id);
-                            setNotifications((prev) => prev.map((n) => n.id === id ? { ...n, read: true } : n));
+
+                            setNotifications((previous) =>
+                                previous.map((item) =>
+                                    item.id === id
+                                        ? {
+                                              ...item,
+                                              read: true,
+                                          }
+                                        : item
+                                )
+                            );
                         }}
                     />
+
                     <button
                         data-testid="contact-admin-open"
+                        type="button"
                         onClick={() => setContactOpen(true)}
-                        className="inline-flex items-center gap-1 px-4 py-2 rounded-full border border-border bg-surface font-semibold text-xs"
+                        className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-full border border-border bg-surface font-semibold text-xs"
                     >
-                        <Send className="h-3.5 w-3.5" /> Contact admin
+                        <Send className="h-3.5 w-3.5" />
+                        Contact admin
                     </button>
-                    <select data-testid="org-switcher" value={selectedOrgSlug} onChange={(e) => setSelectedOrgSlug(e.target.value)}
-                        className="flex-1 sm:flex-none min-w-0 max-w-full truncate px-4 py-2 rounded-full border border-border bg-surface text-sm">
-                        {orgs.map((o) => (<option key={o.slug} value={o.slug}>{o.name}</option>))}
+
+                    <button
+                        type="button"
+                        onClick={() => setSettingsOpen(true)}
+                        className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-full border border-border bg-surface font-semibold text-xs"
+                    >
+                        <Settings className="h-3.5 w-3.5" />
+                        Settings
+                    </button>
+
+                    <select
+                        data-testid="org-switcher"
+                        value={selectedOrgSlug}
+                        onChange={(event) =>
+                            setSelectedOrgSlug(event.target.value)
+                        }
+                        className="min-w-0 max-w-full px-4 py-2.5 rounded-full border border-border bg-surface text-sm"
+                    >
+                        {orgs.map((item) => (
+                            <option key={item.slug} value={item.slug}>
+                                {item.name}
+                            </option>
+                        ))}
                     </select>
                 </div>
-            </div>
+            </header>
 
-            {/* Quick actions row: profile, docs upload, share pack */}
-            <section className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4 mb-8">
+            {/* PRIMARY ACTIONS */}
+            <section className="grid sm:grid-cols-2 lg:grid-cols-4 gap-3 mb-8">
+                <Link
+                    to="/submit-event"
+                    className="rounded-3xl border border-primary bg-primary text-primary-foreground p-5 hover:-translate-y-0.5 transition-transform"
+                >
+                    <div className="h-10 w-10 rounded-2xl bg-primary-foreground/15 grid place-items-center">
+                        <Plus className="h-5 w-5" />
+                    </div>
+
+                    <h2 className="font-display font-bold text-lg mt-3">
+                        Add an event
+                    </h2>
+
+                    <p className="text-sm text-primary-foreground/80 mt-1">
+                        Create a new one-off or recurring event.
+                    </p>
+                </Link>
+
                 <Link
                     to={`/edit-organisation/${selectedOrgSlug}`}
                     data-testid="qa-profile"
-                    className="rounded-3xl border border-border bg-surface p-6 hover:-translate-y-1 transition-transform"
+                    className="rounded-3xl border border-border bg-surface p-5 hover:-translate-y-0.5 transition-transform"
                 >
-                    <div className="h-10 w-10 rounded-2xl bg-primary/10 text-primary grid place-items-center"><Edit3 className="h-5 w-5" /></div>
-                    <h3 className="font-display font-bold mt-3">Profile & branding</h3>
-                    <p className="text-sm text-muted-foreground mt-1">Logo, cover, colour, about, contact and socials.</p>
-                    <div className="mt-3 inline-flex items-center text-primary font-semibold text-sm">Edit profile →</div>
+                    <div className="h-10 w-10 rounded-2xl bg-primary/10 text-primary grid place-items-center">
+                        <Edit3 className="h-5 w-5" />
+                    </div>
+
+                    <h2 className="font-display font-bold text-lg mt-3">
+                        Edit profile
+                    </h2>
+
+                    <p className="text-sm text-muted-foreground mt-1">
+                        Update your page, contact details and branding.
+                    </p>
                 </Link>
 
-                <UploadDocsCard slug={selectedOrgSlug} docs={docs} onChange={loadDocs} />
-
-                <SharePackCard slug={selectedOrgSlug} org={org} />
-            </section>
-
-            <section className="mb-8 rounded-3xl border border-border bg-surface p-6">
-                <h3 className="font-display font-bold text-xl">Organisation password</h3>
-                <p className="text-sm text-muted-foreground mt-1">
-                    {role === "admin"
-                        ? "Set or reset this organisation's password."
-                        : "Change your organisation password. Default is Organisat10n!& until changed."}
-                </p>
-                <div className="mt-4 grid sm:grid-cols-2 gap-3">
-                    {role !== "admin" && (
-                        <input
-                            type="password"
-                            value={passwordForm.current}
-                            onChange={(e) => setPasswordForm((prev) => ({ ...prev, current: e.target.value }))}
-                            placeholder="Current password"
-                            className="w-full px-4 py-2.5 rounded-2xl border border-border bg-background text-sm"
-                        />
-                    )}
-                    <input
-                        type="password"
-                        value={passwordForm.next}
-                        onChange={(e) => setPasswordForm((prev) => ({ ...prev, next: e.target.value }))}
-                        placeholder="New password"
-                        className="w-full px-4 py-2.5 rounded-2xl border border-border bg-background text-sm"
-                    />
-                </div>
-                <button
-                    onClick={changePassword}
-                    disabled={passwordBusy || (role === "admin" && !adminCodeSession)}
-                    className="mt-3 inline-flex items-center gap-2 px-4 py-2 rounded-full bg-primary text-primary-foreground text-xs font-semibold disabled:opacity-60"
+                <Link
+                    to={`/organisations/${selectedOrgSlug}`}
+                    className="rounded-3xl border border-border bg-surface p-5 hover:-translate-y-0.5 transition-transform"
                 >
-                    {passwordBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
-                    Save password
-                </button>
+                    <div className="h-10 w-10 rounded-2xl bg-primary/10 text-primary grid place-items-center">
+                        <ExternalLink className="h-5 w-5" />
+                    </div>
+
+                    <h2 className="font-display font-bold text-lg mt-3">
+                        View public page
+                    </h2>
+
+                    <p className="text-sm text-muted-foreground mt-1">
+                        See what residents currently see.
+                    </p>
+                </Link>
+
+                <a
+                    href="#smart-import"
+                    className="rounded-3xl border border-border bg-surface p-5 hover:-translate-y-0.5 transition-transform"
+                >
+                    <div className="h-10 w-10 rounded-2xl bg-primary/10 text-primary grid place-items-center">
+                        <Wand2 className="h-5 w-5" />
+                    </div>
+
+                    <h2 className="font-display font-bold text-lg mt-3">
+                        Create from text
+                    </h2>
+
+                    <p className="text-sm text-muted-foreground mt-1">
+                        Turn newsletter or flyer text into event drafts.
+                    </p>
+                </a>
             </section>
 
-            <section className="mb-8 space-y-4" data-testid="org-analytics-section">
-                <div>
-                    <h2 className="font-display font-black text-2xl">Your metrics</h2>
-                    <p className="text-sm text-muted-foreground mt-1">
-                        Signals for how your page and events are performing over the last {analytics?.window_days || 30} days.
-                    </p>
+            {/* AT-A-GLANCE */}
+            <section
+                className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-10"
+                data-testid="org-analytics-section"
+            >
+                <Stat
+                    label="Profile views"
+                    value={metrics.page_views_30d || 0}
+                    icon={Eye}
+                    tone="primary"
+                />
+
+                <Stat
+                    label="Event views"
+                    value={metrics.event_views_30d || 0}
+                    icon={BarChart3}
+                />
+
+                <Stat
+                    label="Followers"
+                    value={metrics.followers || 0}
+                    icon={Users}
+                />
+
+                <Stat
+                    label="Upcoming events"
+                    value={eventCounts.upcoming}
+                    icon={Calendar}
+                />
+            </section>
+
+            {/* EVENT MANAGEMENT */}
+            <section className="mb-10">
+                <div className="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-4 mb-5">
+                    <div>
+                        <span className="text-xs font-bold uppercase tracking-[0.18em] text-primary">
+                            Event management
+                        </span>
+
+                        <h2 className="font-display font-black text-2xl sm:text-3xl mt-2">
+                            Your events
+                        </h2>
+
+                        <p className="mt-1 text-sm text-muted-foreground">
+                            Create, update, duplicate and promote your Blackrod
+                            Now listings.
+                        </p>
+                    </div>
+
+                    <Link
+                        to="/submit-event"
+                        className="inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-full bg-primary text-primary-foreground text-sm font-semibold"
+                    >
+                        <Plus className="h-4 w-4" />
+                        Add event
+                    </Link>
                 </div>
 
-                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
-                    <Stat label="Profile views" value={metrics.page_views_30d || 0} icon={Eye} tone="primary" />
-                    <Stat label="Event views" value={metrics.event_views_30d || 0} icon={BarChart3} />
-                    <Stat label="Share clicks" value={metrics.share_clicks_30d || 0} icon={Sparkles} />
-                    <Stat label="Followers" value={metrics.followers || 0} icon={Users} />
-                    <Stat label="Upcoming events" value={metrics.upcoming_events || 0} icon={Calendar} />
-                    <Stat label="Unread admin notes" value={metrics.notifications_unread || 0} icon={Bell} />
-                </div>
+                <div className="rounded-3xl border border-border bg-surface overflow-hidden">
+                    <div className="p-4 sm:p-5 border-b border-border space-y-4">
+                        <div className="flex flex-wrap gap-2">
+                            {EVENT_FILTERS.map((filter) => (
+                                <button
+                                    key={filter.key}
+                                    type="button"
+                                    onClick={() => setEventFilter(filter.key)}
+                                    className={`px-3 py-2 rounded-full text-xs font-semibold border transition ${
+                                        eventFilter === filter.key
+                                            ? "border-foreground bg-foreground text-background"
+                                            : "border-border bg-background hover:bg-muted"
+                                    }`}
+                                >
+                                    {filter.label}
+                                    <span className="ml-1 opacity-70">
+                                        {eventCounts[filter.key]}
+                                    </span>
+                                </button>
+                            ))}
+                        </div>
 
-                <div className="grid lg:grid-cols-3 gap-4">
-                    <div className="rounded-3xl border border-border bg-surface p-5">
-                        <h3 className="font-display font-bold text-lg">Audience mix</h3>
-                        <div className="mt-4 grid grid-cols-2 gap-3 text-sm">
-                            <MiniMetric label="Device followers" value={metrics.device_followers || 0} />
-                            <MiniMetric label="Subscriber followers" value={metrics.subscriber_followers || 0} />
-                            <MiniMetric label="Published events" value={metrics.published_events || 0} />
-                            <MiniMetric label="Pending events" value={metrics.pending_events || 0} />
-                            <MiniMetric label="Featured events" value={metrics.featured_events || 0} />
-                            <MiniMetric label="Documents" value={metrics.documents || 0} />
+                        <div className="relative max-w-lg">
+                            <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+
+                            <input
+                                type="search"
+                                value={eventSearch}
+                                onChange={(event) =>
+                                    setEventSearch(event.target.value)
+                                }
+                                placeholder="Search your events…"
+                                className="w-full pl-10 pr-4 py-2.5 rounded-full border border-border bg-background text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+                            />
                         </div>
                     </div>
 
+                    {visibleEvents.length === 0 ? (
+                        <div className="p-10 text-center">
+                            <CalendarClock className="h-8 w-8 mx-auto text-muted-foreground" />
+
+                            <h3 className="font-display font-bold text-lg mt-3">
+                                No {eventFilter === "all" ? "" : eventFilter} events
+                            </h3>
+
+                            <p className="mt-1 text-sm text-muted-foreground">
+                                {eventFilter === "upcoming"
+                                    ? "Create an event and it will appear here once approved."
+                                    : eventFilter === "pending"
+                                    ? "You don't currently have any events awaiting approval."
+                                    : eventFilter === "past"
+                                    ? "Past events will be kept here for reference."
+                                    : "No events match your search."}
+                            </p>
+
+                            {eventFilter === "upcoming" && (
+                                <Link
+                                    to="/submit-event"
+                                    className="mt-4 inline-flex items-center gap-1 px-4 py-2 rounded-full bg-primary text-primary-foreground text-sm font-semibold"
+                                >
+                                    <Plus className="h-4 w-4" />
+                                    Add your first event
+                                </Link>
+                            )}
+                        </div>
+                    ) : (
+                        <div className="divide-y divide-border">
+                            {visibleEvents.map((event) => {
+                                const recurring =
+                                    event.recurrence &&
+                                    event.recurrence.freq &&
+                                    event.recurrence.freq !== "none";
+
+                                return (
+                                    <div
+                                        key={event.id}
+                                        data-testid={`dash-event-${event.id}`}
+                                        className="p-4 sm:p-5"
+                                    >
+                                        <div className="flex flex-col lg:flex-row lg:items-center gap-4">
+                                            <div className="flex items-start gap-4 flex-1 min-w-0">
+                                                <div className="w-16 rounded-2xl border border-border bg-background px-2 py-3 text-center shrink-0">
+                                                    <div className="text-[10px] font-bold uppercase tracking-wider text-primary">
+                                                        {new Date(
+                                                            event.start
+                                                        ).toLocaleDateString(
+                                                            "en-GB",
+                                                            {
+                                                                month: "short",
+                                                            }
+                                                        )}
+                                                    </div>
+
+                                                    <div className="font-display font-black text-2xl leading-none mt-1">
+                                                        {new Date(
+                                                            event.start
+                                                        ).getDate()}
+                                                    </div>
+                                                </div>
+
+                                                <div className="min-w-0 flex-1">
+                                                    <div className="flex flex-wrap items-center gap-2">
+                                                        <CategoryBadge
+                                                            category={
+                                                                event.category
+                                                            }
+                                                        />
+
+                                                        <span
+                                                            className={`px-2 py-0.5 rounded-full text-[10px] font-bold tracking-wider uppercase ${statusClass(
+                                                                event.status
+                                                            )}`}
+                                                        >
+                                                            {statusLabel(
+                                                                event.status
+                                                            )}
+                                                        </span>
+
+                                                        {recurring && (
+                                                            <span className="px-2 py-0.5 rounded-full text-[10px] font-bold tracking-wider uppercase bg-primary/10 text-primary">
+                                                                Repeating
+                                                            </span>
+                                                        )}
+                                                    </div>
+
+                                                    <h3 className="font-display font-bold text-lg mt-2 truncate">
+                                                        {event.title}
+                                                    </h3>
+
+                                                    <p className="text-xs text-muted-foreground mt-1">
+                                                        {formatDate(event.start)} ·{" "}
+                                                        {formatTime(event.start)}
+                                                        {event.venue
+                                                            ? ` · ${event.venue}`
+                                                            : ""}
+                                                    </p>
+                                                </div>
+                                            </div>
+
+                                            <div className="flex flex-wrap items-center gap-2 lg:justify-end">
+                                                <Link
+                                                    to={`/events/${event.id}`}
+                                                    className="inline-flex items-center gap-1 px-3 py-2 rounded-full border border-border bg-background text-xs font-semibold hover:bg-muted"
+                                                >
+                                                    <Eye className="h-3.5 w-3.5" />
+                                                    View
+                                                </Link>
+
+                                                <button
+                                                    type="button"
+                                                    data-testid={`dash-event-post-now-${event.id}`}
+                                                    onClick={() =>
+                                                        setPostNowEvent(event)
+                                                    }
+                                                    className="inline-flex items-center gap-1 px-3 py-2 rounded-full border border-border bg-background text-xs font-semibold hover:bg-muted"
+                                                >
+                                                    <Rocket className="h-3.5 w-3.5" />
+                                                    Promote
+                                                </button>
+
+                                                <button
+                                                    type="button"
+                                                    data-testid={`dash-event-duplicate-${event.id}`}
+                                                    disabled={
+                                                        duplicatingId === event.id
+                                                    }
+                                                    onClick={() =>
+                                                        duplicateEvent(event)
+                                                    }
+                                                    className="inline-flex items-center gap-1 px-3 py-2 rounded-full border border-border bg-background text-xs font-semibold hover:bg-muted disabled:opacity-50"
+                                                >
+                                                    {duplicatingId === event.id ? (
+                                                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                                    ) : (
+                                                        <Copy className="h-3.5 w-3.5" />
+                                                    )}
+                                                    Duplicate
+                                                </button>
+
+                                                <Link
+                                                    to={`/edit-event/${event.id}`}
+                                                    data-testid={`dash-event-edit-${event.id}`}
+                                                    className="inline-flex items-center gap-1 px-3 py-2 rounded-full bg-primary text-primary-foreground text-xs font-semibold"
+                                                >
+                                                    <Edit3 className="h-3.5 w-3.5" />
+                                                    Edit
+                                                </Link>
+                                            </div>
+                                        </div>
+
+                                        <div className="mt-3 ml-0 lg:ml-20 flex flex-wrap gap-3 text-[11px] text-muted-foreground">
+                                            <a
+                                                href={api.eventPosterPngUrl(event.id)}
+                                                data-testid={`dash-event-poster-png-${event.id}`}
+                                                target="_blank"
+                                                rel="noreferrer"
+                                                className="hover:text-primary"
+                                            >
+                                                Download social poster
+                                            </a>
+
+                                            <a
+                                                href={api.eventPosterPdfUrl(event.id)}
+                                                data-testid={`dash-event-poster-pdf-${event.id}`}
+                                                target="_blank"
+                                                rel="noreferrer"
+                                                className="hover:text-primary"
+                                            >
+                                                Download print poster
+                                            </a>
+                                        </div>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    )}
+                </div>
+            </section>
+
+            {/* SMART IMPORT */}
+            <section
+                id="smart-import"
+                data-testid="upload-once-section"
+                className="relative overflow-hidden rounded-[2rem] border border-border bg-foreground text-background p-6 sm:p-9 scroll-mt-24"
+            >
+                <div className="absolute -top-24 -right-24 h-72 w-72 rounded-full bg-primary blur-3xl opacity-30" />
+                <div className="absolute -bottom-24 -left-24 h-72 w-72 rounded-full bg-secondary blur-3xl opacity-30" />
+
+                <div className="relative">
+                    <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-secondary text-secondary-foreground text-[11px] font-bold tracking-wider uppercase">
+                        <Wand2 className="h-3.5 w-3.5" />
+                        Smart import
+                    </div>
+
+                    <div className="grid lg:grid-cols-2 gap-8 mt-4">
+                        <div>
+                            <h2 className="font-display font-black text-3xl sm:text-4xl leading-tight">
+                                Paste once. Create several drafts.
+                            </h2>
+
+                            <p className="mt-3 text-background/80 text-sm max-w-lg">
+                                Paste text from a newsletter, flyer or programme.
+                                Blackrod Now will identify events and community
+                                updates so you can review them individually.
+                            </p>
+
+                            <textarea
+                                data-testid="ai-text-input"
+                                value={text}
+                                onChange={(event) => setText(event.target.value)}
+                                placeholder="Paste your text here…"
+                                rows={7}
+                                className="mt-5 w-full rounded-3xl bg-background/10 backdrop-blur border border-background/20 p-4 text-sm placeholder:text-background/40 text-background outline-none focus:ring-2 focus:ring-secondary"
+                            />
+
+                            <div className="mt-3 flex flex-wrap gap-2">
+                                <button
+                                    data-testid="ai-parse-btn"
+                                    type="button"
+                                    onClick={parse}
+                                    disabled={loading}
+                                    className="inline-flex items-center gap-2 px-5 py-2.5 rounded-full bg-secondary text-secondary-foreground font-semibold text-sm disabled:opacity-60"
+                                >
+                                    {loading ? (
+                                        <Loader2 className="h-4 w-4 animate-spin" />
+                                    ) : (
+                                        <Sparkles className="h-4 w-4" />
+                                    )}
+
+                                    Generate drafts
+                                </button>
+
+                                <button
+                                    type="button"
+                                    onClick={() => setText(EXAMPLE)}
+                                    data-testid="ai-example-btn"
+                                    className="inline-flex items-center gap-1 px-5 py-2.5 rounded-full text-sm font-semibold border border-background/40 text-background"
+                                >
+                                    Use example
+                                </button>
+                            </div>
+                        </div>
+
+                        <div
+                            data-testid="ai-results"
+                            className="space-y-3 max-h-[600px] overflow-y-auto pr-1"
+                        >
+                            {!items.length && !loading && (
+                                <div className="rounded-3xl border border-dashed border-background/30 p-8 text-center text-background/60 min-h-64 grid place-items-center">
+                                    Drafts will appear here for review.
+                                </div>
+                            )}
+
+                            {loading && (
+                                <div className="rounded-3xl bg-background/10 backdrop-blur border border-background/20 p-8 text-center">
+                                    <Loader2 className="h-6 w-6 animate-spin mx-auto" />
+
+                                    <p className="mt-3 text-sm text-background/70">
+                                        Reading your text…
+                                    </p>
+                                </div>
+                            )}
+
+                            {items.map((item, index) => (
+                                <ParsedCard
+                                    key={index}
+                                    it={item}
+                                    onPublishEvent={(options) =>
+                                        publishEvent(item, options)
+                                    }
+                                    onPublishUpdate={() =>
+                                        publishUpdate(item)
+                                    }
+                                    onCopy={copy}
+                                />
+                            ))}
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            {/* ORGANISATION TOOLS */}
+            <section className="mt-10">
+                <div className="mb-5">
+                    <span className="text-xs font-bold uppercase tracking-[0.18em] text-primary">
+                        Organisation tools
+                    </span>
+
+                    <h2 className="font-display font-black text-2xl sm:text-3xl mt-2">
+                        Manage your presence
+                    </h2>
+                </div>
+
+                <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                    <Link
+                        to={`/edit-organisation/${selectedOrgSlug}`}
+                        className="rounded-3xl border border-border bg-surface p-6"
+                    >
+                        <div className="h-10 w-10 rounded-2xl bg-primary/10 text-primary grid place-items-center">
+                            <Building2 className="h-5 w-5" />
+                        </div>
+
+                        <h3 className="font-display font-bold mt-3">
+                            Profile & branding
+                        </h3>
+
+                        <p className="text-sm text-muted-foreground mt-1">
+                            Logo, cover, description, contacts and social links.
+                        </p>
+
+                        <div className="mt-3 text-primary font-semibold text-sm">
+                            Edit profile →
+                        </div>
+                    </Link>
+
+                    <UploadDocsCard
+                        slug={selectedOrgSlug}
+                        docs={docs}
+                        onChange={loadDocs}
+                    />
+
+                    <SharePackCard slug={selectedOrgSlug} org={org} />
+                </div>
+            </section>
+
+            {/* INSIGHTS */}
+            <section className="mt-10">
+                <div className="mb-5">
+                    <span className="text-xs font-bold uppercase tracking-[0.18em] text-primary">
+                        Insights
+                    </span>
+
+                    <h2 className="font-display font-black text-2xl sm:text-3xl mt-2">
+                        See what is reaching people
+                    </h2>
+                </div>
+
+                <div className="grid lg:grid-cols-2 gap-4 mb-4">
                     <div className="rounded-3xl border border-border bg-surface p-5">
-                        <h3 className="font-display font-bold text-lg">Share channels</h3>
+                        <h3 className="font-display font-bold text-lg">
+                            Top events
+                        </h3>
+
+                        {topEvents.length === 0 ? (
+                            <p className="mt-4 text-sm text-muted-foreground">
+                                Event engagement will appear here after people
+                                start viewing and sharing your listings.
+                            </p>
+                        ) : (
+                            <div className="mt-4 space-y-3">
+                                {topEvents.slice(0, 5).map((eventItem) => (
+                                    <div
+                                        key={eventItem.id}
+                                        className="flex items-start justify-between gap-3 text-sm"
+                                    >
+                                        <div>
+                                            <Link
+                                                to={`/events/${eventItem.id}`}
+                                                className="font-semibold hover:text-primary"
+                                            >
+                                                {eventItem.title}
+                                            </Link>
+
+                                            <div className="text-xs text-muted-foreground mt-1">
+                                                {eventItem.views} views ·{" "}
+                                                {eventItem.shares} shares
+                                            </div>
+                                        </div>
+
+                                        <span className="text-xs text-muted-foreground">
+                                            {statusLabel(eventItem.status)}
+                                        </span>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                    </div>
+
+                    <div className="rounded-3xl border border-border bg-surface p-5">
+                        <h3 className="font-display font-bold text-lg">
+                            Share channels
+                        </h3>
+
                         {sharePlatforms.length === 0 ? (
-                            <p className="mt-4 text-sm text-muted-foreground">Once people share your events, the channel mix appears here.</p>
+                            <p className="mt-4 text-sm text-muted-foreground">
+                                Once people share your events, the channel mix
+                                will appear here.
+                            </p>
                         ) : (
                             <div className="mt-4 flex flex-wrap gap-2">
                                 {sharePlatforms.map((item) => (
-                                    <span key={item.platform} className="px-3 py-2 rounded-full bg-muted text-sm">
+                                    <span
+                                        key={item.platform}
+                                        className="px-3 py-2 rounded-full bg-muted text-sm"
+                                    >
                                         {item.platform} · {item.count}
                                     </span>
                                 ))}
                             </div>
                         )}
                     </div>
-
-                    <div className="rounded-3xl border border-border bg-surface p-5">
-                        <h3 className="font-display font-bold text-lg">Top events</h3>
-                        {topEvents.length === 0 ? (
-                            <p className="mt-4 text-sm text-muted-foreground">Event engagement will populate here after visits and shares.</p>
-                        ) : (
-                            <div className="mt-4 space-y-3">
-                                {topEvents.map((eventItem) => (
-                                    <div key={eventItem.id} className="flex items-start justify-between gap-3 text-sm">
-                                        <div>
-                                            <Link to={`/events/${eventItem.id}`} className="font-semibold hover:text-primary">{eventItem.title}</Link>
-                                            <div className="text-xs text-muted-foreground mt-1">
-                                                {eventItem.views} views · {eventItem.shares} shares
-                                            </div>
-                                        </div>
-                                        <div className="text-right text-xs text-muted-foreground">{eventItem.status}</div>
-                                    </div>
-                                ))}
-                            </div>
-                        )}
-                    </div>
                 </div>
-            </section>
 
-            {/* AI Feature */}
-            <section
-                data-testid="upload-once-section"
-                className="relative overflow-hidden rounded-[2rem] border border-border bg-foreground text-background p-6 sm:p-10"
-            >
-                <div className="absolute -top-24 -right-24 h-72 w-72 rounded-full bg-primary blur-3xl opacity-30" />
-                <div className="absolute -bottom-24 -left-24 h-72 w-72 rounded-full bg-secondary blur-3xl opacity-30" />
-                <div className="relative grid lg:grid-cols-2 gap-8">
-                    <div>
-                        <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-secondary text-secondary-foreground text-[11px] font-bold tracking-wider uppercase">
-                            <Wand2 className="h-3.5 w-3.5" /> Upload Once, Publish Everywhere
-                        </div>
-                        <h2 className="font-display font-black text-3xl sm:text-4xl mt-3 leading-tight">
-                            Paste your flyer, newsletter or update.
-                            <br />
-                            We'll extract{" "}
-                            <span className="text-secondary">every event</span> in it.
-                        </h2>
-                        <p className="mt-3 text-background/80 text-sm max-w-md">
-                            Multiple events in a Word doc or newsletter? We'll break them out one by one —
-                            each becomes a draft you can publish and share to your socials in one tap.
-                        </p>
-                        <textarea data-testid="ai-text-input" value={text} onChange={(e) => setText(e.target.value)}
-                            placeholder="Paste your text here…" rows={7}
-                            className="mt-5 w-full rounded-3xl bg-background/10 backdrop-blur border border-background/20 p-4 text-sm placeholder:text-background/40 text-background outline-none focus:ring-2 focus:ring-secondary" />
-                        <div className="mt-3 flex flex-wrap gap-2">
-                            <button data-testid="ai-parse-btn" onClick={parse} disabled={loading}
-                                className="inline-flex items-center gap-2 px-5 py-2.5 rounded-full bg-secondary text-secondary-foreground font-semibold text-sm hover:scale-105 transition-transform disabled:opacity-60">
-                                {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
-                                Generate drafts
-                            </button>
-                            <button onClick={() => setText(EXAMPLE)} data-testid="ai-example-btn"
-                                className="inline-flex items-center gap-1 px-5 py-2.5 rounded-full text-sm font-semibold border-2 border-background/40 text-background">
-                                Use an example
-                            </button>
-                        </div>
-                    </div>
-
-                    <div data-testid="ai-results" className="space-y-3 max-h-[600px] overflow-y-auto pr-1">
-                        {!items.length && !loading && (
-                            <div className="rounded-3xl border border-dashed border-background/30 p-8 text-center text-background/60 h-full grid place-items-center">
-                                Drafts will appear here.
-                            </div>
-                        )}
-                        {loading && (
-                            <div className="rounded-3xl bg-background/10 backdrop-blur border border-background/20 p-8 text-center">
-                                <Loader2 className="h-6 w-6 animate-spin mx-auto" />
-                                <p className="mt-3 text-sm text-background/70">Reading your text…</p>
-                            </div>
-                        )}
-                        {items.map((it, idx) => (
-                            <ParsedCard
-                                key={idx} it={it}
-                                onPublishEvent={(opts) => publishEvent(it, opts)}
-                                onPublishUpdate={() => publishUpdate(it)}
-                                onCopy={copy}
-                            />
-                        ))}
-                    </div>
-                </div>
-            </section>
-
-            <section className="mt-10">
-                <OrgAnalyticsPanel slug={selectedOrgSlug} orgName={org?.name} />
-            </section>
-
-            {/* My events */}
-            <section className="mt-10">
-                <h2 className="font-display font-bold text-xl mb-3">Your events</h2>
-                {myEvents.length === 0 ? (
-                    <div className="rounded-3xl border border-dashed border-border p-8 text-sm text-muted-foreground text-center">
-                        You haven't added any events yet.
-                    </div>
-                ) : (
-                    <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                        {myEvents.map((e) => (
-                            <div key={e.id} className="rounded-3xl border border-border bg-surface p-5 flex flex-col" data-testid={`dash-event-${e.id}`}>
-                                <div className="flex items-center gap-2">
-                                    <CategoryBadge category={e.category} />
-                                    <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold tracking-wider uppercase ${
-                                        e.status === "approved" ? "bg-secondary text-secondary-foreground"
-                                        : e.status === "pending" ? "bg-accent text-accent-foreground" : "bg-muted"
-                                    }`}>{e.status}</span>
-                                </div>
-                                <h3 className="font-display font-bold mt-2">{e.title}</h3>
-                                <p className="text-xs text-muted-foreground mt-1">{formatDate(e.start)} · {formatTime(e.start)}</p>
-                                <div className="mt-3 pt-3 border-t border-border flex items-center gap-2 mt-auto flex-wrap">
-                                    <Link
-                                        to={`/events/${e.id}`}
-                                        className="text-xs font-semibold text-muted-foreground hover:text-foreground"
-                                    >
-                                        View
-                                    </Link>
-                                    <a
-                                        href={api.eventPosterPngUrl(e.id)}
-                                        data-testid={`dash-event-poster-png-${e.id}`}
-                                        target="_blank"
-                                        rel="noreferrer"
-                                        className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full border border-border text-[11px] font-semibold hover:bg-muted"
-                                        title="Download 1080×1080 PNG poster"
-                                    >
-                                        PNG
-                                    </a>
-                                    <a
-                                        href={api.eventPosterPdfUrl(e.id)}
-                                        data-testid={`dash-event-poster-pdf-${e.id}`}
-                                        target="_blank"
-                                        rel="noreferrer"
-                                        className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full border border-border text-[11px] font-semibold hover:bg-muted"
-                                        title="Download A4 PDF poster"
-                                    >
-                                        PDF
-                                    </a>
-                                    <button
-                                        type="button"
-                                        data-testid={`dash-event-post-now-${e.id}`}
-                                        onClick={() => setPostNowEvent(e)}
-                                        className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-primary text-primary-foreground text-[11px] font-semibold hover:brightness-110"
-                                        title="One-click social bundle — poster + caption + share"
-                                    >
-                                        <Rocket className="h-3 w-3" /> Post Now
-                                    </button>
-                                    <button
-                                        type="button"
-                                        data-testid={`dash-event-duplicate-${e.id}`}
-                                        onClick={async () => {
-                                            try {
-                                                const dup = await api.duplicateEvent(e.id);
-                                                toast.success("Event duplicated — fill the new date and publish");
-                                                await refresh();
-                                                if (dup?.id) window.location.assign(`/edit-event/${dup.id}`);
-                                            } catch (err) {
-                                                toast.error(err?.response?.data?.detail || "Could not duplicate event");
-                                            }
-                                        }}
-                                        className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full border border-border text-[11px] font-semibold hover:bg-muted"
-                                    >
-                                        Duplicate
-                                    </button>
-                                    <Link
-                                        to={`/edit-event/${e.id}`}
-                                        data-testid={`dash-event-edit-${e.id}`}
-                                        className="ml-auto inline-flex items-center gap-1 px-3 py-1.5 rounded-full bg-primary text-primary-foreground text-[11px] font-semibold hover:brightness-110"
-                                    >
-                                        <Edit3 className="h-3 w-3" /> Edit
-                                    </Link>
-                                </div>
-                            </div>
-                        ))}
-                    </div>
-                )}
+                <OrgAnalyticsPanel
+                    slug={selectedOrgSlug}
+                    orgName={org?.name}
+                />
             </section>
 
             <ContactAdminDialog
@@ -606,10 +1286,96 @@ export default function OrgDashboard() {
                 fromName={org?.name}
             />
 
+            <Dialog
+                open={settingsOpen}
+                onOpenChange={setSettingsOpen}
+            >
+                <DialogContent className="sm:max-w-lg">
+                    <DialogHeader>
+                        <DialogTitle>Organisation settings</DialogTitle>
+
+                        <DialogDescription>
+                            Change the password used to access this organisation's
+                            Blackrod Now dashboard.
+                        </DialogDescription>
+                    </DialogHeader>
+
+                    <div className="space-y-3">
+                        {role !== "admin" && (
+                            <label className="block">
+                                <span className="text-xs font-bold uppercase tracking-wider text-muted-foreground">
+                                    Current password
+                                </span>
+
+                                <input
+                                    type="password"
+                                    value={passwordForm.current}
+                                    onChange={(event) =>
+                                        setPasswordForm((previous) => ({
+                                            ...previous,
+                                            current: event.target.value,
+                                        }))
+                                    }
+                                    className="mt-1.5 w-full px-4 py-2.5 rounded-2xl border border-border bg-background text-base sm:text-sm"
+                                />
+                            </label>
+                        )}
+
+                        <label className="block">
+                            <span className="text-xs font-bold uppercase tracking-wider text-muted-foreground">
+                                New password
+                            </span>
+
+                            <input
+                                type="password"
+                                value={passwordForm.next}
+                                onChange={(event) =>
+                                    setPasswordForm((previous) => ({
+                                        ...previous,
+                                        next: event.target.value,
+                                    }))
+                                }
+                                className="mt-1.5 w-full px-4 py-2.5 rounded-2xl border border-border bg-background text-base sm:text-sm"
+                            />
+                        </label>
+                    </div>
+
+                    <div className="flex justify-end gap-2 pt-2">
+                        <button
+                            type="button"
+                            onClick={() => setSettingsOpen(false)}
+                            className="px-4 py-2 rounded-full border border-border text-sm font-semibold"
+                        >
+                            Cancel
+                        </button>
+
+                        <button
+                            type="button"
+                            onClick={changePassword}
+                            disabled={
+                                passwordBusy ||
+                                (role === "admin" && !adminCodeSession)
+                            }
+                            className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-primary text-primary-foreground text-sm font-semibold disabled:opacity-60"
+                        >
+                            {passwordBusy && (
+                                <Loader2 className="h-4 w-4 animate-spin" />
+                            )}
+
+                            Save password
+                        </button>
+                    </div>
+                </DialogContent>
+            </Dialog>
+
             <PostNowDialog
                 event={postNowEvent}
-                open={!!postNowEvent}
-                onOpenChange={(v) => { if (!v) setPostNowEvent(null); }}
+                open={Boolean(postNowEvent)}
+                onOpenChange={(open) => {
+                    if (!open) {
+                        setPostNowEvent(null);
+                    }
+                }}
             />
         </div>
     );
@@ -1298,4 +2064,3 @@ function OrgAnalyticsPanel({ slug, orgName }) {
         </div>
     );
 }
-

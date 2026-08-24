@@ -13,20 +13,9 @@ const ADMIN_JWT_KEY = "rn-admin-jwt";
 // Bulk parser reliability settings
 // ─────────────────────────────────────────────────────────────
 
-// Creating a parse job includes uploading files to the backend.
-// Give slower connections plenty of time to complete the upload.
-// The backend should still return the job ID quickly after upload.
-const PARSE_JOB_UPLOAD_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
-
-// Polling a job should normally return very quickly, but a longer timeout
-// prevents temporary backend/database delays from breaking the importer.
-const PARSE_JOB_STATUS_TIMEOUT_MS = 60 * 1000; // 60 seconds
-
-// A temporary network failure while checking progress should not kill
-// an otherwise healthy bulk import.
+const PARSE_JOB_UPLOAD_TIMEOUT_MS = 5 * 60 * 1000;
+const PARSE_JOB_STATUS_TIMEOUT_MS = 60 * 1000;
 const PARSE_JOB_STATUS_RETRIES = 3;
-
-// Small delay between status-request retries.
 const PARSE_JOB_RETRY_DELAY_MS = 1500;
 
 const sleep = (ms) =>
@@ -90,29 +79,27 @@ const adminCodeHeaders = () => {
         : {};
 };
 
-// Standard API client.
-//
-// Normal requests should still fail reasonably quickly.
-// Long-running document operations override this where appropriate.
 const client = axios.create({
     baseURL: API,
     timeout: 30000,
 });
 
-// Attach admin JWT to every request when present.
-//
-// Backend routes that do not require it simply ignore it.
-// This allows JWT-first admin authentication without having to manually
-// add the Authorization header to every individual API method.
 client.interceptors.request.use((config) => {
     const jwt = readAdminJwt();
 
-    if (jwt) {
-        config.headers = config.headers || {};
+    const adminCode =
+        typeof window !== "undefined"
+            ? localStorage.getItem(ADMIN_CODE_KEY) || ""
+            : "";
 
-        if (!config.headers.Authorization) {
-            config.headers.Authorization = `Bearer ${jwt}`;
-        }
+    config.headers = config.headers || {};
+
+    if (jwt && !config.headers.Authorization) {
+        config.headers.Authorization = `Bearer ${jwt}`;
+    }
+
+    if (adminCode && !config.headers["X-Admin-Code"]) {
+        config.headers["X-Admin-Code"] = adminCode;
     }
 
     return config;
@@ -195,25 +182,17 @@ const buildParseFormData = (
 const isTransientParserError = (error) => {
     if (!error) return false;
 
-    // Axios did not receive an HTTP response.
-    // This generally means timeout, temporary network failure,
-    // dropped connection, DNS issue, reverse proxy interruption, etc.
     if (!error.response) {
         return true;
     }
 
     const status = Number(error.response?.status || 0);
 
-    // Retry temporary server/gateway/rate-limit failures.
     if (status === 408) return true;
     if (status === 425) return true;
     if (status === 429) return true;
 
-    if (status >= 500 && status <= 599) {
-        return true;
-    }
-
-    return false;
+    return status >= 500 && status <= 599;
 };
 
 const getAxiosErrorMessage = (
@@ -242,7 +221,7 @@ const getAxiosErrorMessage = (
 
 export const api = {
     // ─────────────────────────────────────────────────────────
-    // Auth (JWT)
+    // Auth
     // ─────────────────────────────────────────────────────────
 
     authLoginAdmin: (email, password) =>
@@ -297,20 +276,38 @@ export const api = {
                 : "";
 
         return `${API}/admin/impact/pdf?days=${days}&variant=${variant}${
-            jwt
-                ? `&token=${encodeURIComponent(jwt)}`
-                : ""
+            jwt ? `&token=${encodeURIComponent(jwt)}` : ""
         }`;
     },
 
     // ─────────────────────────────────────────────────────────
-    // Batch C: organisation power tools
+    // Organisation power tools
     // ─────────────────────────────────────────────────────────
 
-    duplicateEvent: (eventId) =>
-        client
-            .post(`/events/${eventId}/duplicate`)
-            .then((r) => r.data),
+    duplicateEvent: async (
+        eventId,
+        orgSlug = ""
+    ) => {
+        let slug = String(orgSlug || "").trim();
+
+        if (!slug) {
+            const current = await client.get(
+                `/events/${eventId}`
+            );
+
+            slug = current.data?.orgSlug || "";
+        }
+
+        const response = await client.post(
+            `/events/${eventId}/duplicate`,
+            {},
+            {
+                headers: orgAuthHeaders(slug),
+            }
+        );
+
+        return response.data;
+    },
 
     eventPosterPngUrl: (eventId) =>
         `${API}/events/${eventId}/poster.png`,
@@ -344,7 +341,7 @@ export const api = {
             .then((r) => r.data),
 
     // ─────────────────────────────────────────────────────────
-    // Batch D: scheduled broadcasts + moderation
+    // Scheduled broadcasts + moderation
     // ─────────────────────────────────────────────────────────
 
     scheduleBroadcast: (payload) =>
@@ -495,7 +492,10 @@ export const api = {
 
     claimOrg: (slug, data) =>
         client
-            .post(`/organisations/${slug}/claim`, data)
+            .post(
+                `/organisations/${slug}/claim`,
+                data
+            )
             .then((r) => r.data),
 
     suggestOrgEdits: (slug, data) =>
@@ -637,17 +637,24 @@ export const api = {
 
     adminOrgsWithoutAdmins: () =>
         client
-            .get("/admin/organisations/without-admins")
+            .get(
+                "/admin/organisations/without-admins"
+            )
             .then((r) => r.data),
 
     adminMergeOrgs: (payload) =>
         client
-            .post("/admin/organisations/merge", payload)
+            .post(
+                "/admin/organisations/merge",
+                payload
+            )
             .then((r) => r.data),
 
     deleteOrg: (slug) =>
         client
-            .delete(`/admin/organisations/${slug}`)
+            .delete(
+                `/admin/organisations/${slug}`
+            )
             .then((r) => r.data),
 
     // ─────────────────────────────────────────────────────────
@@ -669,7 +676,9 @@ export const api = {
     createEvent: (data) =>
         client
             .post("/events", data, {
-                headers: orgAuthHeaders(data.orgSlug),
+                headers: orgAuthHeaders(
+                    data.orgSlug
+                ),
             })
             .then((r) => r.data),
 
@@ -679,32 +688,50 @@ export const api = {
         orgSlugForAuth
     ) =>
         client
-            .patch(`/events/${id}`, patch, {
-                headers: orgAuthHeaders(
-                    orgSlugForAuth ||
-                        patch?.orgSlug
-                ),
-            })
+            .patch(
+                `/events/${id}`,
+                patch,
+                {
+                    headers: orgAuthHeaders(
+                        orgSlugForAuth ||
+                            patch?.orgSlug
+                    ),
+                }
+            )
             .then((r) => r.data),
 
-    setEventStatus: (id, status) =>
+    setEventStatus: (
+        id,
+        status,
+        orgSlug = ""
+    ) =>
         client
             .post(
-                `/admin/events/${id}/status`,
+                `/events/${id}/status`,
                 {
                     status,
+                },
+                {
+                    headers:
+                        orgAuthHeaders(
+                            orgSlug
+                        ),
                 }
             )
             .then((r) => r.data),
 
     featureEvent: (id) =>
         client
-            .post(`/admin/events/${id}/feature`)
+            .post(
+                `/admin/events/${id}/feature`
+            )
             .then((r) => r.data),
 
     deleteEvent: (id) =>
         client
-            .delete(`/admin/events/${id}`)
+            .delete(
+                `/admin/events/${id}`
+            )
             .then((r) => r.data),
 
     adminEventsAttention: () =>
@@ -723,7 +750,10 @@ export const api = {
 
     updateTaxonomy: (patch) =>
         client
-            .post("/admin/taxonomy", patch)
+            .post(
+                "/admin/taxonomy",
+                patch
+            )
             .then((r) => r.data),
 
     adminUsersOverview: (q = "") =>
@@ -758,7 +788,9 @@ export const api = {
     createFeedPost: (data) =>
         client
             .post("/feed", data, {
-                headers: orgAuthHeaders(data.orgSlug),
+                headers: orgAuthHeaders(
+                    data.orgSlug
+                ),
             })
             .then((r) => r.data),
 
@@ -778,7 +810,10 @@ export const api = {
 
     updateVenue: (id, patch) =>
         client
-            .patch(`/venues/${id}`, patch)
+            .patch(
+                `/venues/${id}`,
+                patch
+            )
             .then((r) => r.data),
 
     volunteers: () =>
@@ -793,7 +828,10 @@ export const api = {
 
     updateVolunteer: (id, patch) =>
         client
-            .patch(`/volunteers/${id}`, patch)
+            .patch(
+                `/volunteers/${id}`,
+                patch
+            )
             .then((r) => r.data),
 
     // ─────────────────────────────────────────────────────────
@@ -802,7 +840,9 @@ export const api = {
 
     follows: () =>
         client
-            .get(`/follows/${getDeviceId()}`)
+            .get(
+                `/follows/${getDeviceId()}`
+            )
             .then((r) => r.data),
 
     toggleFollow: (
@@ -872,12 +912,16 @@ export const api = {
 
     unsubscribe: (token) =>
         client
-            .post(`/unsubscribe/${token}`)
+            .post(
+                `/unsubscribe/${token}`
+            )
             .then((r) => r.data),
 
     preferences: (token) =>
         client
-            .get(`/preferences/${token}`)
+            .get(
+                `/preferences/${token}`
+            )
             .then((r) => r.data),
 
     updatePreferences: (token, patch) =>
@@ -901,12 +945,17 @@ export const api = {
 
     sendNotification: (data) =>
         client
-            .post("/admin/notifications", data)
+            .post(
+                "/admin/notifications",
+                data
+            )
             .then((r) => r.data),
 
     markNotificationRead: (id) =>
         client
-            .patch(`/notifications/${id}/read`)
+            .patch(
+                `/notifications/${id}/read`
+            )
             .then((r) => r.data),
 
     // ─────────────────────────────────────────────────────────
@@ -915,7 +964,10 @@ export const api = {
 
     contactAdmin: (data) =>
         client
-            .post("/contact-admin", data)
+            .post(
+                "/contact-admin",
+                data
+            )
             .then((r) => r.data),
 
     redeemOrgMemberInvite: (payload) =>
@@ -936,35 +988,49 @@ export const api = {
 
     webWizardEnquiry: (data) =>
         client
-            .post("/web-wizard/enquiry", data)
+            .post(
+                "/web-wizard/enquiry",
+                data
+            )
             .then((r) => r.data),
 
     notificationThread: (nid) =>
         client
-            .get(`/notifications/${nid}/thread`)
+            .get(
+                `/notifications/${nid}/thread`
+            )
             .then((r) => r.data),
 
     adminMessages: () =>
         client
-            .get("/admin/messages")
+            .get(
+                "/admin/messages"
+            )
             .then((r) => r.data),
 
     markMessageRead: (id) =>
         client
-            .patch(`/admin/messages/${id}/read`)
+            .patch(
+                `/admin/messages/${id}/read`
+            )
             .then((r) => r.data),
 
     deleteAdminMessage: (id) =>
         client
-            .delete(`/admin/messages/${id}`)
+            .delete(
+                `/admin/messages/${id}`
+            )
             .then((r) => r.data),
 
     bulkMessageAction: (ids, action) =>
         client
-            .post("/admin/messages/bulk", {
-                ids,
-                action,
-            })
+            .post(
+                "/admin/messages/bulk",
+                {
+                    ids,
+                    action,
+                }
+            )
             .then((r) => r.data),
 
     replyAdminMessage: (id, data) =>
@@ -977,20 +1043,29 @@ export const api = {
 
     adminSubscribers: (params = {}) =>
         client
-            .get("/admin/subscribers", {
-                params,
-            })
+            .get(
+                "/admin/subscribers",
+                {
+                    params,
+                }
+            )
             .then((r) => r.data),
+
+    adminDeleteSubscriber: (subId) =>
+        client.delete(`/admin/subscribers/${subId}`).then((r) => r.data),
 
     orgEditRequests: (status = "") =>
         client
-            .get("/admin/org-edit-requests", {
-                params: status
-                    ? {
-                          status,
-                      }
-                    : {},
-            })
+            .get(
+                "/admin/org-edit-requests",
+                {
+                    params: status
+                        ? {
+                              status,
+                          }
+                        : {},
+                }
+            )
             .then((r) => r.data),
 
     reviewOrgEditRequest: (id, data) =>
@@ -1027,17 +1102,12 @@ export const api = {
                             "multipart/form-data",
                         ...orgAuthHeaders(slug),
                     },
-
                     timeout: 120000,
                 }
             )
             .then((r) => r.data);
     },
 
-    // Legacy direct parser endpoint.
-    //
-    // Retained for backward compatibility, but the Blackrod Now bulk
-    // uploader should prefer createParseJob() + getParseJob().
     adminParseDocuments: (
         files,
         sourceOrgSlug = "",
@@ -1060,10 +1130,8 @@ export const api = {
                         "Content-Type":
                             "multipart/form-data",
                     },
-
-                    // Direct parsing can legitimately take longer,
-                    // although the queued parser should be preferred.
-                    timeout: PARSE_JOB_UPLOAD_TIMEOUT_MS,
+                    timeout:
+                        PARSE_JOB_UPLOAD_TIMEOUT_MS,
                 }
             )
             .then((r) => r.data);
@@ -1088,32 +1156,22 @@ export const api = {
         );
 
         try {
-            /*
-             * IMPORTANT:
-             *
-             * Do NOT automatically retry this POST request.
-             *
-             * If the backend successfully created the job but the
-             * HTTP response was lost, retrying could create the same
-             * bulk import twice.
-             *
-             * The future Admin page upgrade will persist the returned
-             * job ID and reconnect to existing jobs safely.
-             */
-            const response = await client.post(
-                "/admin/documents/parse-jobs",
-                formData,
-                {
-                    headers: {
-                        "Content-Type":
-                            "multipart/form-data",
-                    },
+            const response =
+                await client.post(
+                    "/admin/documents/parse-jobs",
+                    formData,
+                    {
+                        headers: {
+                            "Content-Type":
+                                "multipart/form-data",
+                        },
+                        timeout:
+                            PARSE_JOB_UPLOAD_TIMEOUT_MS,
+                    }
+                );
 
-                    timeout: PARSE_JOB_UPLOAD_TIMEOUT_MS,
-                }
-            );
-
-            const data = response.data || {};
+            const data =
+                response.data || {};
 
             if (!data.job_id) {
                 throw new Error(
@@ -1123,9 +1181,6 @@ export const api = {
 
             return {
                 ...data,
-
-                // Provide a sensible total if an older backend does
-                // not return one.
                 total:
                     data.total ??
                     data.total_sources ??
@@ -1139,14 +1194,17 @@ export const api = {
                 throw error;
             }
 
-            const message = getAxiosErrorMessage(
-                error,
-                "Could not create the bulk import job."
-            );
+            const message =
+                getAxiosErrorMessage(
+                    error,
+                    "Could not create the bulk import job."
+                );
 
-            const wrapped = new Error(message);
+            const wrapped =
+                new Error(message);
 
-            wrapped.originalError = error;
+            wrapped.originalError =
+                error;
 
             throw wrapped;
         }
@@ -1189,7 +1247,9 @@ export const api = {
                 lastError = error;
 
                 const canRetry =
-                    isTransientParserError(error);
+                    isTransientParserError(
+                        error
+                    );
 
                 const hasRetriesLeft =
                     attempt <
@@ -1202,8 +1262,6 @@ export const api = {
                     break;
                 }
 
-                // Slight progressive delay:
-                // 1.5s → 3s → 4.5s
                 await sleep(
                     PARSE_JOB_RETRY_DELAY_MS *
                         (attempt + 1)
@@ -1211,38 +1269,66 @@ export const api = {
             }
         }
 
-        const message = getAxiosErrorMessage(
-            lastError,
-            "Could not check the parser job."
-        );
+        const message =
+            getAxiosErrorMessage(
+                lastError,
+                "Could not check the parser job."
+            );
 
-        const wrapped = new Error(message);
+        const wrapped =
+            new Error(message);
 
-        wrapped.originalError = lastError;
+        wrapped.originalError =
+            lastError;
 
         throw wrapped;
     },
 
     // ─────────────────────────────────────────────────────────
-    // Public "Submit your events list" (deterministic parse only)
+    // Public event-list importer
     // ─────────────────────────────────────────────────────────
 
     publicParseEventList: (file) => {
         const fd = new FormData();
+
         fd.append("file", file);
+
         return client
-            .post("/public/event-list/parse", fd, {
-                headers: { "Content-Type": "multipart/form-data" },
-                timeout: 60000,
-            })
+            .post(
+                "/public/event-list/parse",
+                fd,
+                {
+                    headers: {
+                        "Content-Type":
+                            "multipart/form-data",
+                    },
+                    timeout: 60000,
+                }
+            )
             .then((r) => r.data);
     },
 
     publicSubmitEventList: (payload) =>
-        client.post("/public/event-list/submit", payload).then((r) => r.data),
+        client
+            .post(
+                "/public/event-list/submit",
+                payload
+            )
+            .then((r) => r.data),
 
     adminCheckEntity: (kind, id) =>
-        client.post("/admin/check", { kind, id }, { timeout: 160000 }).then((r) => r.data),
+        client
+            .post(
+                "/admin/check",
+                {
+                    kind,
+                    id,
+                },
+                {
+                    timeout: 160000,
+                }
+            )
+            .then((r) => r.data),
 
     // ─────────────────────────────────────────────────────────
     // Event image upload
@@ -1262,13 +1348,11 @@ export const api = {
                         "Content-Type":
                             "multipart/form-data",
                     },
-
                     timeout: 60000,
                 }
             )
             .then((r) => ({
                 ...r.data,
-
                 absoluteUrl:
                     `${process.env.REACT_APP_BACKEND_URL}${r.data.url}`,
             }));
@@ -1307,7 +1391,6 @@ export const api = {
                             "multipart/form-data",
                         ...orgAuthHeaders(slug),
                     },
-
                     timeout: 60000,
                 }
             )
@@ -1329,7 +1412,6 @@ export const api = {
                             "multipart/form-data",
                         ...orgAuthHeaders(slug),
                     },
-
                     timeout: 60000,
                 }
             )
@@ -1364,24 +1446,18 @@ export const api = {
         v = ""
     ) =>
         `${API}/organisations/${slug}/logo${
-            thumb
-                ? "/thumb"
-                : ""
+            thumb ? "/thumb" : ""
         }${
-            v
-                ? `?v=${v}`
-                : ""
+            v ? `?v=${v}` : ""
         }`,
 
     orgCoverUrl: (slug, v = "") =>
         `${API}/organisations/${slug}/cover${
-            v
-                ? `?v=${v}`
-                : ""
+            v ? `?v=${v}` : ""
         }`,
 
     // ─────────────────────────────────────────────────────────
-    // AI parse — standalone text parser
+    // AI parse
     // ─────────────────────────────────────────────────────────
 
     parseContent: (text) =>
@@ -1401,16 +1477,38 @@ export const api = {
     // Newsletter & broadcast
     // ─────────────────────────────────────────────────────────
 
-    newsletterPreview: (email) =>
+    newsletterPreview: (
+        email,
+        options = {}
+    ) =>
         client
             .get(
                 "/admin/newsletter/preview",
                 {
-                    params: email
-                        ? {
-                              email,
-                          }
-                        : {},
+                    params: {
+                        ...(email
+                            ? {
+                                  email,
+                              }
+                            : {}),
+
+                        ...(options.subject
+                            ? {
+                                  subject:
+                                      options.subject,
+                              }
+                            : {}),
+
+                        ...(Object.prototype.hasOwnProperty.call(
+                            options,
+                            "body_intro"
+                        )
+                            ? {
+                                  body_intro:
+                                      options.body_intro,
+                              }
+                            : {}),
+                    },
                 }
             )
             .then((r) => r.data),
@@ -1423,9 +1521,41 @@ export const api = {
             )
             .then((r) => r.data),
 
+    // Get automatic weekly digest settings,
+    // next send, last send and subscriber count.
+    newsletterAutomation: () =>
+        client
+            .get(
+                "/admin/newsletter/automation"
+            )
+            .then((r) => r.data),
+
+    // Update:
+    // enabled, weekday, send time,
+    // subject and default intro.
+    updateNewsletterAutomation: (data) =>
+        client
+            .post(
+                "/admin/newsletter/automation",
+                data
+            )
+            .then((r) => r.data),
+
+    // Immediately run the personalised
+    // resident digest regardless of schedule.
+    sendNewsletterAutomationNow: () =>
+        client
+            .post(
+                "/admin/newsletter/automation/send-now"
+            )
+            .then((r) => r.data),
+
     broadcast: (data) =>
         client
-            .post("/admin/broadcast", data)
+            .post(
+                "/admin/broadcast",
+                data
+            )
             .then((r) => r.data),
 
     // ─────────────────────────────────────────────────────────
@@ -1434,10 +1564,14 @@ export const api = {
 
     trackAnalytics: (payload) =>
         client
-            .post("/analytics/track", {
-                ...payload,
-                device_id: getDeviceId(),
-            })
+            .post(
+                "/analytics/track",
+                {
+                    ...payload,
+                    device_id:
+                        getDeviceId(),
+                }
+            )
             .then((r) => r.data),
 
     orgAnalytics: (slug) =>
@@ -1453,7 +1587,9 @@ export const api = {
 
     adminEmailSenders: () =>
         client
-            .get("/admin/email/senders")
+            .get(
+                "/admin/email/senders"
+            )
             .then((r) => r.data),
 
     adminEmailPreview: (data) =>
