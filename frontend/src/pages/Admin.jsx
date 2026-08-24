@@ -122,6 +122,10 @@ export default function Admin() {
     const approvedEvents = events.filter(
         (e) => e.status === "approved" && !e.is_recurrence_instance
     );
+    const archivedEvents = events.filter(
+        (e) => e.status === "archived" && !e.is_recurrence_instance
+    );
+    const [showArchived, setShowArchived] = useState(false);
     const pendingEvents = events.filter(
         (e) => e.status === "pending" && !e.is_recurrence_instance
     );
@@ -133,7 +137,8 @@ export default function Admin() {
     const [eventCategoryFilter, setEventCategoryFilter] = useState("");
     const filteredApprovedEvents = React.useMemo(() => {
         const needle = eventSearch.trim().toLowerCase();
-        const rows = approvedEvents.filter((e) => {
+        const source = showArchived ? archivedEvents : approvedEvents;
+        const rows = source.filter((e) => {
             if (eventOrgFilter && e.orgSlug !== eventOrgFilter) return false;
             if (eventCategoryFilter && e.category !== eventCategoryFilter) return false;
             if (!needle) return true;
@@ -144,7 +149,7 @@ export default function Admin() {
             return hay.includes(needle);
         });
         return rows.sort((a, b) => (a.start || "").localeCompare(b.start || ""));
-    }, [approvedEvents, eventSearch, eventOrgFilter, eventCategoryFilter]);
+    }, [approvedEvents, archivedEvents, showArchived, eventSearch, eventOrgFilter, eventCategoryFilter]);
 
     const analytics = stats?.analytics || {};
     const siteOverview = analytics.overview || {};
@@ -808,10 +813,33 @@ export default function Admin() {
                     <h2 className="font-display font-bold text-xl">
                         Manage events{" "}
                         <span className="text-muted-foreground text-base font-normal">
-                            ({approvedEvents.length})
+                            ({showArchived ? `${archivedEvents.length} archived` : approvedEvents.length})
                         </span>
                     </h2>
                     <div className="flex items-center gap-2 flex-wrap">
+                        <button
+                            data-testid="admin-archive-past-btn"
+                            onClick={async () => {
+                                if (!window.confirm("Archive all past events? They'll disappear from public listings and this table, but can be viewed and restored from the Archived view.")) return;
+                                try {
+                                    const res = await api.adminArchivePastEvents();
+                                    toast.success(res.archived ? `Archived ${res.archived} past event${res.archived !== 1 ? "s" : ""}` : "No past events to archive");
+                                    refresh();
+                                } catch {
+                                    toast.error("Could not archive past events");
+                                }
+                            }}
+                            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-full bg-foreground text-background text-xs font-bold"
+                        >
+                            <Archive className="h-3.5 w-3.5" /> Archive past events
+                        </button>
+                        <button
+                            data-testid="admin-toggle-archived-btn"
+                            onClick={() => setShowArchived((v) => !v)}
+                            className={`px-4 py-2 rounded-full border text-xs font-semibold ${showArchived ? "bg-primary text-primary-foreground border-primary" : "border-border"}`}
+                        >
+                            {showArchived ? "Back to live events" : `View archived (${archivedEvents.length})`}
+                        </button>
                         <input
                             data-testid="admin-events-search"
                             type="search"
@@ -895,6 +923,24 @@ export default function Admin() {
                                         <td className="px-4 py-3 hidden md:table-cell"><CategoryBadge category={e.category} /></td>
                                         <td className="px-4 py-3">
                                             <div className="flex gap-1 justify-end">
+                                                {e.status === "archived" && (
+                                                    <button
+                                                        data-testid={`admin-restore-${e.id}`}
+                                                        onClick={async () => {
+                                                            try {
+                                                                await api.adminRestoreEvent(e.id);
+                                                                toast.success(`"${e.title}" restored to live events`);
+                                                                refresh();
+                                                            } catch {
+                                                                toast.error("Could not restore event");
+                                                            }
+                                                        }}
+                                                        className="h-8 px-3 grid place-items-center rounded-full bg-green-100 text-green-800 text-[10px] font-black uppercase tracking-wider hover:bg-green-200"
+                                                        title="Restore to live events"
+                                                    >
+                                                        Restore
+                                                    </button>
+                                                )}
                                                 <Link to={`/edit-event/${e.id}`} data-testid={`admin-edit-approved-${e.id}`} className="h-8 w-8 grid place-items-center rounded-full bg-muted hover:bg-primary hover:text-primary-foreground" title="Edit event"><Pencil className="h-3.5 w-3.5" /></Link>
                                                 <button data-testid={`feature-event-${e.id}`} onClick={async () => { await toggleEventFeatured(e.id); toast.success(e.featured ? "Unfeatured" : "Featured"); }} className={`h-8 w-8 grid place-items-center rounded-full ${e.featured ? "bg-secondary text-secondary-foreground" : "bg-muted"}`} title={e.featured ? "Unfeature" : "Feature on homepage"}><Star className="h-3.5 w-3.5" /></button>
                                                 <button

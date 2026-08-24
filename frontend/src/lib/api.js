@@ -1054,6 +1054,12 @@ export const api = {
     adminDeleteSubscriber: (subId) =>
         client.delete(`/admin/subscribers/${subId}`).then((r) => r.data),
 
+    adminArchivePastEvents: () =>
+        client.post("/admin/events/archive-past").then((r) => r.data),
+
+    adminRestoreEvent: (eventId) =>
+        client.post(`/admin/events/${eventId}/restore`).then((r) => r.data),
+
     orgEditRequests: (status = "") =>
         client
             .get(

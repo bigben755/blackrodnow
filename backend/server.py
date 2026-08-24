@@ -800,7 +800,7 @@ class Event(BaseModel):
     contactPhone: str = ""
     image: str = ""
     featured: bool = False
-    status: Literal["approved", "pending", "rejected", "draft", "cancelled"] = "pending"
+    status: Literal["approved", "pending", "rejected", "draft", "cancelled", "archived"] = "pending"
     recurrence: Optional[EventRecurrence] = None
 
 
@@ -1158,6 +1158,12 @@ def _is_blank_or_legacy_event_image(image: str) -> bool:
     if not value:
         return True
     return value.startswith(LEGACY_EVENT_IMAGE_PREFIX)
+
+
+def _is_category_stock_image(image: str) -> bool:
+    """True when the image is one of the generic category placeholders."""
+    value = (image or "").strip()
+    return value in set(DEFAULT_EVENT_CATEGORY_IMAGES.values()) or value == "/communityevent.png"
 
 DEFAULT_ORGANISATION_CATEGORIES = [
     "Community groups",
@@ -2933,7 +2939,7 @@ def _expand_recurring_event(ev: Dict[str, Any], horizon_days: int = 180) -> List
 
 @api.get("/events")
 async def list_events(upcoming_only: bool = False, include_pending: bool = False, expand_recurring: bool = True):
-    q: Dict[str, Any] = {} if include_pending else {"status": {"$ne": "pending"}}
+    q: Dict[str, Any] = {} if include_pending else {"status": {"$nin": ["pending", "archived", "rejected"]}}
     events = await db.events.find(q, {"_id": 0}).to_list(2000)
     if expand_recurring:
         expanded: List[Dict[str, Any]] = []
@@ -3025,14 +3031,11 @@ async def event_og_page(event_id: str, request: _Req):
     base = _abs_base_url(request)
     canonical = f"{base}/events/{event_id}"
 
-    # Resolve a good preview image (event image → org cover → org logo → site logo)
+    # Resolve a good preview image. Priority: real event image → auto-generated
+    # event poster (always specific to the event + organisation) → site logo.
     img = e.get("image") or ""
-    if not img and org.get("cover_path"):
-        img = f"{base}/api/organisations/{org['slug']}/cover"
-    if not img and org.get("logo_path"):
-        img = f"{base}/api/organisations/{org['slug']}/logo"
-    if not img:
-        img = f"{base}/logo.png"
+    if not img or _is_blank_or_legacy_event_image(img) or _is_category_stock_image(img):
+        img = f"{base}/api/events/{event_id}/poster.png"
 
     # Format a human date line for the description prefix
     try:
@@ -8294,6 +8297,42 @@ async def sitemap_xml(request: Request):
         '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">' + "".join(urls) + "</urlset>"
     )
     return Response(content=xml, media_type="application/xml", headers={"Cache-Control": "public, max-age=3600"})
+
+
+@api.post("/admin/events/archive-past")
+async def admin_archive_past_events():
+    """Archive every non-recurring approved event that has fully finished, plus
+    recurring events whose 'until' date has passed."""
+    now = datetime.now(timezone.utc).isoformat()
+    events = await db.events.find({"status": "approved"}, {"_id": 0, "id": 1, "title": 1, "start": 1, "end": 1, "recurrence": 1}).to_list(3000)
+    to_archive: list[str] = []
+    for e in events:
+        rec = e.get("recurrence") or {}
+        freq = rec.get("freq") or "none"
+        latest = e.get("end") or e.get("start") or ""
+        if freq != "none" or rec.get("extra_dates"):
+            until = rec.get("until") or ""
+            extras = [f"{d}T23:59:59+00:00" for d in (rec.get("extra_dates") or [])]
+            candidates = [c for c in [until, latest] + extras if c]
+            if not until and freq != "none":
+                continue  # open-ended recurring event — still active
+            if max(candidates) >= now:
+                continue
+        elif latest >= now:
+            continue
+        to_archive.append(e["id"])
+    if to_archive:
+        await db.events.update_many({"id": {"$in": to_archive}}, {"$set": {"status": "archived", "archived_at": now_iso()}})
+        await _audit(action="events_archived", entity_type="event", entity_id="bulk", summary=f"Archived {len(to_archive)} past event(s)", meta={"count": len(to_archive)}, actor="admin")
+    return {"ok": True, "archived": len(to_archive)}
+
+
+@api.post("/admin/events/{event_id}/restore")
+async def admin_restore_event(event_id: str):
+    res = await db.events.update_one({"id": event_id, "status": "archived"}, {"$set": {"status": "approved"}, "$unset": {"archived_at": ""}})
+    if not res.matched_count:
+        raise HTTPException(404, "Archived event not found")
+    return {"ok": True}
 
 
 @api.get("/admin/documents/template.docx")

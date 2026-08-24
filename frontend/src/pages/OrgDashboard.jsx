@@ -379,7 +379,7 @@ export default function OrgDashboard() {
         ).toISOString();
 
         try {
-            await addEvent({
+            const created = await addEvent({
                 title: item.title,
                 orgSlug: selectedOrgSlug,
                 category: item.category || "Community",
@@ -404,6 +404,9 @@ export default function OrgDashboard() {
             await refresh();
 
             setEventFilter("pending");
+            if (created?.id) {
+                setPostNowEvent(created);
+            }
 
             toast.success(
                 recurrenceFreq !== "none"
@@ -1716,7 +1719,19 @@ function ParsedCard({ it, onPublishEvent, onPublishUpdate, onCopy }) {
             </div>
             <div className="mt-3">
                 <div className="text-[10px] font-bold uppercase tracking-wider text-background/60 mb-1.5">Share to socials</div>
-                <ShareButtons text={it.social_caption || it.description} url={shareUrl} title={it.title} />
+                {it.matched_event_id ? (
+                    <ShareButtons
+                        text={it.social_caption || it.description}
+                        url={`${window.location.origin}/events/${it.matched_event_id}`}
+                        ogUrl={`${window.location.origin}/api/events/${it.matched_event_id}/og`}
+                        title={it.title}
+                    />
+                ) : (
+                    <p className="text-[11px] text-background/70" data-testid="parsed-share-hint">
+                        Hit <strong>Create event</strong> first — you'll then get a ready-made post with
+                        your organisation's details, an event poster and the correct link preview.
+                    </p>
+                )}
             </div>
         </div>
     );
