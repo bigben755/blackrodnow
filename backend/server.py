@@ -3040,11 +3040,15 @@ async def event_og_page(event_id: str, request: _Req):
     base = _abs_base_url(request)
     canonical = f"{base}/events/{event_id}"
 
-    # Resolve a good preview image. Priority: real event image → auto-generated
-    # event poster (always specific to the event + organisation) → site logo.
-    img = e.get("image") or ""
+    # Resolve a good preview image. Priority: real uploaded event image →
+    # the event category's default artwork → generated poster (last resort).
+    img = (e.get("image") or "").strip()
     if not img or _is_blank_or_legacy_event_image(img) or _is_category_stock_image(img):
+        img = _event_category_image(e.get("category"))
+    if not img:
         img = f"{base}/api/events/{event_id}/poster.png"
+    elif img.startswith("/"):
+        img = f"{base}{img}"
 
     # Format a human date line for the description prefix
     try:
@@ -3078,6 +3082,12 @@ async def event_og_page(event_id: str, request: _Req):
         img_w, img_h = 512, 512
     elif "/organisations/" in img and img.endswith("/cover"):
         img_w, img_h = 1600, 500
+    elif img.endswith("/poster.png"):
+        img_w, img_h = 1080, 1080
+    elif any(img.endswith(name) for name in ("communityevent.png", "faith.png", "familyevent.png")):
+        img_w, img_h = 1672, 941
+    elif any(img.endswith(v) for v in DEFAULT_EVENT_CATEGORY_IMAGES.values()):
+        img_w, img_h = 1536, 1024
     else:
         img_w, img_h = 1200, 630
 

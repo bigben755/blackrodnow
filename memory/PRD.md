@@ -176,3 +176,7 @@ A modern community website for Blackrod, Bolton showcasing local events, clubs, 
 - SeoJsonLd emits startDate/endDate with correct +01:00/+00:00 London offset.
 - Testing: iteration_21 frontend E2E 7/8 → after until-fix all pass; backend recurrence suite 8/8. Pre-existing legacy test failures (org_images/member_lifecycle/newsletter preview) are old tests missing new auth headers — NOT product bugs.
 - Pending backlog unchanged: server.py refactor into APIRouters (P1, 10k lines), SEO/GEO growth pack (user asked about it — not yet built), Batch D CSV exports (P2).
+
+## 25 Jun 2026 — Facebook share image fix
+- Event OG page (`GET /api/events/{id}/og`) image priority changed per user request: real uploaded event image → category default artwork (`/{category}.png` from frontend public, absolute-URL'd, correct og:image dims 1536×1024 or 1672×941) → generated poster only as last resort. Poster dims corrected to 1080×1080 when used.
+- Verified via curl: legacy-image event → category artwork; real-image event → passthrough. User must REDEPLOY and re-scrape previously shared URLs in Facebook Sharing Debugger (FB caches OG per URL).
