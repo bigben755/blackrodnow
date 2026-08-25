@@ -17,6 +17,7 @@ import {
 } from "@/components/ui/dialog";
 import RecurrenceFields, { buildRecurrencePayload } from "@/components/RecurrenceFields";
 import AiAuditCard from "@/components/AiAuditCard";
+import PushAnnounceCard from "@/components/PushAnnounceCard";
 
 export default function Admin() {
     const {
@@ -1106,6 +1107,9 @@ export default function Admin() {
             </section>
             <section className="mt-8">
                 <AiAuditCard onApplied={refresh} />
+            </section>
+            <section className="mt-8">
+                <PushAnnounceCard />
             </section>
             <section className="mt-8 space-y-4" data-testid="site-admin-controls">
                 <div className="flex flex-wrap items-end justify-between gap-3">

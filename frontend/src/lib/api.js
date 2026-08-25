@@ -1361,6 +1361,24 @@ export const api = {
             .then((r) => r.data),
 
     // ─────────────────────────────────────────────────────────
+    // Web push notifications
+    // ─────────────────────────────────────────────────────────
+    pushPublicKey: () => client.get("/push/public-key").then((r) => r.data),
+
+    pushSubscribe: (deviceId, subscription) =>
+        client
+            .post("/push/subscribe", { device_id: deviceId, subscription })
+            .then((r) => r.data),
+
+    pushUnsubscribe: (endpoint) =>
+        client.post("/push/unsubscribe", { endpoint }).then((r) => r.data),
+
+    pushAnnounce: (title, body, url) =>
+        client
+            .post("/admin/push/announce", { title, body, url })
+            .then((r) => r.data),
+
+    // ─────────────────────────────────────────────────────────
     // Event image upload
     // ─────────────────────────────────────────────────────────
 

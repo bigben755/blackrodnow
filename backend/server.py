@@ -3448,6 +3448,8 @@ async def create_event(
     if _is_blank_or_legacy_event_image(evt.image):
         evt.image = _event_category_image(evt.category)
     await db.events.insert_one(evt.model_dump())
+    if evt.status == "approved":
+        _push_org_event_approved(evt.model_dump())
     await _audit(
         action="event_created",
         entity_type="event",
@@ -3558,6 +3560,8 @@ async def set_event_status(
         )
 
     await db.events.update_one({"id": event_id}, {"$set": {"status": status}})
+    if status == "approved" and (existing.get("status") or "") != "approved":
+        _push_org_event_approved({**existing, "status": "approved"})
     await _audit(
         action="event_status_changed",
         entity_type="event",
@@ -3589,6 +3593,8 @@ async def admin_event_status(
         raise HTTPException(404, "Event not found")
 
     await db.events.update_one({"id": event_id}, {"$set": {"status": status}})
+    if status == "approved" and (existing.get("status") or "") != "approved":
+        _push_org_event_approved({**existing, "status": "approved"})
     await _audit(
         action="event_status_changed",
         entity_type="event",
@@ -3664,6 +3670,7 @@ async def create_feed_post(
 ):
     _require_org_write_access(post.orgSlug, org_auth, admin_code)
     await db.feed.insert_one(post.model_dump())
+    _push_org_feed_update(post.model_dump())
     return post
 
 
@@ -5158,6 +5165,169 @@ async def toggle_follow(req: FollowReq):
     op = "$addToSet" if req.action == "add" else "$pull"
     await db.follows.update_one({"device_id": req.device_id}, {op: {key: req.value}}, upsert=True)
     return await get_follows(req.device_id)
+
+
+# ─────────── Web push (anonymous device subscriptions, VAPID) ───────────
+VAPID_PRIVATE_KEY = os.environ.get("VAPID_PRIVATE_KEY", "")
+VAPID_PUBLIC_KEY = os.environ.get("VAPID_PUBLIC_KEY", "")
+VAPID_SUBJECT = os.environ.get("VAPID_SUBJECT", "mailto:hello@blackrodnow.com")
+
+
+def _send_webpush_sync(subscription: dict, payload: str) -> bool:
+    """Returns False when the subscription is dead and should be removed."""
+    from pywebpush import webpush, WebPushException
+    try:
+        webpush(
+            subscription_info=subscription,
+            data=payload,
+            vapid_private_key=VAPID_PRIVATE_KEY,
+            vapid_claims={"sub": VAPID_SUBJECT},
+            timeout=10,
+        )
+        return True
+    except WebPushException as exc:
+        code = getattr(getattr(exc, "response", None), "status_code", None)
+        if code in (400, 404, 410):
+            return False
+        logger.warning("webpush send failed: %s", exc)
+        return True
+    except Exception as exc:
+        logger.warning("webpush error: %s", exc)
+        return True
+
+
+async def _push_to_subscriptions(subs: List[dict], title: str, body: str, url: str = "/") -> int:
+    if not VAPID_PRIVATE_KEY or not subs:
+        return 0
+    payload = json.dumps({
+        "title": str(title)[:80],
+        "body": str(body)[:200],
+        "url": url or "/",
+        "icon": "/icons/icon-192.png",
+    })
+    sent = 0
+    for s in subs:
+        info = s.get("subscription") or {}
+        if not info.get("endpoint"):
+            continue
+        if await asyncio.to_thread(_send_webpush_sync, info, payload):
+            sent += 1
+        else:
+            await db.push_subscriptions.delete_one({"endpoint": info.get("endpoint")})
+    return sent
+
+
+async def _push_to_org_followers(org_slug: str, title: str, body: str, url: str) -> int:
+    if not org_slug:
+        return 0
+    device_ids = [d["device_id"] async for d in db.follows.find({"orgs": org_slug}, {"_id": 0, "device_id": 1})]
+    if not device_ids:
+        return 0
+    subs = await db.push_subscriptions.find({"device_id": {"$in": device_ids}}, {"_id": 0}).to_list(5000)
+    return await _push_to_subscriptions(subs, title, body, url)
+
+
+def _push_org_event_approved(event: dict) -> None:
+    """Fire-and-forget: notify followers when an org's event goes live."""
+    async def _go():
+        try:
+            org = await db.orgs.find_one({"slug": event.get("orgSlug")}, {"_id": 0, "name": 1})
+            name = (org or {}).get("name") or "A group you follow"
+            when = str(event.get("start") or "")[:16].replace("T", " · ")
+            await _push_to_org_followers(
+                event.get("orgSlug") or "",
+                f"New event from {name}",
+                f"{event.get('title')} — {when}",
+                f"/events/{event.get('id')}",
+            )
+        except Exception as exc:
+            logger.warning("event push failed: %s", exc)
+    asyncio.create_task(_go())
+
+
+def _push_org_feed_update(post: dict) -> None:
+    """Fire-and-forget: notify followers when an org posts a local feed update."""
+    async def _go():
+        try:
+            org = await db.orgs.find_one({"slug": post.get("orgSlug")}, {"_id": 0, "name": 1})
+            name = (org or {}).get("name") or "A group you follow"
+            await _push_to_org_followers(
+                post.get("orgSlug") or "",
+                f"{name} posted an update",
+                str(post.get("title") or post.get("body") or "")[:140],
+                "/local-feed",
+            )
+        except Exception as exc:
+            logger.warning("feed push failed: %s", exc)
+    asyncio.create_task(_go())
+
+
+class PushSubscribeReq(BaseModel):
+    device_id: str
+    subscription: Dict[str, Any]
+
+
+class PushUnsubscribeReq(BaseModel):
+    endpoint: str
+
+
+class PushAnnounceReq(BaseModel):
+    title: str
+    body: str
+    url: Optional[str] = ""
+
+
+@api.get("/push/public-key")
+async def push_public_key():
+    return {"key": VAPID_PUBLIC_KEY}
+
+
+@api.post("/push/subscribe")
+async def push_subscribe(req: PushSubscribeReq):
+    endpoint = str((req.subscription or {}).get("endpoint") or "")
+    if not endpoint:
+        raise HTTPException(400, "Invalid subscription")
+    await db.push_subscriptions.update_one(
+        {"endpoint": endpoint},
+        {
+            "$set": {
+                "endpoint": endpoint,
+                "device_id": req.device_id,
+                "subscription": req.subscription,
+                "updated_at": now_iso(),
+            },
+            "$setOnInsert": {"created_at": now_iso()},
+        },
+        upsert=True,
+    )
+    return {"ok": True}
+
+
+@api.post("/push/unsubscribe")
+async def push_unsubscribe(req: PushUnsubscribeReq):
+    await db.push_subscriptions.delete_one({"endpoint": req.endpoint})
+    return {"ok": True}
+
+
+@api.post("/admin/push/announce")
+async def admin_push_announce(
+    req: PushAnnounceReq,
+    request: Request,
+    authorization: Optional[str] = Header(None),
+    admin_code: Optional[str] = Header(None, alias="X-Admin-Code"),
+):
+    _require_admin_from_request(request, authorization, admin_code)
+    if not req.title.strip() or not req.body.strip():
+        raise HTTPException(400, "Both a title and a message are required")
+    subs = await db.push_subscriptions.find({}, {"_id": 0}).to_list(10000)
+    sent = await _push_to_subscriptions(subs, req.title.strip(), req.body.strip(), (req.url or "/").strip() or "/")
+    await _audit(
+        action="push_announcement",
+        entity_type="site",
+        entity_id="push",
+        summary=f"Push announcement sent to {sent}/{len(subs)} devices: {req.title.strip()}",
+    )
+    return {"ok": True, "sent": sent, "subscriptions": len(subs)}
 
 
 # ─────────── Notifications (admin → org) ───────────

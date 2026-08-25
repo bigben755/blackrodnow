@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import { Link, NavLink, useLocation, useNavigate } from "react-router-dom";
 import { useApp } from "@/context/AppContext";
 import DemoTour from "@/components/DemoTour";
+import InstallPrompt from "@/components/InstallPrompt";
 import { api } from "@/lib/api";
 import {
     Moon,
@@ -1564,6 +1565,7 @@ export default function Layout({ children }) {
             />
 
             <LaunchNotice />
+            <InstallPrompt />
 
             <DemoTour />
 

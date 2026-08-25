@@ -1,11 +1,49 @@
-import React from "react";
+import React, { useEffect, useState } from "react";
 import { useApp } from "@/context/AppContext";
 import { CATEGORIES } from "@/data/mockData";
 import { Bell, Mail, Calendar, Smartphone, Heart } from "lucide-react";
 import { toast } from "sonner";
+import { enablePush, disablePush, getPushSubscription, isIos, isStandalone } from "@/lib/push";
 
 export default function Notifications() {
     const { notifPrefs, setNotifPrefs, orgs, follows, toggleFollowOrg, toggleFollowCategory } = useApp();
+    const [pushEnabled, setPushEnabled] = useState(false);
+    const [pushBusy, setPushBusy] = useState(false);
+
+    useEffect(() => {
+        getPushSubscription()
+            .then((sub) => setPushEnabled(!!sub))
+            .catch(() => {});
+    }, []);
+
+    const togglePush = async () => {
+        if (pushBusy) return;
+        setPushBusy(true);
+        try {
+            if (pushEnabled) {
+                await disablePush();
+                setPushEnabled(false);
+                toast.success("Push notifications turned off");
+            } else {
+                await enablePush();
+                setPushEnabled(true);
+                toast.success("You'll now get alerts from groups you follow");
+            }
+        } catch (error) {
+            const reason = String(error?.message || "");
+            if (reason === "denied") {
+                toast.error("Notifications are blocked — allow them for this site in your browser settings");
+            } else if (reason === "unsupported" && isIos() && !isStandalone()) {
+                toast.error('On iPhone, install the app first: tap Share → "Add to Home Screen", then enable notifications here');
+            } else if (reason === "unsupported") {
+                toast.error("This browser doesn't support push notifications");
+            } else {
+                toast.error("Could not enable notifications — please try again");
+            }
+        } finally {
+            setPushBusy(false);
+        }
+    };
 
     const setPref = (k) => setNotifPrefs((p) => ({ ...p, [k]: !p[k] }));
 
@@ -37,10 +75,14 @@ export default function Notifications() {
                 />
                 <Toggle
                     icon={Smartphone}
-                    title="Browser push notifications"
-                    desc="Instant browser pop-ups (placeholder)."
-                    checked={notifPrefs.push}
-                    onChange={() => setPref("push")}
+                    title="Push notifications"
+                    desc={
+                        pushEnabled
+                            ? "On — instant alerts for new events and updates from groups you follow."
+                            : "Instant alerts for new events and updates from groups you follow. On iPhone, add Blackrod Now to your home screen first."
+                    }
+                    checked={pushEnabled}
+                    onChange={togglePush}
                     testid="pref-push"
                 />
                 <Toggle
