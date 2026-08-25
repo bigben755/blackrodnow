@@ -36,6 +36,9 @@ import {
     DialogTitle,
 } from "@/components/ui/dialog";
 
+const LAUNCH_NOTICE_KEY = "blackrod-now-launch-notice-v1";
+const LAUNCH_NOTICE_DISMISS_DAYS = 30;
+
 const ADMIN_LAUNCH_CODE = (
     process.env.REACT_APP_ADMIN_LAUNCH_CODE || ""
 ).trim();
@@ -86,6 +89,199 @@ export const Brand = ({ size = "default" }) => (
         </span>
     </Link>
 );
+
+function LaunchNotice() {
+    const { role } = useApp();
+    const location = useLocation();
+    const [open, setOpen] = useState(false);
+
+    const isManagementArea =
+        location.pathname.startsWith("/admin") ||
+        location.pathname.startsWith("/organisation-dashboard") ||
+        location.pathname.startsWith("/edit-organisation") ||
+        location.pathname.startsWith("/edit-event");
+
+    useEffect(() => {
+        if (role !== "guest" || isManagementArea) {
+            setOpen(false);
+            return undefined;
+        }
+
+        let dismissedRecently = false;
+
+        try {
+            const stored = localStorage.getItem(LAUNCH_NOTICE_KEY);
+
+            if (stored) {
+                const parsed = JSON.parse(stored);
+                const dismissedAt = Number(parsed?.dismissedAt || 0);
+                const maxAge =
+                    LAUNCH_NOTICE_DISMISS_DAYS * 24 * 60 * 60 * 1000;
+
+                dismissedRecently =
+                    dismissedAt > 0 && Date.now() - dismissedAt < maxAge;
+            }
+        } catch {
+            dismissedRecently = false;
+        }
+
+        if (dismissedRecently) {
+            setOpen(false);
+            return undefined;
+        }
+
+        const timer = window.setTimeout(() => {
+            setOpen(true);
+        }, 650);
+
+        return () => window.clearTimeout(timer);
+    }, [role, isManagementArea]);
+
+    useEffect(() => {
+        if (!open) return undefined;
+
+        const previousOverflow = document.body.style.overflow;
+        document.body.style.overflow = "hidden";
+
+        const handleKeyDown = (event) => {
+            if (event.key === "Escape") {
+                dismissNotice();
+            }
+        };
+
+        window.addEventListener("keydown", handleKeyDown);
+
+        return () => {
+            document.body.style.overflow = previousOverflow;
+            window.removeEventListener("keydown", handleKeyDown);
+        };
+    }, [open]);
+
+    const dismissNotice = () => {
+        try {
+            localStorage.setItem(
+                LAUNCH_NOTICE_KEY,
+                JSON.stringify({ dismissedAt: Date.now() })
+            );
+        } catch {
+            // If localStorage is unavailable, simply close the notice.
+        }
+
+        setOpen(false);
+    };
+
+    if (!open) return null;
+
+    return (
+        <div
+            className="fixed inset-0 z-[250] flex items-center justify-center p-4 sm:p-6"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="launch-notice-title"
+        >
+            <button
+                type="button"
+                className="absolute inset-0 bg-black/60 backdrop-blur-[2px]"
+                onClick={dismissNotice}
+                aria-label="Close welcome message"
+            />
+
+            <div className="relative w-full max-w-2xl overflow-hidden rounded-[2rem] border border-border bg-background shadow-2xl">
+                <div className="absolute inset-x-0 top-0 h-1.5 bg-primary" />
+
+                <button
+                    type="button"
+                    onClick={dismissNotice}
+                    className="absolute right-4 top-4 z-10 h-9 w-9 grid place-items-center rounded-full border border-border bg-background/90 text-muted-foreground hover:text-foreground hover:bg-muted transition"
+                    aria-label="Close welcome message"
+                >
+                    <X className="h-4 w-4" />
+                </button>
+
+                <div className="p-6 sm:p-8">
+                    <div className="flex items-start gap-4 pr-10">
+                        <img
+                            src="/logo.png"
+                            alt=""
+                            className="h-14 w-14 sm:h-16 sm:w-16 object-contain shrink-0"
+                        />
+
+                        <div>
+                            <div className="inline-flex items-center rounded-full bg-primary/10 px-3 py-1 text-[11px] font-bold uppercase tracking-[0.14em] text-primary">
+                                New community platform
+                            </div>
+
+                            <h2
+                                id="launch-notice-title"
+                                className="mt-3 font-display text-2xl sm:text-3xl font-black tracking-tight text-foreground"
+                            >
+                                Welcome to Blackrod Now
+                            </h2>
+
+                            <p className="mt-2 text-sm sm:text-base text-muted-foreground leading-relaxed">
+                                One place to discover local events, organisations,
+                                groups and community updates across Blackrod.
+                            </p>
+                        </div>
+                    </div>
+
+                    <div className="mt-6 rounded-3xl border border-border bg-muted/35 p-4 sm:p-5">
+                        <p className="text-sm sm:text-base leading-relaxed text-foreground/90">
+                            Blackrod Now has just launched. During this early
+                            stage, some listings may occasionally be incomplete,
+                            out of date or change at short notice.
+                        </p>
+
+                        <p className="mt-3 text-sm sm:text-base leading-relaxed text-foreground/90">
+                            We are inviting local organisations to claim and
+                            manage their own profiles. As more organisations do
+                            this, the information on Blackrod Now will become
+                            increasingly accurate and useful for everyone.
+                        </p>
+                    </div>
+
+                    <p className="mt-5 text-sm text-muted-foreground leading-relaxed">
+                        Please explore the site, share Blackrod Now with others
+                        and help us build a stronger community resource. For
+                        important event details, we recommend checking with the
+                        organiser before travelling.
+                    </p>
+
+                    <div className="mt-6 flex flex-col sm:flex-row gap-3">
+                        <button
+                            type="button"
+                            onClick={dismissNotice}
+                            className="inline-flex flex-1 items-center justify-center rounded-full bg-primary px-5 py-3 text-sm font-bold text-primary-foreground hover:opacity-90 transition"
+                        >
+                            Explore Blackrod Now
+                        </button>
+
+                        <Link
+                            to="/organisations"
+                            onClick={dismissNotice}
+                            className="inline-flex flex-1 items-center justify-center gap-2 rounded-full border border-border bg-background px-5 py-3 text-sm font-bold text-foreground hover:bg-muted transition"
+                        >
+                            <Building2 className="h-4 w-4" />
+                            Find your organisation
+                        </Link>
+                    </div>
+
+                    <div className="mt-4 text-center text-xs sm:text-sm text-muted-foreground">
+                        Spot something that needs updating?{" "}
+                        <Link
+                            to="/contact"
+                            onClick={dismissNotice}
+                            className="font-semibold text-primary hover:underline"
+                        >
+                            Let us know
+                        </Link>
+                        .
+                    </div>
+                </div>
+            </div>
+        </div>
+    );
+}
 
 function AdminSignInDialog({ open, onOpenChange }) {
     const { unlockAdmin, loginAdmin } = useApp();
@@ -1366,6 +1562,8 @@ export default function Layout({ children }) {
                     setAdminLoginOpen(true)
                 }
             />
+
+            <LaunchNotice />
 
             <DemoTour />
 

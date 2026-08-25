@@ -1337,6 +1337,30 @@ export const api = {
             .then((r) => r.data),
 
     // ─────────────────────────────────────────────────────────
+    // AI accuracy audit (bulk check + edit approval queue)
+    // ─────────────────────────────────────────────────────────
+    startEventAudit: (mode = "new") =>
+        client.post("/admin/events/audit", { mode }).then((r) => r.data),
+
+    eventAuditStatus: () =>
+        client.get("/admin/events/audit/status").then((r) => r.data),
+
+    eventEditProposals: (status = "pending") =>
+        client
+            .get("/admin/event-edit-proposals", { params: { status } })
+            .then((r) => r.data),
+
+    approveEventEditProposal: (id, fields) =>
+        client
+            .post(`/admin/event-edit-proposals/${id}/approve`, { fields })
+            .then((r) => r.data),
+
+    rejectEventEditProposal: (id) =>
+        client
+            .post(`/admin/event-edit-proposals/${id}/reject`)
+            .then((r) => r.data),
+
+    // ─────────────────────────────────────────────────────────
     // Event image upload
     // ─────────────────────────────────────────────────────────
 

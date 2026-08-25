@@ -8310,6 +8310,292 @@ async def admin_check_entity(req: AdminCheckReq):
     return result
 
 
+# ─────────── AI accuracy audit (bulk event check + approval queue) ───────────
+
+AUDIT_EDITABLE_FIELDS = {"title", "start", "end", "venue", "address", "cost", "booking", "description"}
+
+
+async def _audit_check_single_event(event: dict) -> dict:
+    """Web-search accuracy check for one event, returning verdict + proposed field edits."""
+    org = await db.orgs.find_one({"slug": event.get("orgSlug")}, {"_id": 0, "name": 1, "website": 1, "socials": 1}) or {}
+    facts = {
+        "event_title": event.get("title"),
+        "date_start": event.get("start"),
+        "date_end": event.get("end"),
+        "venue": event.get("venue"),
+        "address": event.get("address"),
+        "cost": event.get("cost"),
+        "booking": event.get("booking"),
+        "recurrence": (event.get("recurrence") or {}).get("freq"),
+        "description": (event.get("description") or "")[:400],
+        "organisation": org.get("name"),
+        "org_website": org.get("website"),
+        "org_socials": org.get("socials"),
+    }
+    if not await _ensure_llm_loaded():
+        raise RuntimeError("LLM unavailable")
+    from emergentintegrations.llm.chat import LlmChat, UserMessage
+
+    system = (
+        "You are a careful fact-checker for Blackrod Now, a community website for Blackrod, Bolton, UK. "
+        "Use web search to verify whether the event listing below is accurate and still going ahead. "
+        "Prioritise the organisation's own website/Facebook page, Bolton Council and local news. "
+        "Be conservative: only propose an edit when a reliable source CLEARLY contradicts the listing — never guess. "
+        "Respond with ONLY a JSON object, no markdown: "
+        '{"verdict": one of "looks_accurate"|"needs_attention"|"likely_outdated"|"could_not_verify", '
+        '"summary": "2-3 plain-English sentences for the site admin", '
+        '"issues": ["specific discrepancy or concern", ...] (empty list if none), '
+        '"proposed_edits": [{"field": one of "title"|"start"|"end"|"venue"|"address"|"cost"|"booking"|"description", '
+        '"new_value": "corrected value", "evidence": "one sentence on what the source says", "source_url": "https://..."}] '
+        "(empty list if everything checks out; for start/end use UK local time format YYYY-MM-DDTHH:MM:SS with no timezone suffix), "
+        '"sources": [{"url": "...", "title": "..."}, ...]}'
+    )
+    chat = (
+        LlmChat(api_key=EMERGENT_LLM_KEY, session_id=f"audit-{new_id()}", system_message=system)
+        .with_model("anthropic", "claude-sonnet-4-5-20250929")
+        .with_tools([{"type": "web_search_20250305", "name": "web_search", "max_uses": 4}])
+    )
+    raw = await asyncio.wait_for(
+        chat.send_message_with_tools(UserMessage(text=f"Verify this community event listing:\n{json.dumps(facts, ensure_ascii=False)}")),
+        timeout=150,
+    )
+    content = getattr(raw, "content", None) or str(raw)
+    cleaned = re.sub(r"^```(?:json)?|```$", "", content.strip(), flags=re.M).strip()
+    m = re.search(r"\{.*\}", cleaned, re.S)
+    return json.loads(m.group(0) if m else cleaned)
+
+
+def _audit_sanitise_changes(event: dict, data: dict) -> List[dict]:
+    changes: List[dict] = []
+    for edit in (data.get("proposed_edits") or [])[:8]:
+        if not isinstance(edit, dict):
+            continue
+        field = edit.get("field")
+        if field not in AUDIT_EDITABLE_FIELDS:
+            continue
+        new_value = str(edit.get("new_value") or "").strip()
+        if not new_value:
+            continue
+        if field in ("start", "end"):
+            new_value = new_value[:19]
+            try:
+                datetime.fromisoformat(new_value)
+            except Exception:
+                continue
+        old_value = str(event.get(field) or "")
+        if new_value == old_value:
+            continue
+        changes.append({
+            "field": field,
+            "old": old_value,
+            "new": new_value,
+            "evidence": str(edit.get("evidence") or "")[:400],
+            "source_url": str(edit.get("source_url") or "")[:400],
+        })
+    return changes
+
+
+async def _run_event_audit_job(job_id: str, mode: str, limit: Optional[int] = None) -> None:
+    try:
+        today = datetime.now(UK_TZ).strftime("%Y-%m-%d")
+        rows = await db.events.find({"status": "approved"}, {"_id": 0}).to_list(3000)
+        upcoming = []
+        for e in rows:
+            rec = e.get("recurrence") or {}
+            recurring = (rec.get("freq") or "none") != "none" and (not rec.get("until") or str(rec.get("until"))[:10] >= today)
+            if recurring or str(e.get("end") or e.get("start") or "")[:10] >= today:
+                upcoming.append(e)
+        if mode == "new":
+            upcoming = [e for e in upcoming if not e.get("last_audit_at")]
+        if limit:
+            upcoming = upcoming[:limit]
+        await db.audit_jobs.update_one({"id": job_id}, {"$set": {"total": len(upcoming), "status": "running", "updated_at": now_iso()}})
+
+        done = proposals = errors = 0
+        for e in upcoming:
+            await db.audit_jobs.update_one({"id": job_id}, {"$set": {"current_title": e.get("title") or "", "updated_at": now_iso()}})
+            try:
+                data = await _audit_check_single_event(e)
+                result = {
+                    "verdict": data.get("verdict") if data.get("verdict") in CHECK_VERDICTS else "could_not_verify",
+                    "summary": str(data.get("summary") or "")[:1200],
+                    "issues": [str(i)[:300] for i in (data.get("issues") or [])][:8],
+                    "sources": [
+                        {"url": str(s.get("url") or "")[:400], "title": str(s.get("title") or "")[:160]}
+                        for s in (data.get("sources") or []) if isinstance(s, dict) and s.get("url")
+                    ][:6],
+                    "checked_at": now_iso(),
+                }
+                await db.events.update_one({"id": e["id"]}, {"$set": {"check_result": result, "last_audit_at": now_iso()}})
+                changes = _audit_sanitise_changes(e, data)
+                if changes:
+                    await db.event_edit_proposals.delete_many({"event_id": e["id"], "status": "pending"})
+                    await db.event_edit_proposals.insert_one({
+                        "id": new_id(),
+                        "event_id": e["id"],
+                        "event_title": e.get("title") or "",
+                        "org_slug": e.get("orgSlug") or "",
+                        "verdict": result["verdict"],
+                        "summary": result["summary"],
+                        "changes": changes,
+                        "sources": result["sources"],
+                        "status": "pending",
+                        "created_at": now_iso(),
+                        "job_id": job_id,
+                    })
+                    proposals += 1
+            except Exception as exc:
+                logger.warning("AI audit failed for event %s: %s", e.get("id"), exc)
+                errors += 1
+            done += 1
+            await db.audit_jobs.update_one(
+                {"id": job_id},
+                {"$set": {"done": done, "proposals": proposals, "errors": errors, "updated_at": now_iso()}},
+            )
+
+        await db.audit_jobs.update_one(
+            {"id": job_id},
+            {"$set": {"status": "done", "current_title": "", "finished_at": now_iso(), "updated_at": now_iso()}},
+        )
+        await _audit(
+            action="ai_audit_finished",
+            entity_type="event",
+            entity_id=job_id,
+            summary=f"AI accuracy audit finished — {done} checked, {proposals} suggested edits, {errors} errors",
+        )
+    except Exception as exc:
+        logger.exception("AI audit job %s crashed: %s", job_id, exc)
+        await db.audit_jobs.update_one(
+            {"id": job_id},
+            {"$set": {"status": "failed", "error": str(exc)[:400], "finished_at": now_iso(), "updated_at": now_iso()}},
+        )
+
+
+class AuditStartReq(BaseModel):
+    mode: Literal["new", "all"] = "new"
+    limit: Optional[int] = None
+
+
+@api.post("/admin/events/audit")
+async def start_event_audit(
+    req: AuditStartReq,
+    request: Request,
+    authorization: Optional[str] = Header(None),
+    admin_code: Optional[str] = Header(None, alias="X-Admin-Code"),
+):
+    _require_admin_from_request(request, authorization, admin_code)
+    running = await db.audit_jobs.find_one({"status": {"$in": ["queued", "running"]}}, {"_id": 0})
+    if running:
+        stale_cutoff = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
+        if (running.get("updated_at") or running.get("created_at") or "") < stale_cutoff:
+            await db.audit_jobs.update_one(
+                {"id": running["id"]},
+                {"$set": {"status": "failed", "error": "Stale — backend restarted mid-run", "finished_at": now_iso()}},
+            )
+        else:
+            raise HTTPException(409, "An audit is already running — wait for it to finish")
+    job = {
+        "id": new_id(), "status": "queued", "mode": req.mode,
+        "total": 0, "done": 0, "proposals": 0, "errors": 0,
+        "current_title": "", "created_at": now_iso(), "updated_at": now_iso(),
+    }
+    await db.audit_jobs.insert_one(dict(job))
+    asyncio.create_task(_run_event_audit_job(job["id"], req.mode, req.limit))
+    await _audit(action="ai_audit_started", entity_type="event", entity_id=job["id"], summary=f"AI accuracy audit started (mode: {req.mode})")
+    return job
+
+
+@api.get("/admin/events/audit/status")
+async def event_audit_status(
+    request: Request,
+    authorization: Optional[str] = Header(None),
+    admin_code: Optional[str] = Header(None, alias="X-Admin-Code"),
+):
+    _require_admin_from_request(request, authorization, admin_code)
+    job = await db.audit_jobs.find_one({}, {"_id": 0}, sort=[("created_at", -1)])
+    pending = await db.event_edit_proposals.count_documents({"status": "pending"})
+    return {"job": job, "pending_proposals": pending}
+
+
+@api.get("/admin/event-edit-proposals")
+async def list_event_edit_proposals(
+    request: Request,
+    status: str = "pending",
+    authorization: Optional[str] = Header(None),
+    admin_code: Optional[str] = Header(None, alias="X-Admin-Code"),
+):
+    _require_admin_from_request(request, authorization, admin_code)
+    return await db.event_edit_proposals.find({"status": status}, {"_id": 0}).sort("created_at", -1).to_list(200)
+
+
+class ProposalDecisionReq(BaseModel):
+    fields: Optional[List[str]] = None
+
+
+@api.post("/admin/event-edit-proposals/{pid}/approve")
+async def approve_event_edit_proposal(
+    pid: str,
+    req: ProposalDecisionReq,
+    request: Request,
+    authorization: Optional[str] = Header(None),
+    admin_code: Optional[str] = Header(None, alias="X-Admin-Code"),
+):
+    _require_admin_from_request(request, authorization, admin_code)
+    p = await db.event_edit_proposals.find_one({"id": pid, "status": "pending"}, {"_id": 0})
+    if not p:
+        raise HTTPException(404, "Suggestion not found or already decided")
+    selected = set(req.fields) if req.fields else {c["field"] for c in p.get("changes", [])}
+    updates = {
+        c["field"]: c["new"]
+        for c in p.get("changes", [])
+        if c["field"] in selected and c["field"] in AUDIT_EDITABLE_FIELDS
+    }
+    if not updates:
+        raise HTTPException(400, "No field changes selected")
+    event = await db.events.find_one({"id": p["event_id"]}, {"_id": 0})
+    if not event:
+        raise HTTPException(404, "The event no longer exists")
+    merged_start = str(updates.get("start", event.get("start") or ""))[:19]
+    merged_end = str(updates.get("end", event.get("end") or ""))[:19]
+    if merged_start and merged_end and merged_end < merged_start:
+        raise HTTPException(400, "That change would put the end before the start — approve both date fields together or edit the event manually")
+    await db.events.update_one({"id": p["event_id"]}, {"$set": updates})
+    await db.event_edit_proposals.update_one(
+        {"id": pid},
+        {"$set": {"status": "approved", "applied_fields": sorted(updates.keys()), "decided_at": now_iso()}},
+    )
+    await _audit(
+        action="ai_edit_approved",
+        entity_type="event",
+        entity_id=p["event_id"],
+        summary=f"AI-suggested edit approved for \"{p.get('event_title')}\" ({', '.join(sorted(updates.keys()))})",
+        meta={"proposal_id": pid, "applied": updates},
+    )
+    return {"ok": True, "applied": sorted(updates.keys())}
+
+
+@api.post("/admin/event-edit-proposals/{pid}/reject")
+async def reject_event_edit_proposal(
+    pid: str,
+    request: Request,
+    authorization: Optional[str] = Header(None),
+    admin_code: Optional[str] = Header(None, alias="X-Admin-Code"),
+):
+    _require_admin_from_request(request, authorization, admin_code)
+    p = await db.event_edit_proposals.find_one({"id": pid, "status": "pending"}, {"_id": 0})
+    if not p:
+        raise HTTPException(404, "Suggestion not found or already decided")
+    await db.event_edit_proposals.update_one({"id": pid}, {"$set": {"status": "rejected", "decided_at": now_iso()}})
+    await _audit(
+        action="ai_edit_rejected",
+        entity_type="event",
+        entity_id=p["event_id"],
+        summary=f"AI-suggested edit rejected for \"{p.get('event_title')}\"",
+        meta={"proposal_id": pid},
+    )
+    return {"ok": True}
+
+
 @api.get("/sitemap.xml")
 async def sitemap_xml(request: Request):
     base = _abs_base_url(request)

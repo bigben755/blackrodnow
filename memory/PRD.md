@@ -180,3 +180,10 @@ A modern community website for Blackrod, Bolton showcasing local events, clubs, 
 ## 25 Jun 2026 — Facebook share image fix
 - Event OG page (`GET /api/events/{id}/og`) image priority changed per user request: real uploaded event image → category default artwork (`/{category}.png` from frontend public, absolute-URL'd, correct og:image dims 1536×1024 or 1672×941) → generated poster only as last resort. Poster dims corrected to 1080×1080 when used.
 - Verified via curl: legacy-image event → category artwork; real-image event → passthrough. User must REDEPLOY and re-scrape previously shared URLs in Facebook Sharing Debugger (FB caches OG per URL).
+
+## 25 Jun 2026 — AI Accuracy Audit (bulk check + approval queue)
+- New Admin section "AI accuracy audit" (`AiAuditCard.jsx`, rendered after SiteModeCard in Admin.jsx).
+- Backend (server.py, placed before sitemap route): `POST /api/admin/events/audit` {mode: new|all, limit?} starts background job (`audit_jobs` collection, stale-job recovery after 10 min silence); worker `_run_event_audit_job` checks upcoming approved events (mode "new" = only events without `last_audit_at`) via Claude web search, stores `check_result` + `last_audit_at` on each event, and creates `event_edit_proposals` docs {changes:[{field,old,new,evidence,source_url}], verdict, summary, sources, status}.
+- `GET /api/admin/events/audit/status`, `GET /api/admin/event-edit-proposals`, `POST .../{{id}}/approve` (accepts {fields:[...]} subset, guards end<start), `POST .../{{id}}/reject`. All use `_require_admin_from_request`. Audit-logged.
+- UI: per-field tick/untick with old→new diff, per-change evidence + source link, verdict chip, progress bar with polling, "Check new events" vs "Re-check all upcoming" (confirm dialog warns about LLM budget).
+- Tested: pytest `tests/test_ai_audit.py` 5/5 (auth guard, subset approve, reject, end<start guard, status); real LLM run verified (limit=2, both events checked, conservative — no spurious edits); UI screenshot verified with seeded proposal (cleaned up).
