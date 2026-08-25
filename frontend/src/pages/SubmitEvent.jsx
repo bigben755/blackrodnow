@@ -3,6 +3,7 @@ import React, {
     useMemo,
     useState,
 } from "react";
+import { localIso } from "@/lib/localTime";
 import {
     Link,
     useNavigate,
@@ -465,10 +466,10 @@ export default function SubmitEvent() {
                     form.category,
 
                 start:
-                    startDate.toISOString(),
+                    localIso(startDate),
 
                 end:
-                    endDate.toISOString(),
+                    localIso(endDate),
 
                 venue:
                     form.venue.trim(),

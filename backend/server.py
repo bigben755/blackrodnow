@@ -779,6 +779,8 @@ class EventRecurrence(BaseModel):
     until: Optional[str] = None  # ISO date/datetime — inclusive upper bound
     count: Optional[int] = None  # OR a maximum number of instances (capped at 60)
     extra_dates: List[str] = []  # additional one-off YYYY-MM-DD dates the event also happens on
+    exception_dates: List[str] = []  # YYYY-MM-DD dates to SKIP (closures, holidays)
+    term_time_only: bool = False  # informational badge — runs term-time only
 
 
 class Event(BaseModel):
@@ -2863,6 +2865,10 @@ def _expand_recurring_event(ev: Dict[str, Any], horizon_days: int = 180) -> List
         until = datetime.fromisoformat(rec.get("until").replace("Z", "+00:00")) if rec.get("until") else horizon
     except Exception:
         until = horizon
+    if start.tzinfo is None and until.tzinfo is not None:
+        until = until.replace(tzinfo=None)
+    elif start.tzinfo is not None and until.tzinfo is None:
+        until = until.replace(tzinfo=timezone.utc)
     upper = min(until, horizon)
     max_count_raw = rec.get("count")
     if max_count_raw is None:
@@ -2923,6 +2929,9 @@ def _expand_recurring_event(ev: Dict[str, Any], horizon_days: int = 180) -> List
         seen.add(occ.date())
         occurrences.append(occ)
     occurrences.sort()
+    exceptions = {str(d)[:10] for d in (rec.get("exception_dates") or [])}
+    if exceptions:
+        occurrences = [o for o in occurrences if o.date().isoformat() not in exceptions]
 
     out: List[Dict[str, Any]] = []
     for occ in occurrences:
@@ -3133,17 +3142,23 @@ def _ics_escape(txt: str) -> str:
     )
 
 
-def _ics_dt(iso: str) -> str:
-    """Convert ISO datetime to iCal UTC form: 20260912T140000Z."""
-    if not iso:
-        return ""
+UK_TZ = ZoneInfo("Europe/London")
+
+
+def _uk_wall(iso: str) -> Optional[datetime]:
+    """Stored event times are UK wall-clock; strip any Z/offset suffix and attach Europe/London."""
     try:
-        dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        return datetime.fromisoformat(str(iso)[:19]).replace(tzinfo=UK_TZ)
     except Exception:
+        return None
+
+
+def _ics_dt(iso: str) -> str:
+    """Convert stored UK wall-clock datetime to iCal UTC form: 20260912T140000Z."""
+    dt = _uk_wall(iso)
+    if not dt:
         return ""
+    return dt.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
 
 def _ics_fold(line: str) -> str:
@@ -3404,6 +3419,8 @@ async def create_event(
         authorized = False
 
     if not authorized:
+        if not (evt.orgSlug or "").strip():
+            raise HTTPException(400, "Choose an organisation for this event before publishing")
         await _find_org(evt.orgSlug)
         evt.status = "pending"
         evt.featured = False
@@ -7109,7 +7126,7 @@ def _try_structured_spreadsheet(filename: str, data: bytes, orgs: list[dict], ev
         )
         if org_name:
             org_match, org_score = _best_match(org_name, orgs, "name")
-            if org_match and org_score >= 0.8:
+            if org_match and org_score >= 0.87:
                 item = item.model_copy(update={
                     "matched_org_slug": org_match.get("slug"),
                     "matched_org_name": org_match.get("name"),
@@ -7357,7 +7374,7 @@ def _try_labeled_blocks(filename: str, text: str, orgs: list[dict], events: list
         )
         if fields.get("org"):
             org_match, org_score = _best_match(fields["org"], orgs, "name")
-            if org_match and org_score >= 0.8:
+            if org_match and org_score >= 0.87:
                 item = item.model_copy(update={
                     "matched_org_slug": org_match.get("slug"),
                     "matched_org_name": org_match.get("name"),
@@ -8078,11 +8095,19 @@ async def public_event_list_submit(req: PublicListSubmission):
             org_match, org_score = _best_match(item.matched_org_name or req.org_name, orgs, "name")
             if org_match and org_score >= 0.85:
                 org_slug = org_match.get("slug")
-        org_slug = org_slug or PUBLIC_LIST_FALLBACK_ORG
+        org_slug = org_slug or ""  # unmatched → held for admin to assign at review (never guessed)
         start_time = item.start_time if re.fullmatch(r"\d{2}:\d{2}", item.start_time or "") else "10:00"
         end_time = item.end_time if re.fullmatch(r"\d{2}:\d{2}", item.end_time or "") else None
         end_date = item.end_date if re.fullmatch(r"\d{4}-\d{2}-\d{2}", item.end_date or "") else item.date
         end_value = end_time or start_time
+        start_iso = f"{item.date}T{start_time}:00"
+        end_iso = f"{end_date}T{end_value}:00"
+        try:
+            datetime.fromisoformat(start_iso)
+            datetime.fromisoformat(end_iso)
+        except Exception:
+            skipped.append(item.title)
+            continue
         recurrence = None
         if item.recurrence_freq and item.recurrence_freq != "none":
             recurrence = EventRecurrence(freq=item.recurrence_freq)
@@ -8090,8 +8115,8 @@ async def public_event_list_submit(req: PublicListSubmission):
             title=item.title.strip(),
             orgSlug=org_slug,
             category=item.category or "Community",
-            start=f"{item.date}T{start_time}:00",
-            end=f"{end_date}T{end_value}:00",
+            start=start_iso,
+            end=end_iso,
             venue=item.location or "",
             address=item.address or item.location or "",
             description=item.description or item.title,
@@ -8568,10 +8593,9 @@ def _render_welcome(email: str, unsub_link: str, pref_link: str) -> str:
 
 def _gcal_url(event: dict) -> str:
     """Google Calendar 'add event' URL — works from any email client."""
-    try:
-        start = datetime.fromisoformat((event.get("start") or "").replace("Z", "+00:00"))
-        end = datetime.fromisoformat((event.get("end") or event.get("start") or "").replace("Z", "+00:00"))
-    except Exception:
+    start = _uk_wall(event.get("start") or "")
+    end = _uk_wall(event.get("end") or event.get("start") or "")
+    if not start or not end:
         return ""
     def _fmt(dt: datetime) -> str:
         return dt.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -8587,10 +8611,9 @@ def _gcal_url(event: dict) -> str:
 
 
 def _outlook_url(event: dict) -> str:
-    try:
-        start = datetime.fromisoformat((event.get("start") or "").replace("Z", "+00:00"))
-        end = datetime.fromisoformat((event.get("end") or event.get("start") or "").replace("Z", "+00:00"))
-    except Exception:
+    start = _uk_wall(event.get("start") or "")
+    end = _uk_wall(event.get("end") or event.get("start") or "")
+    if not start or not end:
         return ""
     from urllib.parse import urlencode
     params = {
@@ -9584,7 +9607,8 @@ def _render_reminder_email(sub_email: str, event: dict, kind: str) -> tuple[str,
 
 
 async def _find_events_in_window(minutes_from_now: int, window_minutes: int) -> List[dict]:
-    now = datetime.now(timezone.utc)
+    # Stored event starts are UK wall-clock strings — compare against UK wall-clock now.
+    now = datetime.now(UK_TZ).replace(tzinfo=None)
     target = now + timedelta(minutes=minutes_from_now)
     lo = (target - timedelta(minutes=window_minutes / 2)).isoformat()
     hi = (target + timedelta(minutes=window_minutes / 2)).isoformat()

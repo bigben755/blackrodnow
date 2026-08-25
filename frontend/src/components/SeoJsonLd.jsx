@@ -16,12 +16,27 @@ export default function SeoJsonLd({ id, data }) {
     return null;
 }
 
+// Stored event times are UK wall-clock — emit with the correct Europe/London offset.
+const ukIso = (iso) => {
+    if (!iso) return iso;
+    const naive = String(iso).slice(0, 19);
+    try {
+        const probe = new Date(naive + "Z");
+        const bst =
+            new Date(probe.toLocaleString("en-US", { timeZone: "Europe/London" })).getTime() >
+            probe.getTime();
+        return naive + (bst ? "+01:00" : "+00:00");
+    } catch {
+        return naive;
+    }
+};
+
 export const eventJsonLd = (event, org, url, image) => ({
     "@context": "https://schema.org",
     "@type": "Event",
     name: event.title,
-    startDate: event.start,
-    endDate: event.end || event.start,
+    startDate: ukIso(event.start),
+    endDate: ukIso(event.end || event.start),
     eventStatus: event.status === "cancelled" ? "https://schema.org/EventCancelled" : "https://schema.org/EventScheduled",
     eventAttendanceMode: "https://schema.org/OfflineEventAttendanceMode",
     location: {

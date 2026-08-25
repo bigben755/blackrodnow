@@ -5,6 +5,7 @@ import {
     CategoryBadge,
     formatDate,
     formatTime,
+    isMultiDay,
 } from "@/components/Cards";
 import NewsletterSection from "@/components/NewsletterSection";
 import ShareButtons from "@/components/ShareButtons";
@@ -490,6 +491,16 @@ export default function EventDetail() {
                                 Free
                             </span>
                         )}
+
+                        {event.recurrence
+                            ?.term_time_only && (
+                            <span
+                                data-testid="detail-term-time-badge"
+                                className="px-2.5 py-1 rounded-full text-[10px] font-bold tracking-wider uppercase bg-amber-100 text-amber-900"
+                            >
+                                Term-time only
+                            </span>
+                        )}
                     </div>
                 </div>
 
@@ -645,17 +656,15 @@ export default function EventDetail() {
                                     CalendarDays
                                 }
                                 label="When"
-                                value={`${formatDate(
-                                    event.start
-                                )} · ${formatTime(
-                                    event.start
-                                )}${
-                                    event.end
-                                        ? ` – ${formatTime(
+                                value={
+                                    isMultiDay(event)
+                                        ? `${formatDate(event.start)} · ${formatTime(event.start)} – ${formatDate(event.end)} · ${formatTime(event.end)}`
+                                        : `${formatDate(event.start)} · ${formatTime(event.start)}${
                                               event.end
-                                          )}`
-                                        : ""
-                                }`}
+                                                  ? ` – ${formatTime(event.end)}`
+                                                  : ""
+                                          }`
+                                }
                             />
 
                             <InfoRow

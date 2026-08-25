@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { useApp } from "@/context/AppContext";
 import { api } from "@/lib/api";
 import { CategoryBadge, formatDate, formatTime, Stat } from "@/components/Cards";
+import { localIso } from "@/lib/localTime";
 import OrgAvatar from "@/components/OrgAvatar";
 import {
     Wand2,
@@ -369,14 +370,14 @@ export default function OrgDashboard() {
                 }
             }
 
-            start = date.toISOString();
+            start = localIso(date);
         } catch {
-            start = new Date(Date.now() + 86400000).toISOString();
+            start = localIso(new Date(Date.now() + 86400000));
         }
 
-        const end = new Date(
-            new Date(start).getTime() + 2 * 60 * 60 * 1000
-        ).toISOString();
+        const end = localIso(
+            new Date(new Date(start).getTime() + 2 * 60 * 60 * 1000)
+        );
 
         try {
             const created = await addEvent({

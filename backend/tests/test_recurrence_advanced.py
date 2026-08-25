@@ -149,3 +149,40 @@ def test_virtual_instance_detail_fetch(admin_headers):
         assert r.json()["start"][:10] == extra
     finally:
         requests.delete(f"{API}/admin/events/{eid}", headers=admin_headers, timeout=15)
+
+
+def test_naive_start_with_z_suffixed_until_does_not_500(admin_headers):
+    """Regression: naive wall-clock start + Z-suffixed until must not crash /api/events."""
+    start = (datetime.now() + timedelta(days=3)).replace(hour=10, minute=0, second=0, microsecond=0)
+    until = (start + timedelta(days=28)).strftime("%Y-%m-%dT23:59:59Z")
+    eid, _ = _create_event_at(
+        admin_headers,
+        {"freq": "weekly", "until": until},
+        start,
+        title="TEST_NaiveStartZUntil",
+    )
+    try:
+        inst = _instances(eid)
+        assert len(inst) >= 4, [e["start"] for e in inst]
+        assert all("T10:00" in e["start"] for e in inst)
+    finally:
+        requests.delete(f"{API}/admin/events/{eid}", headers=admin_headers, timeout=15)
+
+
+def test_naive_until_matches_naive_start(admin_headers):
+    """New UI saves until as naive string — expansion must respect it."""
+    start = (datetime.now() + timedelta(days=2)).replace(hour=9, minute=30, second=0, microsecond=0)
+    until = (start + timedelta(days=21)).strftime("%Y-%m-%dT23:59:59")
+    eid, _ = _create_event_at(
+        admin_headers,
+        {"freq": "weekly", "until": until, "exception_dates": [(start + timedelta(days=7)).strftime("%Y-%m-%d")]},
+        start,
+        title="TEST_NaiveUntil",
+    )
+    try:
+        inst = _instances(eid)
+        starts = [e["start"][:10] for e in inst]
+        assert (start + timedelta(days=7)).strftime("%Y-%m-%d") not in starts
+        assert len(inst) == 3, starts
+    finally:
+        requests.delete(f"{API}/admin/events/{eid}", headers=admin_headers, timeout=15)

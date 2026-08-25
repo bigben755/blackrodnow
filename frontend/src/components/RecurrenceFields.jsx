@@ -33,16 +33,21 @@ export default function RecurrenceFields({
     until = "",
     interval = 1,
     extraDates = [],
+    exceptionDates = [],
+    termTimeOnly = false,
     onFreqChange,
     onUntilChange,
     onIntervalChange,
     onExtraDatesChange,
+    onExceptionDatesChange,
+    onTermTimeOnlyChange,
     startDate = "",
     testIdPrefix = "recurrence",
     inputClassName = "w-full px-3 py-2 rounded-2xl border border-border bg-background text-sm",
     compact = false,
 }) {
     const [newDate, setNewDate] = useState("");
+    const [newSkipDate, setNewSkipDate] = useState("");
     const showInterval = !!onIntervalChange && INTERVAL_FREQS.includes(freq);
     const showExtras = !!onExtraDatesChange;
     const monthlyWeekdayHint = nthLabel(startDate);
@@ -115,6 +120,58 @@ export default function RecurrenceFields({
                     <span className="text-xs text-muted-foreground">{INTERVAL_UNIT[freq]} — e.g. 3 = every 3rd {INTERVAL_UNIT[freq].replace("(s)", "")}</span>
                 </label>
             )}
+            {!!onExceptionDatesChange && freq !== "none" && (
+                <div className="mt-4 border-t border-border pt-3">
+                    <span className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">
+                        Skips these dates (closures / holidays)
+                    </span>
+                    <div className="mt-2 flex items-center gap-2">
+                        <input
+                            data-testid={`${testIdPrefix}-skip-date-input`}
+                            type="date"
+                            value={newSkipDate}
+                            onChange={(e) => setNewSkipDate(e.target.value)}
+                            className={`${inputClassName} max-w-[200px]`}
+                        />
+                        <button
+                            type="button"
+                            data-testid={`${testIdPrefix}-skip-date-add`}
+                            onClick={() => {
+                                if (!newSkipDate || exceptionDates.includes(newSkipDate)) return;
+                                onExceptionDatesChange([...exceptionDates, newSkipDate].sort());
+                                setNewSkipDate("");
+                            }}
+                            disabled={!newSkipDate}
+                            className="inline-flex items-center gap-1 px-3 py-2 rounded-full bg-muted text-xs font-semibold disabled:opacity-50 hover:bg-accent hover:text-accent-foreground transition-colors"
+                        >
+                            <Plus className="h-3.5 w-3.5" /> Skip date
+                        </button>
+                    </div>
+                    {exceptionDates.length > 0 && (
+                        <div className="mt-2 flex flex-wrap gap-2" data-testid={`${testIdPrefix}-skip-dates-list`}>
+                            {exceptionDates.map((d) => (
+                                <span key={d} className="inline-flex items-center gap-1 px-3 py-1 rounded-full bg-red-50 text-red-700 text-xs font-semibold">
+                                    ✕ {new Date(`${d}T12:00:00`).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })}
+                                    <button type="button" onClick={() => onExceptionDatesChange(exceptionDates.filter((x) => x !== d))} title="Remove">
+                                        <X className="h-3 w-3" />
+                                    </button>
+                                </span>
+                            ))}
+                        </div>
+                    )}
+                    {!!onTermTimeOnlyChange && (
+                        <label className="mt-3 flex items-center gap-2 text-xs cursor-pointer">
+                            <input
+                                type="checkbox"
+                                data-testid={`${testIdPrefix}-term-time`}
+                                checked={termTimeOnly}
+                                onChange={(e) => onTermTimeOnlyChange(e.target.checked)}
+                            />
+                            <span>Term-time only (shows a badge so visitors know it pauses in school holidays)</span>
+                        </label>
+                    )}
+                </div>
+            )}
             {showExtras && (
                 <div className="mt-4 border-t border-border pt-3">
                     <span className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">
@@ -169,16 +226,19 @@ export default function RecurrenceFields({
  */
 export function buildRecurrencePayload(freq, untilYyyyMmDd, opts = {}) {
     const extraDates = opts.extraDates || [];
+    const exceptionDates = opts.exceptionDates || [];
     const hasFreq = freq && freq !== "none";
     if (!hasFreq && !extraDates.length) return null;
     const payload = { freq: hasFreq ? freq : "none" };
     if (hasFreq && untilYyyyMmDd) {
         // Turn a bare YYYY-MM-DD into an end-of-day ISO string so the last day is inclusive.
-        payload.until = new Date(`${untilYyyyMmDd}T23:59:59`).toISOString();
+        payload.until = `${untilYyyyMmDd}T23:59:59`;
     }
     if (hasFreq && opts.interval && Number(opts.interval) > 1) {
         payload.interval = Number(opts.interval);
     }
     if (extraDates.length) payload.extra_dates = extraDates;
+    if (hasFreq && exceptionDates.length) payload.exception_dates = exceptionDates;
+    if (hasFreq && opts.termTimeOnly) payload.term_time_only = true;
     return payload;
 }

@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { useApp } from "@/context/AppContext";
 import { api, API } from "@/lib/api";
 import { Stat, CategoryBadge, formatDate, formatTime } from "@/components/Cards";
+import { localIso } from "@/lib/localTime";
 import {
     CalendarDays, Building2, Inbox, Users, Star, Check, X, Trash2, BarChart3, Mail,
     Send, Edit3, Eye, MessageSquare, Bell, Pencil, UploadCloud, FileText, Sparkles, RefreshCw, Newspaper, HandHeart,
@@ -1670,14 +1671,18 @@ function BulkDocumentImportCard({ orgs }) {
         if (Number.isNaN(end.getTime()) || end <= start) {
             end = new Date(start.getTime() + 60 * 60 * 1000);
         }
-        return { start: start.toISOString(), end: end.toISOString() };
+        return { start: localIso(start), end: localIso(end) };
     };
 
     const validateItem = (doc, item) => {
         const draft = item.draft || item;
         const destination = inferDestination(draft);
         const errors = [];
-        const orgSlug = draft.matched_org_slug || sourceOrgSlug || orgs[0]?.slug;
+        const orgSlug = draft.matched_org_slug || sourceOrgSlug || "";
+        if (!orgSlug) {
+            toast.error(`"${draft.title}": pick a source organisation first — events are never auto-assigned to the wrong group`);
+            return false;
+        }
 
         if (!draft.title) errors.push("Missing title");
 
@@ -1787,7 +1792,7 @@ function BulkDocumentImportCard({ orgs }) {
                     toast.error("Add a date and time before posting this event");
                     return false;
                 }
-                const orgSlug = draft.matched_org_slug || sourceOrgSlug || orgs[0]?.slug;
+                const orgSlug = draft.matched_org_slug || sourceOrgSlug || "";
                 if (!orgSlug) {
                     toast.error("Pick a source organisation first");
                     return false;
@@ -1820,7 +1825,7 @@ function BulkDocumentImportCard({ orgs }) {
                     await api.createEvent(payload);
                 }
             } else if (destination === "volunteering") {
-                const orgSlug = draft.matched_org_slug || sourceOrgSlug || orgs[0]?.slug;
+                const orgSlug = draft.matched_org_slug || sourceOrgSlug || "";
                 if (!orgSlug) {
                     toast.error("Pick a source organisation first");
                     return false;
@@ -1839,7 +1844,7 @@ function BulkDocumentImportCard({ orgs }) {
                     await api.createVolunteer(volunteerPayload);
                 }
             } else if (destination === "local_feed") {
-                const orgSlug = draft.matched_org_slug || sourceOrgSlug || orgs[0]?.slug;
+                const orgSlug = draft.matched_org_slug || sourceOrgSlug || "";
                 if (!orgSlug) {
                     toast.error("Pick a source organisation first");
                     return false;
@@ -2808,7 +2813,9 @@ function SiteModeCard() {
             const [datePart, timePart] = value.split("T");
             const [y, m, d] = datePart.split("-").map(Number);
             const [hh, mm] = (timePart || "09:00").split(":").map(Number);
-            const iso = new Date(Date.UTC(y, m - 1, d, hh, mm, 0)).toISOString();
+            // Interpret the entered time as UK local time (Europe/London), NOT UTC —
+            // Date.UTC here caused every BST event to display one hour off.
+            const iso = new Date(y, m - 1, d, hh, mm, 0).toISOString();
             return iso;
         } catch {
             return "";
@@ -2948,8 +2955,8 @@ function QuickAddContentCard({ orgs, onCreated }) {
         }
         setBusy(true);
         try {
-            const startISO = new Date(`${eventForm.date}T${eventForm.start || "10:00"}`).toISOString();
-            const endISO = new Date(`${eventForm.date}T${eventForm.end || eventForm.start || "11:00"}`).toISOString();
+            const startISO = `${eventForm.date}T${eventForm.start || "10:00"}:00`;
+            const endISO = `${eventForm.date}T${eventForm.end || eventForm.start || "11:00"}:00`;
             await api.createEvent({
                 title: eventForm.title,
                 orgSlug: eventForm.orgSlug,

@@ -25,22 +25,7 @@ import RecurrenceFields, {
     buildRecurrencePayload,
 } from "@/components/RecurrenceFields";
 import EventImageInput from "@/components/EventImageInput";
-
-const pad = (value) => String(value).padStart(2, "0");
-
-const localDateOnly = (date) => {
-    if (!date || Number.isNaN(date.getTime())) return "";
-
-    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(
-        date.getDate()
-    )}`;
-};
-
-const localTimeOnly = (date) => {
-    if (!date || Number.isNaN(date.getTime())) return "";
-
-    return `${pad(date.getHours())}:${pad(date.getMinutes())}`;
-};
+import { localIso } from "@/lib/localTime";
 
 const eventStatusLabel = (status) => {
     if (status === "approved") return "Published";
@@ -126,17 +111,21 @@ export default function EventEdit() {
     useEffect(() => {
         if (!event) return;
 
-        const start = event.start ? new Date(event.start) : null;
-        const end = event.end ? new Date(event.end) : null;
+        const startIso = String(event.start || "");
+        const endIso = String(event.end || "");
 
         setForm({
             title: event.title || "",
             orgSlug: event.orgSlug || "",
             category: event.category || "Community",
 
-            date: localDateOnly(start),
-            startTime: localTimeOnly(start),
-            endTime: localTimeOnly(end),
+            date: startIso.slice(0, 10),
+            endDate:
+                endIso && endIso.slice(0, 10) !== startIso.slice(0, 10)
+                    ? endIso.slice(0, 10)
+                    : "",
+            startTime: startIso.slice(11, 16),
+            endTime: endIso.slice(11, 16),
 
             venue: event.venue || "",
             address: event.address || "",
@@ -163,6 +152,10 @@ export default function EventEdit() {
             recurrenceExtraDates: (
                 event.recurrence?.extra_dates || []
             ).map((date) => String(date).slice(0, 10)),
+            recurrenceExceptionDates: (
+                event.recurrence?.exception_dates || []
+            ).map((date) => String(date).slice(0, 10)),
+            recurrenceTermTimeOnly: !!event.recurrence?.term_time_only,
         });
     }, [event]);
 
@@ -251,7 +244,15 @@ export default function EventEdit() {
             return false;
         }
 
+        const multiDay = form.endDate && form.endDate !== form.date;
+
+        if (form.endDate && form.endDate < form.date) {
+            toast.error("The end date cannot be before the start date");
+            return false;
+        }
+
         if (
+            !multiDay &&
             form.endTime &&
             form.startTime &&
             form.endTime <= form.startTime
@@ -264,16 +265,19 @@ export default function EventEdit() {
     };
 
     const buildTimes = () => {
-        const startDate = new Date(`${form.date}T${form.startTime}`);
+        // Stored as naive UK wall-clock strings — no timezone conversion.
+        const start = `${form.date}T${form.startTime}:00`;
 
-        const endDate = form.endTime
-            ? new Date(`${form.date}T${form.endTime}`)
-            : new Date(startDate.getTime() + 60 * 60 * 1000);
+        const end = form.endTime
+            ? `${form.endDate || form.date}T${form.endTime}:00`
+            : localIso(
+                  new Date(
+                      new Date(`${form.date}T${form.startTime}`).getTime() +
+                          60 * 60 * 1000
+                  )
+              );
 
-        return {
-            start: startDate.toISOString(),
-            end: endDate.toISOString(),
-        };
+        return { start, end };
     };
 
     const save = async (submitEvent) => {
@@ -320,6 +324,8 @@ export default function EventEdit() {
                         {
                             interval: form.recurrenceInterval,
                             extraDates: form.recurrenceExtraDates,
+                            exceptionDates: form.recurrenceExceptionDates,
+                            termTimeOnly: form.recurrenceTermTimeOnly,
                         }
                     ),
 
@@ -620,6 +626,9 @@ export default function EventEdit() {
                                     onChange={set("orgSlug")}
                                     className={inp}
                                 >
+                                    <option value="" disabled>
+                                        Choose organisation…
+                                    </option>
                                     {orgs.map((org) => (
                                         <option key={org.slug} value={org.slug}>
                                             {org.name}
@@ -702,6 +711,18 @@ export default function EventEdit() {
                                 type="time"
                                 value={form.endTime}
                                 onChange={set("endTime")}
+                                className={inp}
+                            />
+                        </Field>
+                        <Field
+                            label="End date (multi-day events)"
+                            hint="Leave blank for a single-day event."
+                        >
+                            <input
+                                data-testid="ee-end-date"
+                                type="date"
+                                value={form.endDate || ""}
+                                onChange={set("endDate")}
                                 className={inp}
                             />
                         </Field>
@@ -874,6 +895,10 @@ export default function EventEdit() {
                         until={form.recurrenceUntil}
                         interval={form.recurrenceInterval}
                         extraDates={form.recurrenceExtraDates}
+                    exceptionDates={form.recurrenceExceptionDates || []}
+                    termTimeOnly={form.recurrenceTermTimeOnly || false}
+                    onExceptionDatesChange={(v) => setForm((f) => ({ ...f, recurrenceExceptionDates: v }))}
+                    onTermTimeOnlyChange={(v) => setForm((f) => ({ ...f, recurrenceTermTimeOnly: v }))}
                         onFreqChange={(value) =>
                             setForm((current) => ({
                                 ...current,

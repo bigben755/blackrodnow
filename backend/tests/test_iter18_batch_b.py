@@ -113,15 +113,17 @@ class TestSavedEventsSync:
 
 # ============ 2. Reminder loop ============
 def _seed_event_and_sub(dbh, email: str, minutes_from_now: int, tag: str):
-    now = datetime.now(timezone.utc)
+    # Event times are stored as UK wall-clock strings (matches production data semantics).
+    from zoneinfo import ZoneInfo
+    now = datetime.now(ZoneInfo("Europe/London")).replace(tzinfo=None)
     start = now + timedelta(minutes=minutes_from_now + 2)  # inside window
     end = start + timedelta(hours=1)
     event_id = f"evt-reminder-test-{tag}-{uuid.uuid4().hex[:6]}"
     doc = {
         "id": event_id,
         "title": f"Reminder Test {tag}",
-        "start": start.isoformat().replace("+00:00", "Z"),
-        "end": end.isoformat().replace("+00:00", "Z"),
+        "start": start.isoformat(),
+        "end": end.isoformat(),
         "status": "approved",
         "venue": "Test Hall",
         "address": "Blackrod",
