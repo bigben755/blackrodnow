@@ -190,3 +190,7 @@ A modern community website for Blackrod, Bolton showcasing local events, clubs, 
 
 ## 25 Jun 2026 — Mobile welcome popup fix
 - Launch-notice dialog in Layout.jsx: added max-h + overflow-y-auto (fits any phone height), hid logo on mobile, compacted spacing/text sizes, smaller close-button offset. Desktop unchanged. Verified with 390px screenshot before/after.
+
+## 25 Jun 2026 — Mobile polish pass
+- Audited 16+ pages/views at 390px (Home, Events, EventDetail top+mid, Orgs, OrgDetail, SubmitEvent, SubmitEventsList, Contact, FAQ, LocalFeed, Venues, Volunteering, SavedEvents, AddOrg, Privacy, Notifications, Admin, EditEvent, mobile nav menu): zero horizontal overflow anywhere; layouts stack correctly.
+- Fixes: welcome popup mobile layout (previous entry); SubmitEvent "Upload your events list in one go →" no-wrap arrow; cleaned 45 leftover TEST_* events (from old crashed pytest runs, some publicly visible) + restored Blackrod Town Council `short` tagline in preview DB. Verified admin DELETE endpoint works correctly (leftovers were historical).

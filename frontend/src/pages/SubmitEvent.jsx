@@ -644,8 +644,7 @@ export default function SubmitEvent() {
                         data-testid="link-submit-events-list"
                         className="font-semibold text-primary underline underline-offset-2"
                     >
-                        Upload your events
-                        list in one go →
+                        Upload your events list in one&nbsp;go&nbsp;→
                     </Link>
                 </p>
             </div>
