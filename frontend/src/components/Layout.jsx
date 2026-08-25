@@ -186,53 +186,53 @@ function LaunchNotice() {
                 aria-label="Close welcome message"
             />
 
-            <div className="relative w-full max-w-2xl overflow-hidden rounded-[2rem] border border-border bg-background shadow-2xl">
+            <div className="relative w-full max-w-2xl max-h-[calc(100dvh-2rem)] sm:max-h-[calc(100dvh-3rem)] overflow-y-auto overscroll-contain rounded-3xl sm:rounded-[2rem] border border-border bg-background shadow-2xl">
                 <div className="absolute inset-x-0 top-0 h-1.5 bg-primary" />
 
                 <button
                     type="button"
                     onClick={dismissNotice}
-                    className="absolute right-4 top-4 z-10 h-9 w-9 grid place-items-center rounded-full border border-border bg-background/90 text-muted-foreground hover:text-foreground hover:bg-muted transition"
+                    className="absolute right-3 top-3 sm:right-4 sm:top-4 z-10 h-9 w-9 grid place-items-center rounded-full border border-border bg-background/90 text-muted-foreground hover:text-foreground hover:bg-muted transition"
                     aria-label="Close welcome message"
                 >
                     <X className="h-4 w-4" />
                 </button>
 
-                <div className="p-6 sm:p-8">
-                    <div className="flex items-start gap-4 pr-10">
+                <div className="p-5 sm:p-8">
+                    <div className="flex items-start gap-3 sm:gap-4 pr-10">
                         <img
                             src="/logo.png"
                             alt=""
-                            className="h-14 w-14 sm:h-16 sm:w-16 object-contain shrink-0"
+                            className="hidden sm:block sm:h-16 sm:w-16 object-contain shrink-0"
                         />
 
                         <div>
-                            <div className="inline-flex items-center rounded-full bg-primary/10 px-3 py-1 text-[11px] font-bold uppercase tracking-[0.14em] text-primary">
+                            <div className="inline-flex items-center rounded-full bg-primary/10 px-3 py-1 text-[10px] sm:text-[11px] font-bold uppercase tracking-[0.14em] text-primary">
                                 New community platform
                             </div>
 
                             <h2
                                 id="launch-notice-title"
-                                className="mt-3 font-display text-2xl sm:text-3xl font-black tracking-tight text-foreground"
+                                className="mt-2.5 sm:mt-3 font-display text-xl sm:text-3xl font-black tracking-tight text-foreground"
                             >
                                 Welcome to Blackrod Now
                             </h2>
 
-                            <p className="mt-2 text-sm sm:text-base text-muted-foreground leading-relaxed">
+                            <p className="mt-1.5 sm:mt-2 text-sm sm:text-base text-muted-foreground leading-relaxed">
                                 One place to discover local events, organisations,
                                 groups and community updates across Blackrod.
                             </p>
                         </div>
                     </div>
 
-                    <div className="mt-6 rounded-3xl border border-border bg-muted/35 p-4 sm:p-5">
-                        <p className="text-sm sm:text-base leading-relaxed text-foreground/90">
+                    <div className="mt-4 sm:mt-6 rounded-2xl sm:rounded-3xl border border-border bg-muted/35 p-3.5 sm:p-5">
+                        <p className="text-[13px] sm:text-base leading-relaxed text-foreground/90">
                             Blackrod Now has just launched. During this early
                             stage, some listings may occasionally be incomplete,
                             out of date or change at short notice.
                         </p>
 
-                        <p className="mt-3 text-sm sm:text-base leading-relaxed text-foreground/90">
+                        <p className="mt-2.5 sm:mt-3 text-[13px] sm:text-base leading-relaxed text-foreground/90">
                             We are inviting local organisations to claim and
                             manage their own profiles. As more organisations do
                             this, the information on Blackrod Now will become
@@ -240,18 +240,18 @@ function LaunchNotice() {
                         </p>
                     </div>
 
-                    <p className="mt-5 text-sm text-muted-foreground leading-relaxed">
+                    <p className="mt-3.5 sm:mt-5 text-[13px] sm:text-sm text-muted-foreground leading-relaxed">
                         Please explore the site, share Blackrod Now with others
                         and help us build a stronger community resource. For
                         important event details, we recommend checking with the
                         organiser before travelling.
                     </p>
 
-                    <div className="mt-6 flex flex-col sm:flex-row gap-3">
+                    <div className="mt-4 sm:mt-6 flex flex-col sm:flex-row gap-2.5 sm:gap-3">
                         <button
                             type="button"
                             onClick={dismissNotice}
-                            className="inline-flex flex-1 items-center justify-center rounded-full bg-primary px-5 py-3 text-sm font-bold text-primary-foreground hover:opacity-90 transition"
+                            className="inline-flex flex-1 items-center justify-center rounded-full bg-primary px-5 py-2.5 sm:py-3 text-sm font-bold text-primary-foreground hover:opacity-90 transition"
                         >
                             Explore Blackrod Now
                         </button>
@@ -259,14 +259,14 @@ function LaunchNotice() {
                         <Link
                             to="/organisations"
                             onClick={dismissNotice}
-                            className="inline-flex flex-1 items-center justify-center gap-2 rounded-full border border-border bg-background px-5 py-3 text-sm font-bold text-foreground hover:bg-muted transition"
+                            className="inline-flex flex-1 items-center justify-center gap-2 rounded-full border border-border bg-background px-5 py-2.5 sm:py-3 text-sm font-bold text-foreground hover:bg-muted transition"
                         >
                             <Building2 className="h-4 w-4" />
                             Find your organisation
                         </Link>
                     </div>
 
-                    <div className="mt-4 text-center text-xs sm:text-sm text-muted-foreground">
+                    <div className="mt-3.5 sm:mt-4 text-center text-xs sm:text-sm text-muted-foreground">
                         Spot something that needs updating?{" "}
                         <Link
                             to="/contact"

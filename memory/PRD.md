@@ -187,3 +187,6 @@ A modern community website for Blackrod, Bolton showcasing local events, clubs, 
 - `GET /api/admin/events/audit/status`, `GET /api/admin/event-edit-proposals`, `POST .../{{id}}/approve` (accepts {fields:[...]} subset, guards end<start), `POST .../{{id}}/reject`. All use `_require_admin_from_request`. Audit-logged.
 - UI: per-field tick/untick with old→new diff, per-change evidence + source link, verdict chip, progress bar with polling, "Check new events" vs "Re-check all upcoming" (confirm dialog warns about LLM budget).
 - Tested: pytest `tests/test_ai_audit.py` 5/5 (auth guard, subset approve, reject, end<start guard, status); real LLM run verified (limit=2, both events checked, conservative — no spurious edits); UI screenshot verified with seeded proposal (cleaned up).
+
+## 25 Jun 2026 — Mobile welcome popup fix
+- Launch-notice dialog in Layout.jsx: added max-h + overflow-y-auto (fits any phone height), hid logo on mobile, compacted spacing/text sizes, smaller close-button offset. Desktop unchanged. Verified with 390px screenshot before/after.
