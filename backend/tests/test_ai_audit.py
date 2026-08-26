@@ -138,3 +138,22 @@ def test_audit_status_endpoint(admin_headers):
     assert r.status_code == 200
     body = r.json()
     assert "pending_proposals" in body
+
+
+def test_approve_org_change_applies_org_slug(db, admin_headers):
+    eid, pid = _seed(db, [{
+        "field": "orgSlug", "old": "blackrod-town-council", "new": "st-katharines-church",
+        "old_display": "Blackrod Town Council", "new_display": "St Katharine's Church",
+        "evidence": "Official page credits St Katharine's", "source_url": "https://example.org",
+    }])
+    try:
+        r = requests.post(
+            f"{API}/admin/event-edit-proposals/{pid}/approve",
+            json={"fields": ["orgSlug"]},
+            headers=admin_headers,
+            timeout=10,
+        )
+        assert r.status_code == 200, r.text
+        assert db.events.find_one({"id": eid})["orgSlug"] == "st-katharines-church"
+    finally:
+        _cleanup(db, eid, pid)

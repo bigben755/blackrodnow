@@ -13,6 +13,7 @@ const FIELD_LABELS = {
     cost: "Cost",
     booking: "Booking",
     description: "Description",
+    orgSlug: "Organisation",
 };
 
 const VERDICT_STYLE = {
@@ -271,9 +272,13 @@ export default function AiAuditCard({ onApplied }) {
                                                 {FIELD_LABELS[c.field] || c.field}
                                             </div>
                                             <div className="mt-0.5">
-                                                <span className="line-through text-muted-foreground break-words">{fmtValue(c.field, c.old)}</span>
+                                                <span className="line-through text-muted-foreground break-words">
+                                                    {c.old_display || fmtValue(c.field, c.old)}
+                                                </span>
                                                 <span className="mx-1.5">→</span>
-                                                <span className="font-semibold break-words">{fmtValue(c.field, c.new)}</span>
+                                                <span className="font-semibold break-words">
+                                                    {c.new_display || fmtValue(c.field, c.new)}
+                                                </span>
                                             </div>
                                             {c.evidence ? <div className="mt-1 text-muted-foreground">{c.evidence}</div> : null}
                                             {c.source_url ? (

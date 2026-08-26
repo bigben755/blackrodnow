@@ -103,8 +103,8 @@ def test_monthly_weekday_old_anchor_still_has_future_instances(admin_headers):
     eid, _ = _create_event_at(admin_headers, {"freq": "monthly_weekday"}, old_start, title="TEST_OldMonthlyWeekday")
     try:
         matches = _instances(eid)
-        now = datetime.now(timezone.utc)
-        future = [m for m in matches if datetime.fromisoformat(m["start"]) >= now - timedelta(days=1)]
+        now = datetime.now()
+        future = [m for m in matches if datetime.fromisoformat(m["start"][:19]) >= now - timedelta(days=1)]
         assert future, "expected at least one upcoming recurrence instance from old monthly_weekday anchor"
     finally:
         requests.delete(f"{API}/admin/events/{eid}", headers=admin_headers, timeout=15)
@@ -186,3 +186,27 @@ def test_naive_until_matches_naive_start(admin_headers):
         assert len(inst) == 3, starts
     finally:
         requests.delete(f"{API}/admin/events/{eid}", headers=admin_headers, timeout=15)
+
+
+def test_mixed_naive_start_aware_end_does_not_500(admin_headers):
+    """Regression: AI-edit left naive start + legacy Z end on a recurring event → /api/events crashed."""
+    import uuid as _uuid
+    from pymongo import MongoClient
+    client = MongoClient(os.environ["MONGO_URL"])
+    dbh = client[os.environ["DB_NAME"]]
+    eid = f"evt-mixed-{_uuid.uuid4().hex[:8]}"
+    dbh.events.insert_one({
+        "id": eid, "title": "TEST_MixedTz", "orgSlug": "blackrod-town-council",
+        "category": "Community", "start": "2026-11-02T10:00:00",
+        "end": "2026-11-02T11:00:00.000Z", "venue": "Hall", "status": "approved",
+        "recurrence": {"freq": "weekly", "until": "2026-12-14"},
+    })
+    try:
+        r = requests.get(f"{API}/events", timeout=20)
+        assert r.status_code == 200
+        inst = [e for e in r.json() if e.get("id") == eid or e.get("parent_id") == eid]
+        assert len(inst) >= 4
+        assert all("T10:00" in e["start"] for e in inst)
+    finally:
+        dbh.events.delete_one({"id": eid})
+        client.close()

@@ -2852,23 +2852,19 @@ def _expand_recurring_event(ev: Dict[str, Any], horizon_days: int = 180) -> List
     extra_dates = (rec or {}).get("extra_dates") or []
     if not rec or (freq == "none" and not extra_dates):
         return [ev]
+    # All stored event times are treated as UK wall-clock: normalise every
+    # format (naive, trailing Z, +01:00) to naive so mixed data can never crash.
     try:
-        start = datetime.fromisoformat((ev.get("start") or "").replace("Z", "+00:00"))
-        end = datetime.fromisoformat((ev.get("end") or ev.get("start") or "").replace("Z", "+00:00"))
+        start = datetime.fromisoformat(str(ev.get("start") or "")[:19])
+        end = datetime.fromisoformat(str(ev.get("end") or ev.get("start") or "")[:19])
     except Exception:
         return [ev]
     duration = end - start
-    horizon = datetime.now(timezone.utc) + timedelta(days=horizon_days)
-    if start.tzinfo is None:
-        horizon = horizon.replace(tzinfo=None)
+    horizon = datetime.now(UK_TZ).replace(tzinfo=None) + timedelta(days=horizon_days)
     try:
-        until = datetime.fromisoformat(rec.get("until").replace("Z", "+00:00")) if rec.get("until") else horizon
+        until = datetime.fromisoformat(str(rec.get("until"))[:19]) if rec.get("until") else horizon
     except Exception:
         until = horizon
-    if start.tzinfo is None and until.tzinfo is not None:
-        until = until.replace(tzinfo=None)
-    elif start.tzinfo is not None and until.tzinfo is None:
-        until = until.replace(tzinfo=timezone.utc)
     upper = min(until, horizon)
     max_count_raw = rec.get("count")
     if max_count_raw is None:
@@ -2894,8 +2890,8 @@ def _expand_recurring_event(ev: Dict[str, Any], horizon_days: int = 180) -> List
         nth = (start.day - 1) // 7 + 1
         year, month = start.year, start.month
         cur, n = start, 0
-        if cur < datetime.now(cur.tzinfo or timezone.utc) - timedelta(days=35):
-            now_ref = datetime.now(cur.tzinfo or timezone.utc)
+        if cur < datetime.now(UK_TZ).replace(tzinfo=None) - timedelta(days=35):
+            now_ref = datetime.now(UK_TZ).replace(tzinfo=None)
             diff_months = (now_ref.year - year) * 12 + (now_ref.month - month)
             if diff_months > interval:
                 skip_cycles = max(0, (diff_months // interval) - 1)
@@ -2953,7 +2949,11 @@ async def list_events(upcoming_only: bool = False, include_pending: bool = False
     if expand_recurring:
         expanded: List[Dict[str, Any]] = []
         for e in events:
-            expanded.extend(_expand_recurring_event(e))
+            try:
+                expanded.extend(_expand_recurring_event(e))
+            except Exception as exc:
+                logger.warning("recurrence expansion failed for event %s: %s", e.get("id"), exc)
+                expanded.append(e)
         events = expanded
     if upcoming_only:
         nowi = now_iso()
@@ -8482,7 +8482,7 @@ async def admin_check_entity(req: AdminCheckReq):
 
 # ─────────── AI accuracy audit (bulk event check + approval queue) ───────────
 
-AUDIT_EDITABLE_FIELDS = {"title", "start", "end", "venue", "address", "cost", "booking", "description"}
+AUDIT_EDITABLE_FIELDS = {"title", "start", "end", "venue", "address", "cost", "booking", "description", "orgSlug"}
 
 
 async def _audit_check_single_event(event: dict) -> dict:
@@ -8511,13 +8511,15 @@ async def _audit_check_single_event(event: dict) -> dict:
         "Use web search to verify whether the event listing below is accurate and still going ahead. "
         "Prioritise the organisation's own website/Facebook page, Bolton Council and local news. "
         "Be conservative: only propose an edit when a reliable source CLEARLY contradicts the listing — never guess. "
+        "Never propose changing a date/time to one in the past; if a source only shows a previous year's edition of the event, do not propose a date edit. "
         "Respond with ONLY a JSON object, no markdown: "
         '{"verdict": one of "looks_accurate"|"needs_attention"|"likely_outdated"|"could_not_verify", '
         '"summary": "2-3 plain-English sentences for the site admin", '
         '"issues": ["specific discrepancy or concern", ...] (empty list if none), '
-        '"proposed_edits": [{"field": one of "title"|"start"|"end"|"venue"|"address"|"cost"|"booking"|"description", '
+        '"proposed_edits": [{"field": one of "title"|"start"|"end"|"venue"|"address"|"cost"|"booking"|"description"|"organisation", '
         '"new_value": "corrected value", "evidence": "one sentence on what the source says", "source_url": "https://..."}] '
-        "(empty list if everything checks out; for start/end use UK local time format YYYY-MM-DDTHH:MM:SS with no timezone suffix), "
+        "(empty list if everything checks out; for start/end use UK local time format YYYY-MM-DDTHH:MM:SS with no timezone suffix; "
+        'for "organisation" set new_value to the NAME of the organisation that actually runs this event, only when the listing clearly credits the wrong one), '
         '"sources": [{"url": "...", "title": "..."}, ...]}'
     )
     chat = (
@@ -8535,22 +8537,45 @@ async def _audit_check_single_event(event: dict) -> dict:
     return json.loads(m.group(0) if m else cleaned)
 
 
-def _audit_sanitise_changes(event: dict, data: dict) -> List[dict]:
+async def _audit_sanitise_changes(event: dict, data: dict) -> List[dict]:
     changes: List[dict] = []
     for edit in (data.get("proposed_edits") or [])[:8]:
         if not isinstance(edit, dict):
             continue
         field = edit.get("field")
-        if field not in AUDIT_EDITABLE_FIELDS:
-            continue
         new_value = str(edit.get("new_value") or "").strip()
         if not new_value:
+            continue
+        evidence = str(edit.get("evidence") or "")[:400]
+        source_url = str(edit.get("source_url") or "")[:400]
+        if field == "organisation":
+            target = await db.orgs.find_one(
+                {"name": {"$regex": f"^{re.escape(new_value)}$", "$options": "i"}},
+                {"_id": 0, "slug": 1, "name": 1},
+            )
+            if not target or target["slug"] == (event.get("orgSlug") or ""):
+                continue
+            current = await db.orgs.find_one({"slug": event.get("orgSlug")}, {"_id": 0, "name": 1})
+            changes.append({
+                "field": "orgSlug",
+                "old": str(event.get("orgSlug") or ""),
+                "new": target["slug"],
+                "old_display": (current or {}).get("name") or (event.get("orgSlug") or "—"),
+                "new_display": target["name"],
+                "evidence": evidence,
+                "source_url": source_url,
+            })
+            continue
+        if field not in AUDIT_EDITABLE_FIELDS or field == "orgSlug":
             continue
         if field in ("start", "end"):
             new_value = new_value[:19]
             try:
                 datetime.fromisoformat(new_value)
             except Exception:
+                continue
+            # Never suggest moving an event into the past (stale web sources).
+            if new_value[:10] < datetime.now(UK_TZ).strftime("%Y-%m-%d"):
                 continue
         old_value = str(event.get(field) or "")
         if new_value == old_value:
@@ -8559,8 +8584,8 @@ def _audit_sanitise_changes(event: dict, data: dict) -> List[dict]:
             "field": field,
             "old": old_value,
             "new": new_value,
-            "evidence": str(edit.get("evidence") or "")[:400],
-            "source_url": str(edit.get("source_url") or "")[:400],
+            "evidence": evidence,
+            "source_url": source_url,
         })
     return changes
 
@@ -8597,7 +8622,7 @@ async def _run_event_audit_job(job_id: str, mode: str, limit: Optional[int] = No
                     "checked_at": now_iso(),
                 }
                 await db.events.update_one({"id": e["id"]}, {"$set": {"check_result": result, "last_audit_at": now_iso()}})
-                changes = _audit_sanitise_changes(e, data)
+                changes = await _audit_sanitise_changes(e, data)
                 if changes:
                     await db.event_edit_proposals.delete_many({"event_id": e["id"], "status": "pending"})
                     await db.event_edit_proposals.insert_one({
@@ -8729,6 +8754,8 @@ async def approve_event_edit_proposal(
     merged_end = str(updates.get("end", event.get("end") or ""))[:19]
     if merged_start and merged_end and merged_end < merged_start:
         raise HTTPException(400, "That change would put the end before the start — approve both date fields together or edit the event manually")
+    if "orgSlug" in updates and not await db.orgs.find_one({"slug": updates["orgSlug"]}, {"_id": 0, "slug": 1}):
+        raise HTTPException(400, "The suggested organisation no longer exists")
     await db.events.update_one({"id": p["event_id"]}, {"$set": updates})
     await db.event_edit_proposals.update_one(
         {"id": pid},
