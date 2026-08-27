@@ -399,10 +399,28 @@ export default function Home() {
                                     Local organisations
                                 </div>
                             </div>
+
+                            {/* Mobile-only "this week" stat (glass card is hidden on mobile) */}
+                            <div className="h-8 w-px bg-white/30 lg:hidden" />
+
+                            <button
+                                type="button"
+                                onClick={() => onFeedClick("on")}
+                                className="text-left lg:hidden"
+                                data-testid="hero-this-week-stat-mobile"
+                            >
+                                <div className="font-display font-bold text-2xl text-white">
+                                    {thisWeek.length}
+                                </div>
+
+                                <div className="uppercase tracking-wider">
+                                    This week
+                                </div>
+                            </button>
                         </div>
                     </div>
 
-                    <div className="lg:col-span-5 flex lg:justify-end">
+                    <div className="hidden lg:col-span-5 lg:flex lg:justify-end">
                         <div className="w-full max-w-sm rounded-[2rem] border border-white/20 bg-white/10 backdrop-blur-md p-6 sm:p-8 text-white shadow-2xl">
                             <div className="text-xs font-bold uppercase tracking-[0.18em] text-white/80">
                                 This week

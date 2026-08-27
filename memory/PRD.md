@@ -218,3 +218,7 @@ A modern community website for Blackrod, Bolton showcasing local events, clubs, 
 - User's aerial photo of Blackrod saved as /app/frontend/public/blackrod-aerial.jpg (optimised 1672×941 JPEG ~345KB).
 - Home.jsx hero: replaced split layout (text + square image card) with full-bleed background hero — aerial image (object-[center_63%]), dual dark gradient overlays for readability, white text, glass badge, "Now" in sky-300, white-outline secondary button, white stats, and the "This week" counter as a frosted-glass card with "Browse this week" link. Verified desktop + mobile screenshots.
 - 27 Jun follow-up: hero crop tuned to object-[center_63%] so the village housing band runs left→right across the lower half on desktop; mobile shows near-full vertical image (village mid-frame). Bottom gradient eased to black/35.
+
+## 27 Jun 2026 — Mobile hero: village focal point no longer hidden behind "This week" box
+- Issue: on mobile the stacked frosted-glass "This week" card landed over the aerial image's village housing band (backdrop-blur obscured the focal point). Desktop was fine.
+- Fix (Home.jsx): glass "This week" card is now `hidden lg:flex` (desktop only). On mobile the count is surfaced as a compact third stat ("This week") in the hero stats row (`lg:hidden`), which sits higher and leaves the lower image band fully visible. Desktop layout unchanged.
