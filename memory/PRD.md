@@ -216,4 +216,5 @@ A modern community website for Blackrod, Bolton showcasing local events, clubs, 
 
 ## 27 Jun 2026 — Homepage hero redesign (user-supplied aerial photo)
 - User's aerial photo of Blackrod saved as /app/frontend/public/blackrod-aerial.jpg (optimised 1672×941 JPEG ~345KB).
-- Home.jsx hero: replaced split layout (text + square image card) with full-bleed background hero — aerial image (object-[center_55%]), dual dark gradient overlays for readability, white text, glass badge, "Now" in sky-300, white-outline secondary button, white stats, and the "This week" counter as a frosted-glass card with "Browse this week" link. Verified desktop + mobile screenshots.
+- Home.jsx hero: replaced split layout (text + square image card) with full-bleed background hero — aerial image (object-[center_63%]), dual dark gradient overlays for readability, white text, glass badge, "Now" in sky-300, white-outline secondary button, white stats, and the "This week" counter as a frosted-glass card with "Browse this week" link. Verified desktop + mobile screenshots.
+- 27 Jun follow-up: hero crop tuned to object-[center_63%] so the village housing band runs left→right across the lower half on desktop; mobile shows near-full vertical image (village mid-frame). Bottom gradient eased to black/35.
