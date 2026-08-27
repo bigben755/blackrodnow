@@ -213,3 +213,7 @@ A modern community website for Blackrod, Bolton showcasing local events, clubs, 
 - Root cause: event manager / org dashboards list expanded recurring occurrences with virtual ids (`parent__YYYY-MM-DD`); EventEdit resolved the event from context by that virtual id and PATCHed it → backend 404 "Event not found".
 - Fix: EventEdit strips the `__date` suffix and always edits the parent series (prefers non-instance object, falls back to `api.event(baseId)` fetch when not in context — also fixes editing events missing from the context list). AdminEvents manager now lists parent events only (`!is_recurrence_instance`), removing hundreds of duplicate occurrence rows.
 - Verified in preview: /edit-event/<virtual-id> loads parent form and Save succeeds ("Event updated" toast). Needs production redeploy.
+
+## 27 Jun 2026 — Homepage hero redesign (user-supplied aerial photo)
+- User's aerial photo of Blackrod saved as /app/frontend/public/blackrod-aerial.jpg (optimised 1672×941 JPEG ~345KB).
+- Home.jsx hero: replaced split layout (text + square image card) with full-bleed background hero — aerial image (object-[center_55%]), dual dark gradient overlays for readability, white text, glass badge, "Now" in sky-300, white-outline secondary button, white stats, and the "This week" counter as a frosted-glass card with "Browse this week" link. Verified desktop + mobile screenshots.

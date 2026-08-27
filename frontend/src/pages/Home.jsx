@@ -321,28 +321,36 @@ export default function Home() {
 
     return (
         <div data-testid="home-page">
-            {/* HERO */}
+            {/* HERO — full-bleed aerial view of Blackrod */}
             <section className="relative overflow-hidden border-b border-border">
-                <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12 sm:py-16 lg:py-20 grid lg:grid-cols-12 gap-10 lg:gap-14 items-center">
+                <img
+                    src="/blackrod-aerial.jpg"
+                    alt="Aerial view over Blackrod, Bolton"
+                    className="absolute inset-0 h-full w-full object-cover object-[center_55%]"
+                    loading="eager"
+                />
+                <div className="absolute inset-0 bg-gradient-to-r from-black/80 via-black/55 to-black/25" />
+                <div className="absolute inset-0 bg-gradient-to-t from-black/50 via-transparent to-black/10" />
+                <div className="relative max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-14 sm:py-20 lg:py-24 grid lg:grid-cols-12 gap-10 lg:gap-14 items-center">
                     <div className="lg:col-span-7">
-                        <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-primary/10 text-primary text-[11px] font-bold tracking-wider uppercase mb-5">
+                        <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-white/15 border border-white/20 backdrop-blur-sm text-white text-[11px] font-bold tracking-wider uppercase mb-5">
                             <MapPin className="h-3.5 w-3.5" />
                             Blackrod, Bolton
                         </div>
 
-                        <h1 className="font-display font-black tracking-tight text-5xl sm:text-6xl lg:text-7xl leading-[0.95] text-foreground">
+                        <h1 className="font-display font-black tracking-tight text-5xl sm:text-6xl lg:text-7xl leading-[0.95] text-white drop-shadow-sm">
                             Blackrod
-                            <span className="text-primary">
+                            <span className="text-sky-300">
                                 {" "}
                                 Now
                             </span>
                         </h1>
 
-                        <p className="mt-5 max-w-xl text-lg sm:text-xl font-semibold text-foreground">
+                        <p className="mt-5 max-w-xl text-lg sm:text-xl font-semibold text-white/95">
                             What's on. What's new. What's next.
                         </p>
 
-                        <p className="mt-3 max-w-xl text-base sm:text-lg text-muted-foreground leading-relaxed">
+                        <p className="mt-3 max-w-xl text-base sm:text-lg text-white/80 leading-relaxed">
                             Your local place to discover events,
                             community groups, clubs, businesses,
                             venues, volunteering and what's
@@ -363,15 +371,15 @@ export default function Home() {
 
                             <Link
                                 to="/organisations"
-                                className="inline-flex items-center gap-2 px-6 py-3 rounded-full text-sm font-semibold border-2 border-foreground text-foreground hover:bg-foreground hover:text-background transition"
+                                className="inline-flex items-center gap-2 px-6 py-3 rounded-full text-sm font-semibold border-2 border-white/80 text-white hover:bg-white hover:text-slate-900 transition"
                             >
                                 Explore Blackrod
                             </Link>
                         </div>
 
-                        <div className="mt-8 flex items-center gap-6 text-xs text-muted-foreground">
+                        <div className="mt-8 flex items-center gap-6 text-xs text-white/70">
                             <div>
-                                <div className="font-display font-bold text-2xl text-foreground">
+                                <div className="font-display font-bold text-2xl text-white">
                                     {approved.length}
                                 </div>
 
@@ -380,10 +388,10 @@ export default function Home() {
                                 </div>
                             </div>
 
-                            <div className="h-8 w-px bg-border" />
+                            <div className="h-8 w-px bg-white/30" />
 
                             <div>
-                                <div className="font-display font-bold text-2xl text-foreground">
+                                <div className="font-display font-bold text-2xl text-white">
                                     {orgs.length}
                                 </div>
 
@@ -394,32 +402,33 @@ export default function Home() {
                         </div>
                     </div>
 
-                    <div className="lg:col-span-5">
-                        <div className="relative rounded-[2rem] overflow-hidden bg-muted aspect-[4/3] shadow-xl">
-                            <img
-                                src={COMMUNITY_IMAGES.hero}
-                                alt="The Blackrod community"
-                                className="absolute inset-0 h-full w-full object-cover"
-                            />
-
-                            <div className="absolute inset-x-0 bottom-0 p-5 sm:p-6 bg-gradient-to-t from-black/80 via-black/40 to-transparent text-white">
-                                <div className="text-xs font-bold uppercase tracking-[0.18em] text-white/80">
-                                    This week
-                                </div>
-
-                                <div className="mt-1 flex items-end gap-2">
-                                    <span className="font-display font-black text-4xl sm:text-5xl leading-none">
-                                        {thisWeek.length}
-                                    </span>
-
-                                    <span className="text-sm font-medium pb-1">
-                                        {thisWeek.length === 1
-                                            ? "event"
-                                            : "events"}{" "}
-                                        coming up
-                                    </span>
-                                </div>
+                    <div className="lg:col-span-5 flex lg:justify-end">
+                        <div className="w-full max-w-sm rounded-[2rem] border border-white/20 bg-white/10 backdrop-blur-md p-6 sm:p-8 text-white shadow-2xl">
+                            <div className="text-xs font-bold uppercase tracking-[0.18em] text-white/80">
+                                This week
                             </div>
+
+                            <div className="mt-2 flex items-end gap-2">
+                                <span className="font-display font-black text-5xl sm:text-6xl leading-none">
+                                    {thisWeek.length}
+                                </span>
+
+                                <span className="text-sm font-medium pb-1.5">
+                                    {thisWeek.length === 1
+                                        ? "event"
+                                        : "events"}{" "}
+                                    coming up
+                                </span>
+                            </div>
+
+                            <button
+                                type="button"
+                                onClick={() => onFeedClick("on")}
+                                className="mt-5 inline-flex items-center gap-1.5 text-sm font-semibold text-sky-200 hover:text-white transition"
+                            >
+                                Browse this week
+                                <ArrowRight className="h-4 w-4" />
+                            </button>
                         </div>
                     </div>
                 </div>
