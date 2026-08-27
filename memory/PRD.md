@@ -208,3 +208,8 @@ A modern community website for Blackrod, Bolton showcasing local events, clubs, 
 - New: AI audit can now propose ORGANISATION corrections — prompt field "organisation" (by name), sanitiser resolves name→slug against orgs collection (exact case-insensitive, else dropped), change carries old_display/new_display; approve validates org exists; AiAuditCard shows "Organisation" with names.
 - Regression tests: test_recurrence_advanced.py::test_mixed_naive_start_aware_end_does_not_500, test_ai_audit.py::test_approve_org_change_applies_org_slug — 15/15 + push 5/5 pass. Reproduced prod crash in preview (500 → 200 after fix).
 - Production recovery: user must REDEPLOY; events reappear immediately (nothing was deleted). Any wrong approved edits are traceable in admin audit log (ai_edit_approved meta contains applied values).
+
+## 27 Jun 2026 — "Event not found" when editing from event manager (production)
+- Root cause: event manager / org dashboards list expanded recurring occurrences with virtual ids (`parent__YYYY-MM-DD`); EventEdit resolved the event from context by that virtual id and PATCHed it → backend 404 "Event not found".
+- Fix: EventEdit strips the `__date` suffix and always edits the parent series (prefers non-instance object, falls back to `api.event(baseId)` fetch when not in context — also fixes editing events missing from the context list). AdminEvents manager now lists parent events only (`!is_recurrence_instance`), removing hundreds of duplicate occurrence rows.
+- Verified in preview: /edit-event/<virtual-id> loads parent form and Save succeeds ("Event updated" toast). Needs production redeploy.

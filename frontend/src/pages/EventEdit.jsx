@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useApp } from "@/context/AppContext";
 import { CATEGORIES } from "@/data/mockData";
 import { useNavigate, useParams, Link } from "react-router-dom";
+import { api } from "@/lib/api";
 import {
     Accessibility,
     AlertTriangle,
@@ -67,10 +68,29 @@ export default function EventEdit() {
 
     const navigate = useNavigate();
 
+    const [fetched, setFetched] = useState(null);
+
+    // Recurring occurrences have virtual ids like `parent__2026-09-05` — always
+    // edit the parent series (occurrence-level tweaks are done via skip dates).
+    const baseId = id && id.includes("__") ? id.split("__")[0] : id;
+    const isSeriesOccurrence = Boolean(id && id.includes("__"));
+
     const event = useMemo(
-        () => events.find((item) => item.id === id),
-        [events, id]
+        () =>
+            events.find(
+                (item) => item.id === baseId && !item.is_recurrence_instance
+            ) ||
+            events.find((item) => item.id === baseId) ||
+            fetched,
+        [events, baseId, fetched]
     );
+
+    useEffect(() => {
+        if (!baseId || event) return;
+        api.event(baseId)
+            .then((data) => setFetched(data))
+            .catch(() => {});
+    }, [baseId, event]);
 
     const [form, setForm] = useState(null);
     const [busy, setBusy] = useState(false);

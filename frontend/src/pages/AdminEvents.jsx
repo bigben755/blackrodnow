@@ -75,7 +75,9 @@ export default function AdminEvents() {
 
     const derived = useMemo(() => {
         const now = new Date();
-        return (events || []).map((ev) => {
+        return (events || [])
+            .filter((ev) => !ev.is_recurrence_instance)
+            .map((ev) => {
             const start = parseDateSafe(ev.start);
             const end = parseDateSafe(ev.end) || start;
             const hasVenue = Boolean((ev.venue || "").trim());
