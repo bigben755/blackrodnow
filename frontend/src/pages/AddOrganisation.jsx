@@ -68,6 +68,10 @@ export default function AddOrganisation() {
             toast.error("Please consent before submitting");
             return;
         }
+        if (!form.email.trim()) {
+            toast.error("Contact email is required");
+            return;
+        }
         const slug = form.name
             .toLowerCase()
             .replace(/[^a-z0-9]+/g, "-")
@@ -114,7 +118,7 @@ export default function AddOrganisation() {
                 <h1 className="font-display font-black text-3xl sm:text-4xl mt-6">You're in the directory!</h1>
                 <p className="mt-3 text-muted-foreground">
                     Once an admin approves your profile, it'll appear on Blackrod Now. We'll email you when
-                    it's live.
+                    it's live with your initial dashboard password.
                 </p>
                 <button
                     onClick={() => navigate("/organisations")}
@@ -195,8 +199,8 @@ export default function AddOrganisation() {
                     <Field label="Main contact name">
                         <input data-testid="ao-contact" value={form.contactName} onChange={set("contactName")} className={inp} />
                     </Field>
-                    <Field label="Contact email">
-                        <input data-testid="ao-email" type="email" value={form.email} onChange={set("email")} className={inp} />
+                    <Field label="Contact email" required>
+                        <input data-testid="ao-email" required type="email" value={form.email} onChange={set("email")} className={inp} />
                     </Field>
                 </div>
                 <div className="grid sm:grid-cols-2 gap-4">

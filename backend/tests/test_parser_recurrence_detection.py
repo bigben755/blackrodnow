@@ -91,3 +91,15 @@ def test_regex_direct_detection():
     assert ev, "no event item"
     assert ev.get("recurrence_freq") == "weekly"
     assert (ev.get("recurrence_weekday") or "").lower() == "monday"
+
+
+def test_monthly_weekday_detection_first_thursday():
+    text = "Coffee Morning\nFirst Thursday of the month, 10:30am at Community Hall"
+    r = requests.post(f"{API}/parse-content", json={"text": text}, timeout=45)
+    assert r.status_code == 200
+    items = r.json().get("items", [])
+    assert items, "no items"
+    ev = next((it for it in items if it.get("suggested_type") == "event"), None)
+    assert ev, "no event item"
+    assert ev.get("recurrence_freq") == "monthly_weekday"
+    assert (ev.get("recurrence_weekday") or "").lower() == "thursday"

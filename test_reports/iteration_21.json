@@ -1,0 +1,44 @@
+{
+  "summary": "Frontend-only Live Data Audit regression run. Logged in as admin (email+password JWT) via /api/auth/admin/login, then exercised all 8 scenarios end-to-end on the live preview URL. RESULT: 7/8 PASS + 1 CRITICAL backend regression discovered by the frontend flow — setting recurrence 'until' via the new UI (RecurrenceFields.buildRecurrencePayload) writes a Z-suffixed ISO string while event.start is now naive, and the backend _expand_recurring_event() in server.py crashes on min(offset-aware, offset-naive), which 500s the ENTIRE /api/events public endpoint. This exact scenario is explicitly requested by the test plan (weekly recurrence + until ~5 weeks out + skip date) and takes the whole /events page down for every visitor. Test event was deleted immediately so the site is currently restored. Everything else works: timezone display literal digits (no BST drift), edit roundtrip 10:00→14:30 (edit form and public detail both show 14:30), quick-create 10:00 shows 10:00, multi-day (start 19:00 → next day 16:00) saves without validation block and detail shows the full range 'Thu 24 Sept · 19:00 – Fri 25 Sept · 16:00', skip dates filter out matching weekly occurrences (only when until is NOT set), term-time badges render on both /events cards (data-testid term-time-badge-<id>) and the detail page (data-testid detail-term-time-badge), bulk import area renders without JS crash, home/events/org detail all render.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "GET /api/events (whole /events page)",
+        "issue": "500 Internal Server Error whenever ANY event has recurrence.until saved via the new UI. Root cause: /app/backend/server.py:2865-2868 — `until = datetime.fromisoformat(rec.until.replace('Z','+00:00'))` yields an offset-aware datetime, but `horizon` was made naive on line 2863 to match a naive `start` (naive because of the new BST fix). Line 2868 `min(until, horizon)` then raises `TypeError: can't compare offset-naive and offset-aware datetimes` and the entire events listing 500s. Traceback confirmed in /var/log/supervisor/backend.err.log. Reproduced by creating a weekly recurring event with an until date via the Edit page; the /api/events endpoint returned HTTP 500 (verified with curl) and the /events public page rendered '0 upcoming events'.",
+        "priority": "CRITICAL"
+      }
+    ],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [
+      {
+        "flow": "Edit → save recurrence with 'Repeat until' date",
+        "issue": "Frontend RecurrenceFields.buildRecurrencePayload (line 235) writes `until: new Date(`${untilYyyyMmDd}T23:59:59`).toISOString()` — this uses the browser TZ and produces a Z-suffixed UTC string. All other date/time fields on the event are now naive per the BST fix, so the mismatch triggers the backend crash above. Fix should either (a) serialise until as naive `YYYY-MM-DDT23:59:59` to match start/end, or (b) let the backend normalise both sides. Recommended: change line 235 to `payload.until = `${untilYyyyMmDd}T23:59:59`;` (no Date/ISO conversion), matching the pattern used for start/end.",
+        "affected_selectors": ["ee-recurrence-until", "ee-save"]
+      }
+    ],
+    "design_issues": []
+  },
+  "test_report_links": [],
+  "action_items": [
+    "CRITICAL/P0: Fix the naive-vs-aware datetime comparison. Recommend patching BOTH sides: (1) frontend RecurrenceFields.jsx line 235 → save `until` as naive ISO `${date}T23:59:59` (drop `new Date(...).toISOString()`); (2) backend server.py line 2865 → after parsing `until`, normalise: `if start.tzinfo is None and until.tzinfo is not None: until = until.replace(tzinfo=None)`. Backend fix alone is sufficient to stop the 500, but frontend fix is required for consistency with the new naive-wall-clock policy.",
+    "Add a regression test creating an event with recurrence.until and asserting GET /api/events returns 200 (this exact scenario was in the manual test plan but is not covered by the existing pytest suite).",
+    "After fix, re-run the skip-dates flow with an until date set — the previous 'PASS - skip date excluded' was verified only WITHOUT until because otherwise the whole endpoint was down."
+  ],
+  "critical_code_review_comments": [
+    "server.py _expand_recurring_event() lines 2856-2868 mix tz-naive and tz-aware datetimes based on whether `start` has `Z`. That branching (`if start.tzinfo is None: horizon = horizon.replace(tzinfo=None)`) forgot to also normalise `until`. Because 100% of `until` values coming from the frontend RecurrenceFields now include `Z`, this is guaranteed to fail for any recurring event edited through the new UI — the only reason it wasn't caught earlier is that the existing production events pre-date the naive-start change.",
+    "RecurrenceFields.buildRecurrencePayload should be consistent with EventEdit.jsx buildTimes (which the Live Data Audit correctly changed to naive strings). Right now start/end are naive but until is UTC-Z — this is exactly the kind of drift the audit was supposed to eliminate.",
+    "server.py has 10046 lines — recurring reminder that this file needs to be split into modules (persisted from prior iterations).",
+    "Charla widget + Emergent editor overlay inject <span> inside <option> in native selects (Admin.jsx moderation filter, RecurrenceFields frequency select). This produces a hydration console warning on every admin/edit page. Cosmetic only, but noisy in dev tools."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "N/A (frontend-only run; discovered 1 critical /api/events regression triggered by frontend save path)", "frontend": "7/8 scenarios PASS (timezone display, edit roundtrip 14:30, multi-day with earlier end time, skip dates filter, term-time badge on card + detail, quick-create 10:00 display, bulk import renders, general regression). 1/8 = the recurrence-with-until save path takes /api/events to 500."},
+  "test_credentials": "admin@blackrodnow.co.uk / BlackrodAdmin!2026 (JWT via POST /api/auth/admin/login; localStorage key rn-admin-jwt).",
+  "seed_data_creation": "Two TEST_ events created and DELETED during the run: TEST_TZAudit_<mmddHHMM> (used for quick-create → edit roundtrip → multi-day) and TEST_TermTime_<mmddHHMM> (used for recurrence + skip-date + term-time). A third event TEST_RecurAudit_<mmddHHMM> (id 0bcb7dda-d785-49b2-b136-0540bca6eb28) was created to reproduce the 500 bug and DELETED immediately once /api/events was confirmed 500. Current DB state is clean.",
+  "retest_needed": true,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "The naive/aware datetime crash in _expand_recurring_event is the only unresolved item. Reproduction: (1) log in as admin, (2) create any event via Admin quick-create, (3) go to /edit-event/<id>, (4) set Repeat this event = weekly + Repeat until = any future date, (5) save. Then curl /api/events?limit=5 → HTTP 500 and traceback in backend.err.log points to server.py line 2868 `upper = min(until, horizon)`. Deleting the event restores /api/events. Recommended fix documented in action_items.",
+  "rca_of_the_issue": "The Feb 2026 Live Data Audit correctly moved event.start/end to naive UK-wall-clock ISO strings, but missed the recurrence.until path in RecurrenceFields.buildRecurrencePayload (still uses `new Date(...).toISOString()` → Z-suffixed UTC). Backend _expand_recurring_event() defensively strips tz from `horizon` when `start` is naive, but does not strip tz from `until`, so `min(offset-aware until, offset-naive horizon)` raises TypeError and the endpoint 500s. Fix in one line on either side; safest is to fix both (frontend for policy consistency, backend for defensive normalisation)."
+}

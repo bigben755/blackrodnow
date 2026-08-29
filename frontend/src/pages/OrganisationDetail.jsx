@@ -24,6 +24,7 @@ import {
     Sparkles,
 } from "lucide-react";
 import { toast } from "sonner";
+import SeoJsonLd, { organizationJsonLd } from "@/components/SeoJsonLd";
 import {
     Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
 } from "@/components/ui/dialog";
@@ -34,8 +35,9 @@ export default function OrganisationDetail() {
     const [claimOpen, setClaimOpen] = useState(false);
     const [editOpen, setEditOpen] = useState(false);
     const [claimBusy, setClaimBusy] = useState(false);
+    const [claimNeedsCode, setClaimNeedsCode] = useState(false);
     const [editBusy, setEditBusy] = useState(false);
-    const [claimForm, setClaimForm] = useState({ contact_name: "", contact_email: "", message: "" });
+    const [claimForm, setClaimForm] = useState({ contact_name: "", contact_email: "", contact_phone: "", message: "", verification_code: "" });
     const [editForm, setEditForm] = useState({
         name: "",
         short: "",
@@ -116,10 +118,22 @@ export default function OrganisationDetail() {
         e.preventDefault();
         setClaimBusy(true);
         try {
-            await api.claimOrg(org.slug, claimForm);
-            toast.success("Claim request sent", { description: "Admins will review the profile ownership request." });
-            setClaimOpen(false);
-            setClaimForm({ contact_name: "", contact_email: "", message: "" });
+            const response = await api.claimOrg(org.slug, {
+                contact_name: claimForm.contact_name,
+                contact_email: claimForm.contact_email,
+                contact_phone: claimForm.contact_phone,
+                message: claimForm.message,
+                verification_code: claimForm.verification_code,
+            });
+            if (response?.requires_verification) {
+                setClaimNeedsCode(true);
+                toast.success("Verification code sent", { description: "Check your email, then enter the 6-digit code to complete your claim." });
+            } else {
+                toast.success("Claim request sent", { description: "Admins will review the profile ownership request." });
+                setClaimOpen(false);
+                setClaimNeedsCode(false);
+                setClaimForm({ contact_name: "", contact_email: "", contact_phone: "", message: "", verification_code: "" });
+            }
         } catch (error) {
             toast.error(error?.response?.data?.detail || "Couldn't send claim request");
         } finally {
@@ -145,6 +159,7 @@ export default function OrganisationDetail() {
 
     return (
         <div data-testid={`org-detail-${org.slug}`} className="">
+            <SeoJsonLd id="org" data={organizationJsonLd(org, typeof window !== "undefined" ? window.location.href : "")} />
             {/* Header banner */}
             <div
                 className="relative h-56 sm:h-72 overflow-hidden"
@@ -387,25 +402,48 @@ export default function OrganisationDetail() {
             {/* NEWSLETTER */}
             <NewsletterSection />
 
-            <Dialog open={claimOpen} onOpenChange={setClaimOpen}>
+            <Dialog open={claimOpen} onOpenChange={(open) => {
+                setClaimOpen(open);
+                if (!open) {
+                    setClaimNeedsCode(false);
+                    setClaimForm({ contact_name: "", contact_email: "", contact_phone: "", message: "", verification_code: "" });
+                }
+            }}>
                 <DialogContent className="sm:max-w-xl">
                     <DialogHeader>
                         <DialogTitle>Claim this profile</DialogTitle>
                     </DialogHeader>
                     <form onSubmit={submitClaim} className="space-y-4">
-                        <p className="text-sm text-muted-foreground">Send proof that you manage this organisation and an admin will review the request.</p>
+                        <p className="text-sm text-muted-foreground">Tell us who you are and how you're connected to this organisation. We will send a verification code to your email before your claim is submitted.</p>
                         <Field label="Your name" required>
                             <input value={claimForm.contact_name} onChange={(e) => setClaimForm((f) => ({ ...f, contact_name: e.target.value }))} className={inp} required />
                         </Field>
-                        <Field label="Email" required>
-                            <input type="email" value={claimForm.contact_email} onChange={(e) => setClaimForm((f) => ({ ...f, contact_email: e.target.value }))} className={inp} required />
+                        <div className="grid sm:grid-cols-2 gap-4">
+                            <Field label="Email" required>
+                                <input type="email" value={claimForm.contact_email} onChange={(e) => setClaimForm((f) => ({ ...f, contact_email: e.target.value }))} className={inp} required />
+                            </Field>
+                            <Field label="Phone number">
+                                <input type="tel" value={claimForm.contact_phone} onChange={(e) => setClaimForm((f) => ({ ...f, contact_phone: e.target.value }))} className={inp} placeholder="So we can call to verify" />
+                            </Field>
+                        </div>
+                        <Field label="Your role and proof of ownership" required>
+                            <textarea rows={4} value={claimForm.message} onChange={(e) => setClaimForm((f) => ({ ...f, message: e.target.value }))} className={inp} required placeholder="e.g. I'm the club secretary — our website / social handle / Companies House number is…" />
                         </Field>
-                        <Field label="Why should we transfer this profile?">
-                            <textarea rows={4} value={claimForm.message} onChange={(e) => setClaimForm((f) => ({ ...f, message: e.target.value }))} className={inp} placeholder="A few details help us verify ownership quickly" />
-                        </Field>
+                        {claimNeedsCode && (
+                            <Field label="Verification code" required>
+                                <input
+                                    value={claimForm.verification_code}
+                                    onChange={(e) => setClaimForm((f) => ({ ...f, verification_code: e.target.value.replace(/\D/g, "").slice(0, 6) }))}
+                                    className={inp}
+                                    inputMode="numeric"
+                                    placeholder="6-digit code"
+                                    required
+                                />
+                            </Field>
+                        )}
                         <DialogFooter>
                             <button type="button" onClick={() => setClaimOpen(false)} className="px-4 py-2 rounded-full border border-border text-sm font-semibold">Cancel</button>
-                            <button type="submit" disabled={claimBusy} className="px-4 py-2 rounded-full bg-primary text-primary-foreground text-sm font-semibold disabled:opacity-60">{claimBusy ? "Sending…" : "Send claim request"}</button>
+                            <button type="submit" disabled={claimBusy} className="px-4 py-2 rounded-full bg-primary text-primary-foreground text-sm font-semibold disabled:opacity-60">{claimBusy ? "Sending…" : (claimNeedsCode ? "Verify and submit claim" : "Send verification code")}</button>
                         </DialogFooter>
                     </form>
                 </DialogContent>

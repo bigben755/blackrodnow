@@ -3,10 +3,13 @@ from fastapi import FastAPI, APIRouter, HTTPException, UploadFile, File, Form, R
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
+from pymongo import ReturnDocument
+from pymongo.errors import DuplicateKeyError
 from pathlib import Path
 from pydantic import BaseModel, EmailStr, Field, ConfigDict
 from typing import List, Optional, Literal, Any, Dict
 from datetime import datetime, timezone, timedelta, date as date_cls, time as time_cls
+from zoneinfo import ZoneInfo
 from collections import Counter, defaultdict
 from difflib import SequenceMatcher
 import os
@@ -23,6 +26,7 @@ import html
 import base64
 import zipfile
 import xml.etree.ElementTree as ET
+import threading
 from functools import lru_cache
 import requests
 from io import BytesIO
@@ -36,12 +40,43 @@ load_dotenv(ROOT_DIR / ".env")
 MONGO_URL = os.environ["MONGO_URL"]
 DB_NAME = os.environ["DB_NAME"]
 EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY")
+
+# ─────────── LLM library preload (event-loop protection) ───────────
+_llm_ready = threading.Event()
+_llm_preload_error: Optional[str] = None
+
+
+def _preload_llm_libs():
+    global _llm_preload_error
+    try:
+        import emergentintegrations.llm.chat  # noqa: F401  — heavy import (litellm)
+        logging.getLogger(__name__).info("LLM libraries preloaded")
+    except Exception as exc:
+        _llm_preload_error = str(exc)
+        logging.getLogger(__name__).warning("LLM library preload failed: %s", exc)
+    finally:
+        _llm_ready.set()
+
+
+async def _ensure_llm_loaded(timeout: float = 240) -> bool:
+    """Await LLM library availability WITHOUT blocking the event loop.
+    Returns False when the libraries can't be used (callers fall back)."""
+    if not EMERGENT_LLM_KEY:
+        return False
+    if not _llm_ready.is_set():
+        await asyncio.to_thread(_llm_ready.wait, timeout)
+    return _llm_ready.is_set() and _llm_preload_error is None
 RESEND_API_KEY = os.environ.get("RESEND_API_KEY")
 SENDER_EMAIL = os.environ.get("SENDER_EMAIL", "onboarding@resend.dev")
 SENDER_NAME = os.environ.get("SENDER_NAME", "Blackrod Now")
 ADMIN_SENDER_EMAILS = [
     s.strip() for s in os.environ.get("ADMIN_SENDER_EMAILS", SENDER_EMAIL).split(",") if s.strip()
 ]
+ADMIN_INBOX_EMAILS = [
+    s.strip() for s in os.environ.get("ADMIN_INBOX_EMAILS", ",".join(ADMIN_SENDER_EMAILS)).split(",") if s.strip()
+]
+RESEND_WEBHOOK_SIGNING_SECRET = os.environ.get("RESEND_WEBHOOK_SIGNING_SECRET", "")
+RESEND_WEBHOOK_TOLERANCE_SECONDS = int(os.environ.get("RESEND_WEBHOOK_TOLERANCE_SECONDS", "300"))
 WEB_WIZARD_TO_EMAIL = os.environ.get("WEB_WIZARD_TO_EMAIL", SENDER_EMAIL)
 WEB_WIZARD_BCC_EMAIL = os.environ.get("WEB_WIZARD_BCC_EMAIL", "benwordsworth@aol.com")
 APP_NAME = os.environ.get("APP_NAME", "blackrodnow")
@@ -49,8 +84,17 @@ STORAGE_URL = "https://integrations.emergentagent.com/objstore/api/v1/storage"
 PUBLIC_URL = os.environ.get("PUBLIC_URL", "https://blackrodnow.local")
 ADMIN_LAUNCH_CODE = os.environ.get("ADMIN_LAUNCH_CODE", "Blackr0dN0w!&")
 ORG_DEFAULT_PASSWORD = os.environ.get("ORG_DEFAULT_PASSWORD", "Organisat10n!&")
+# Security: the historical shared default password is disabled unless explicitly
+# re-enabled for a short migration window. Existing approved organisations should
+# have a password document provisioned/reset by an admin.
+ALLOW_LEGACY_DEFAULT_ORG_PASSWORD = os.environ.get(
+    "ALLOW_LEGACY_DEFAULT_ORG_PASSWORD", "false"
+).strip().lower() in {"1", "true", "yes", "on"}
 ORG_AUTH_SECRET = os.environ.get("ORG_AUTH_SECRET", f"{APP_NAME}:{ADMIN_LAUNCH_CODE}")
 ORG_AUTH_TOKEN_TTL_SECONDS = int(os.environ.get("ORG_AUTH_TOKEN_TTL_SECONDS", "43200"))
+ORG_CLAIM_VERIFY_TTL_MINUTES = int(os.environ.get("ORG_CLAIM_VERIFY_TTL_MINUTES", "20"))
+ORG_CLAIM_VERIFY_MAX_ATTEMPTS = int(os.environ.get("ORG_CLAIM_VERIFY_MAX_ATTEMPTS", "5"))
+ORG_CLAIM_MAX_STARTS_PER_HOUR = int(os.environ.get("ORG_CLAIM_MAX_STARTS_PER_HOUR", "5"))
 
 # ─────────── DB ───────────
 client = AsyncIOMotorClient(MONGO_URL)
@@ -71,31 +115,176 @@ def new_token() -> str:
 
 
 def _require_org_write_access(slug: str, org_auth: Optional[str] = None, admin_code: Optional[str] = None) -> str:
-    """Auth guard. Accepts (a) X-Admin-Code matching ADMIN_LAUNCH_CODE, (b) an
-    admin/org JWT via X-Org-Auth `Bearer <jwt>` header, or (c) legacy org tokens
-    (current permissive rollout). Returns the effective role ('admin' if the
-    caller proved admin credentials, else 'org').
-    Real JWT flow now uses `/api/auth/admin/login`; this shim keeps existing
-    role-switcher UI working while we migrate."""
-    # Admin: launch code header
+    """Require authenticated write access to one organisation.
+
+    Accepted callers:
+    - site admin via X-Admin-Code;
+    - site admin JWT via X-Org-Auth: Bearer <jwt>;
+    - organisation shared-account JWT (role=org) scoped to this slug;
+    - organisation member JWT (role=org_member) scoped to this slug;
+    - admin-assistance JWT (role=admin_impersonation) scoped to this slug.
+
+    Missing, malformed, expired, cross-organisation, or inactive credentials are
+    rejected. This is deliberately fail-closed.
+    """
+    clean_slug = str(slug or "").strip()
+    if not clean_slug:
+        raise HTTPException(400, "Organisation is required")
+
     if admin_code and hmac.compare_digest(admin_code, ADMIN_LAUNCH_CODE):
         return "admin"
-    # Admin/Org: bearer JWT via X-Org-Auth (frontend already sends this)
-    if org_auth and org_auth.lower().startswith("bearer "):
-        token = org_auth[7:].strip()
-        try:
-            from auth import decode_token
-            payload = decode_token(token)
-            if payload.get("role") == "admin":
-                return "admin"
-        except Exception:
-            pass
-    return "org"
+
+    if not org_auth or not org_auth.lower().startswith("bearer "):
+        raise HTTPException(401, "Organisation authentication required")
+
+    token = org_auth[7:].strip()
+    if not token:
+        raise HTTPException(401, "Organisation authentication required")
+
+    from auth import decode_token
+
+    payload = decode_token(token)
+    role = str(payload.get("role") or "")
+    token_slug = str(payload.get("org_slug") or "")
+    member_status = str(payload.get("member_status") or "active")
+
+    if role == "admin":
+        return "admin"
+
+    if role == "admin_impersonation":
+        if token_slug != clean_slug:
+            raise HTTPException(403, "Admin assistance token is for a different organisation")
+        return "admin"
+
+    if role in {"org", "org_member"}:
+        if token_slug != clean_slug:
+            raise HTTPException(403, "You do not have access to this organisation")
+        if member_status != "active":
+            raise HTTPException(403, "This organisation account is not active")
+        return "org"
+
+    raise HTTPException(403, "Invalid organisation credentials")
 
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+
+
+def _decode_resend_signing_secret(secret: str) -> bytes:
+    token = (secret or "").strip()
+    if token.startswith("whsec_"):
+        token = token[6:]
+    padded = token + ("=" * (-len(token) % 4))
+    try:
+        return base64.b64decode(padded)
+    except Exception:
+        return token.encode("utf-8")
+
+
+def _parse_svix_v1_signatures(header_value: str) -> List[str]:
+    parts = [part.strip() for part in (header_value or "").split() if part.strip()]
+    signatures: List[str] = []
+    for part in parts:
+        prefix, sep, value = part.partition(",")
+        if sep and prefix == "v1" and value:
+            signatures.append(value.strip())
+    return signatures
+
+
+def _verify_resend_webhook_signature(
+    body: bytes,
+    svix_id: str,
+    svix_timestamp: str,
+    svix_signature: str,
+) -> tuple[bool, str]:
+    if not RESEND_WEBHOOK_SIGNING_SECRET:
+        return False, "webhook signing secret is not configured"
+    if not svix_id or not svix_timestamp or not svix_signature:
+        return False, "missing svix headers"
+
+    try:
+        ts = int(svix_timestamp)
+    except Exception:
+        return False, "invalid svix timestamp"
+
+    now_ts = int(datetime.now(timezone.utc).timestamp())
+    if abs(now_ts - ts) > RESEND_WEBHOOK_TOLERANCE_SECONDS:
+        return False, "svix timestamp outside tolerance"
+
+    signing_key = _decode_resend_signing_secret(RESEND_WEBHOOK_SIGNING_SECRET)
+    signed_payload = f"{svix_id}.{svix_timestamp}.{body.decode('utf-8')}".encode("utf-8")
+    expected = base64.b64encode(hmac.new(signing_key, signed_payload, hashlib.sha256).digest()).decode("utf-8")
+    provided = _parse_svix_v1_signatures(svix_signature)
+    if not provided:
+        return False, "no v1 signature provided"
+
+    for candidate in provided:
+        if hmac.compare_digest(candidate, expected):
+            return True, "ok"
+    return False, "signature mismatch"
+
+
+def _extract_email_address(value: Any) -> str:
+    if isinstance(value, dict):
+        for key in ("email", "address"):
+            if value.get(key):
+                return str(value.get(key)).strip().lower()
+        return ""
+    if isinstance(value, list):
+        for item in value:
+            addr = _extract_email_address(item)
+            if addr:
+                return addr
+        return ""
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    match = re.search(r"<([^>]+)>", text)
+    if match:
+        return match.group(1).strip().lower()
+    return text.strip().lower()
+
+
+def _extract_sender_name(value: Any) -> str:
+    if isinstance(value, dict):
+        return str(value.get("name") or "").strip()
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    match = re.match(r'"?([^"<]+)"?\s*<[^>]+>$', text)
+    if match:
+        return match.group(1).strip()
+    return ""
+
+
+def _extract_header_value(headers: Any, key: str) -> str:
+    wanted = (key or "").strip().lower()
+    if not wanted:
+        return ""
+    if isinstance(headers, dict):
+        for k, v in headers.items():
+            if str(k).strip().lower() == wanted:
+                return str(v or "").strip()
+    if isinstance(headers, list):
+        for item in headers:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name") or item.get("key") or "").strip().lower()
+            if name == wanted:
+                return str(item.get("value") or "").strip()
+    return ""
+
+
+def _html_to_text(source_html: str) -> str:
+    html_text = str(source_html or "")
+    if not html_text:
+        return ""
+    no_script = re.sub(r"<script[\s\S]*?</script>", "", html_text, flags=re.IGNORECASE)
+    no_style = re.sub(r"<style[\s\S]*?</style>", "", no_script, flags=re.IGNORECASE)
+    body = re.sub(r"<[^>]+>", " ", no_style)
+    body = html.unescape(body)
+    return re.sub(r"\s+", " ", body).strip()
 
 # ─────────── Optional integrations ───────────
 _storage_key: Optional[str] = None
@@ -572,7 +761,14 @@ class Organisation(BaseModel):
     logo_thumb_path: Optional[str] = None
     cover_path: Optional[str] = None
     upcoming: int = 0
-    status: Literal["approved", "pending", "rejected"] = "approved"
+    status: Literal["approved", "pending", "rejected", "suspended", "archived"] = "approved"
+    verified: bool = False
+    owner_email: Optional[EmailStr] = None
+    admin_emails: List[EmailStr] = []
+    trust_level: Literal["new", "unverified", "trusted"] = "new"
+    archived_at: Optional[str] = None
+    suspended_at: Optional[str] = None
+    merged_into: Optional[str] = None
     updated_at: str = Field(default_factory=now_iso)
 
 
@@ -583,6 +779,8 @@ class EventRecurrence(BaseModel):
     until: Optional[str] = None  # ISO date/datetime — inclusive upper bound
     count: Optional[int] = None  # OR a maximum number of instances (capped at 60)
     extra_dates: List[str] = []  # additional one-off YYYY-MM-DD dates the event also happens on
+    exception_dates: List[str] = []  # YYYY-MM-DD dates to SKIP (closures, holidays)
+    term_time_only: bool = False  # informational badge — runs term-time only
 
 
 class Event(BaseModel):
@@ -604,7 +802,7 @@ class Event(BaseModel):
     contactPhone: str = ""
     image: str = ""
     featured: bool = False
-    status: Literal["approved", "pending", "rejected"] = "pending"
+    status: Literal["approved", "pending", "rejected", "draft", "cancelled", "archived"] = "pending"
     recurrence: Optional[EventRecurrence] = None
 
 
@@ -646,9 +844,14 @@ class AdminMessage(BaseModel):
     from_org_slug: Optional[str] = None
     from_email: Optional[str] = None
     from_name: Optional[str] = None
+    to_org_slug: Optional[str] = None
+    to_email: Optional[str] = None
     subject: str
     body: str
     in_reply_to: Optional[str] = None  # notification id the org is replying to
+    parent_message_id: Optional[str] = None
+    direction: Literal["inbound_org", "outbound_admin"] = "inbound_org"
+    delivery: Optional[Dict[str, Any]] = None
     read: bool = False
     created_at: str = Field(default_factory=now_iso)
 
@@ -692,13 +895,20 @@ class NewsletterEdition(BaseModel):
     body_intro: str = ""
     scheduled_for: Optional[str] = None
     sent_at: Optional[str] = None
+    audience: str = "subscribers"
+    trigger: str = "manual"
+    sent_count: int = 0
+    failed_count: int = 0
+    recipient_count: int = 0
     created_at: str = Field(default_factory=now_iso)
 
 
 class OrgClaimReq(BaseModel):
     contact_name: str = ""
     contact_email: EmailStr
+    contact_phone: str = ""
     message: str = ""
+    verification_code: Optional[str] = None
 
 
 class OrgSuggestReq(BaseModel):
@@ -732,6 +942,7 @@ class OrgEditRequest(BaseModel):
     payload: Dict[str, Any] = Field(default_factory=dict)
     contact_name: str = ""
     contact_email: Optional[EmailStr] = None
+    contact_phone: str = ""
     message: str = ""
     status: Literal["pending", "approved", "rejected"] = "pending"
     reviewer_notes: str = ""
@@ -747,6 +958,105 @@ class OrgPasswordDoc(BaseModel):
     updated_by: str = "org"
 
 
+class AdminAuditEntry(BaseModel):
+    id: str = Field(default_factory=new_id)
+    actor: str = "admin"
+    action: str
+    entity_type: Literal["org", "event", "user", "site", "subscriber"] = "site"
+    entity_id: str = ""
+    summary: str
+    meta: Dict[str, Any] = Field(default_factory=dict)
+    created_at: str = Field(default_factory=now_iso)
+
+
+class OrgOwnershipTransferReq(BaseModel):
+    owner_email: EmailStr
+    add_to_admins: bool = True
+
+
+class OrgAssignAdminsReq(BaseModel):
+    admin_emails: List[EmailStr] = []
+
+
+class OrgLifecycleReq(BaseModel):
+    action: Literal["approve", "suspend", "archive", "restore", "verify", "unverify"]
+    reason: str = ""
+
+
+class OrgInviteClaimReq(BaseModel):
+    email: EmailStr
+    note: str = ""
+
+
+class OrgMergeReq(BaseModel):
+    primary_slug: str
+    duplicate_slug: str
+    archive_duplicate: bool = True
+
+
+class TaxonomyPatch(BaseModel):
+    event_categories: Optional[List[str]] = None
+    organisation_categories: Optional[List[str]] = None
+
+
+class OrgMember(BaseModel):
+    id: str = Field(default_factory=new_id)
+    org_slug: str
+    email: EmailStr
+    name: str = ""
+    role: Literal["owner", "admin", "editor", "viewer"] = "editor"
+    status: Literal["active", "suspended"] = "active"
+    permissions: List[str] = []
+    password_salt: str = ""
+    password_hash: str = ""
+    invited_at: Optional[str] = None
+    accepted_at: Optional[str] = None
+    last_login_at: Optional[str] = None
+    created_at: str = Field(default_factory=now_iso)
+    updated_at: str = Field(default_factory=now_iso)
+
+
+class OrgMemberInvite(BaseModel):
+    id: str = Field(default_factory=new_id)
+    org_slug: str
+    org_name: str
+    email: EmailStr
+    role: Literal["owner", "admin", "editor", "viewer"] = "editor"
+    token: str = Field(default_factory=new_token)
+    status: Literal["pending", "accepted", "revoked", "expired"] = "pending"
+    invited_by: str = "admin"
+    note: str = ""
+    created_at: str = Field(default_factory=now_iso)
+    sent_at: Optional[str] = None
+    accepted_at: Optional[str] = None
+
+
+class OrgMemberInviteReq(BaseModel):
+    email: EmailStr
+    role: Literal["owner", "admin", "editor", "viewer"] = "editor"
+    note: str = ""
+
+
+class OrgMemberRedeemReq(BaseModel):
+    token: str
+    name: str = ""
+    password: str
+
+
+class OrgMemberLoginReq(BaseModel):
+    org_slug: str
+    email: EmailStr
+    password: str
+
+
+class OrgMemberRoleReq(BaseModel):
+    role: Literal["owner", "admin", "editor", "viewer"]
+
+
+class OrgMemberSuspendReq(BaseModel):
+    suspended: bool = True
+
+
 # ─────────── Helpers ───────────
 async def _find_org(slug: str) -> dict:
     org = await db.orgs.find_one({"slug": slug}, {"_id": 0})
@@ -758,6 +1068,117 @@ async def _find_org(slug: str) -> dict:
 def _strip_id(doc: dict) -> dict:
     doc.pop("_id", None)
     return doc
+
+
+def _admin_from_request(request: Request, authorization: Optional[str], admin_code: Optional[str]) -> bool:
+    from auth import read_admin_from_request as _read_admin
+    if _read_admin(request, authorization):
+        return True
+    return bool(admin_code and hmac.compare_digest(admin_code, ADMIN_LAUNCH_CODE))
+
+
+def _require_admin_from_request(request: Request, authorization: Optional[str], admin_code: Optional[str]) -> None:
+    if not _admin_from_request(request, authorization, admin_code):
+        raise HTTPException(403, "Admin authentication required")
+
+
+async def _audit(
+    action: str,
+    entity_type: str,
+    entity_id: str,
+    summary: str,
+    meta: Optional[Dict[str, Any]] = None,
+    actor: str = "admin",
+) -> None:
+    await db.admin_audit.insert_one(
+        AdminAuditEntry(
+            actor=actor,
+            action=action,
+            entity_type=entity_type,
+            entity_id=entity_id,
+            summary=summary,
+            meta=meta or {},
+        ).model_dump()
+    )
+
+
+DEFAULT_EVENT_CATEGORIES = [
+    "Community",
+    "Family",
+    "Children & Young People",
+    "Sports & Fitness",
+    "Arts & Culture",
+    "Heritage",
+    "Faith",
+    "Health & Wellbeing",
+    "Education",
+    "Social",
+    "Fundraising",
+    "Markets & Fairs",
+    "Music & Entertainment",
+]
+
+DEFAULT_EVENT_CATEGORY_IMAGES = {
+    "family": "/familyevent.png",
+    "youth": "/youth.png",
+    "children & young people": "/youth.png",
+    "children and young people": "/youth.png",
+    "sport": "/sport.png",
+    "sports": "/sport.png",
+    "sports & fitness": "/sport.png",
+    "school": "/school.png",
+    "education": "/school.png",
+    "charity": "/charity.png",
+    "fundraising": "/charity.png",
+    "business": "/business.png",
+    "community": "/communityevent.png",
+    "social": "/communityevent.png",
+    "markets & fairs": "/foodanddrink.png",
+    "markets and fairs": "/foodanddrink.png",
+    "music": "/music.png",
+    "music & entertainment": "/music.png",
+    "arts & culture": "/music.png",
+    "arts and culture": "/music.png",
+    "food & drink": "/foodanddrink.png",
+    "food and drink": "/foodanddrink.png",
+    "volunteering": "/volunteering.png",
+    "faith": "/faith.png",
+    "heritage": "/heritage.png",
+    "health & wellbeing": "/healthandwellbeing.png",
+}
+
+LEGACY_EVENT_IMAGE_PREFIX = "https://images.unsplash.com/photo-1533174072545-7a4b6ad7a6c3"
+
+
+def _event_category_image(category: str) -> str:
+    key = (category or "community").strip().lower()
+    return DEFAULT_EVENT_CATEGORY_IMAGES.get(key, "/communityevent.png")
+
+
+def _is_blank_or_legacy_event_image(image: str) -> bool:
+    value = (image or "").strip()
+    if not value:
+        return True
+    return value.startswith(LEGACY_EVENT_IMAGE_PREFIX)
+
+
+def _is_category_stock_image(image: str) -> bool:
+    """True when the image is one of the generic category placeholders."""
+    value = (image or "").strip()
+    return value in set(DEFAULT_EVENT_CATEGORY_IMAGES.values()) or value == "/communityevent.png"
+
+DEFAULT_ORGANISATION_CATEGORIES = [
+    "Community groups",
+    "Sports & fitness",
+    "Arts & culture",
+    "Faith groups",
+    "Health & wellbeing",
+    "Education",
+    "Charities & social",
+    "Venues & spaces",
+    "Local business",
+    "Other",
+]
 
 
 # ─────────── Root ───────────
@@ -854,6 +1275,49 @@ async def patch_site_settings(
     return await _get_site_settings()
 
 
+async def _get_taxonomy_settings() -> Dict[str, Any]:
+    doc = await db.site_settings.find_one({"_id": _SITE_SETTINGS_ID}) or {}
+    event_categories = doc.get("event_categories") or DEFAULT_EVENT_CATEGORIES
+    organisation_categories = doc.get("organisation_categories") or DEFAULT_ORGANISATION_CATEGORIES
+    return {
+        "event_categories": [str(v).strip() for v in event_categories if str(v).strip()],
+        "organisation_categories": [str(v).strip() for v in organisation_categories if str(v).strip()],
+        "updated_at": doc.get("updated_at"),
+    }
+
+
+@api.get("/taxonomy")
+async def get_taxonomy_settings():
+    return await _get_taxonomy_settings()
+
+
+@api.post("/admin/taxonomy")
+async def patch_taxonomy_settings(
+    patch: TaxonomyPatch,
+    request: Request,
+    authorization: Optional[str] = Header(None),
+    admin_code: Optional[str] = Header(None, alias="X-Admin-Code"),
+):
+    _require_admin_from_request(request, authorization, admin_code)
+    updates = {k: v for k, v in patch.model_dump(exclude_none=True).items()}
+    if not updates:
+        return await _get_taxonomy_settings()
+    updates["updated_at"] = now_iso()
+    await db.site_settings.update_one(
+        {"_id": _SITE_SETTINGS_ID},
+        {"$set": updates},
+        upsert=True,
+    )
+    await _audit(
+        action="taxonomy_updated",
+        entity_type="site",
+        entity_id="taxonomy",
+        summary="Updated category taxonomy",
+        meta={"keys": sorted(list(updates.keys()))},
+    )
+    return await _get_taxonomy_settings()
+
+
 
 
 # ─────────── Seed (frontend bootstraps once from mockData) ───────────
@@ -898,7 +1362,7 @@ async def seed_from_payload(payload: SeedPayload, force: bool = False):
 # ─────────── Organisations ───────────
 @api.get("/organisations")
 async def list_organisations(include_pending: bool = False):
-    q = {} if include_pending else {"status": {"$ne": "pending"}}
+    q = {} if include_pending else {"status": "approved"}
     return await db.orgs.find(q, {"_id": 0}).to_list(1000)
 
 
@@ -909,10 +1373,26 @@ async def get_organisation(slug: str):
 
 @api.post("/organisations")
 async def submit_organisation(org: Organisation):
+    # Require a setup contact email so we can send dashboard credentials on approval.
+    contact_email = str(org.email or org.owner_email or "").strip().lower()
+    if not contact_email:
+        raise HTTPException(400, "Contact email is required when submitting an organisation")
+    org.email = contact_email
+    if not org.owner_email:
+        org.owner_email = contact_email
     org.status = "pending"
+    if not org.trust_level:
+        org.trust_level = "new"
     doc = org.model_dump()
     doc["updated_at"] = now_iso()
     await db.orgs.insert_one(dict(doc))
+    await _audit(
+        action="org_submitted",
+        entity_type="org",
+        entity_id=doc.get("slug", ""),
+        summary=f"Organisation submitted: {doc.get('name', doc.get('slug', ''))}",
+        actor="public",
+    )
     return _strip_id(doc)
 
 
@@ -958,15 +1438,778 @@ async def patch_organisation(
 
 
 @api.post("/admin/organisations/{slug}/status")
-async def admin_org_status(slug: str, body: Dict[str, str]):
-    await db.orgs.update_one({"slug": slug}, {"$set": {"status": body.get("status", "approved")}})
-    return await _find_org(slug)
+async def admin_org_status(
+    slug: str,
+    body: Dict[str, str],
+    request: Request,
+    authorization: Optional[str] = Header(None),
+    admin_code: Optional[str] = Header(None, alias="X-Admin-Code"),
+):
+    _require_admin_from_request(request, authorization, admin_code or (body.get("admin_code") or ""))
+    status = body.get("status", "approved")
+    existing = await _find_org(slug)
+    updates: Dict[str, Any] = {"status": status, "updated_at": now_iso()}
+    if status == "suspended":
+        updates["suspended_at"] = now_iso()
+    if status == "archived":
+        updates["archived_at"] = now_iso()
+    await db.orgs.update_one({"slug": slug}, {"$set": updates})
+    org = await _find_org(slug)
+    if status == "approved" and existing.get("status") != "approved":
+        await _provision_org_credentials_on_approval(org, approved_by="admin-status")
+    await _audit(
+        action="org_status_changed",
+        entity_type="org",
+        entity_id=slug,
+        summary=f"Organisation status set to {status}",
+        meta={"status": status},
+    )
+    return org
 
 
 @api.delete("/admin/organisations/{slug}")
-async def admin_delete_org(slug: str):
+async def admin_delete_org(
+    slug: str,
+    request: Request,
+    authorization: Optional[str] = Header(None),
+    admin_code: Optional[str] = Header(None, alias="X-Admin-Code"),
+):
+    _require_admin_from_request(request, authorization, admin_code)
+
+    org = await _find_org(slug)
     await db.orgs.delete_one({"slug": slug})
+    await _audit(
+        action="org_deleted",
+        entity_type="org",
+        entity_id=slug,
+        summary=f"Organisation deleted: {org.get('name') or slug}",
+        actor="admin",
+    )
     return {"ok": True}
+
+
+@api.post("/admin/organisations")
+async def admin_create_organisation(
+    org: Organisation,
+    request: Request,
+    authorization: Optional[str] = Header(None),
+    admin_code: Optional[str] = Header(None, alias="X-Admin-Code"),
+):
+    _require_admin_from_request(request, authorization, admin_code)
+    doc = org.model_dump()
+    doc["status"] = doc.get("status") or "approved"
+    doc["updated_at"] = now_iso()
+    exists = await db.orgs.find_one({"slug": doc["slug"]}, {"_id": 1})
+    if exists:
+        raise HTTPException(409, "Organisation slug already exists")
+    await db.orgs.insert_one(doc)
+    await _audit(
+        action="org_created",
+        entity_type="org",
+        entity_id=doc["slug"],
+        summary=f"Organisation created: {doc.get('name', doc['slug'])}",
+    )
+    return _strip_id(doc)
+
+
+@api.post("/admin/organisations/{slug}/assign-admins")
+async def admin_assign_org_admins(
+    slug: str,
+    req: OrgAssignAdminsReq,
+    request: Request,
+    authorization: Optional[str] = Header(None),
+    admin_code: Optional[str] = Header(None, alias="X-Admin-Code"),
+):
+    _require_admin_from_request(request, authorization, admin_code)
+    org = await _find_org(slug)
+    existing = [str(v).strip().lower() for v in (org.get("admin_emails") or []) if str(v).strip()]
+    incoming = [str(v).strip().lower() for v in (req.admin_emails or []) if str(v).strip()]
+    merged = sorted(set(existing + incoming))
+    await db.orgs.update_one({"slug": slug}, {"$set": {"admin_emails": merged, "updated_at": now_iso()}})
+    await _audit(
+        action="org_admins_assigned",
+        entity_type="org",
+        entity_id=slug,
+        summary=f"Assigned {len(incoming)} organisation admin email(s)",
+        meta={"emails": incoming},
+    )
+    return await _find_org(slug)
+
+
+@api.post("/admin/organisations/{slug}/transfer-ownership")
+async def admin_transfer_org_ownership(
+    slug: str,
+    req: OrgOwnershipTransferReq,
+    request: Request,
+    authorization: Optional[str] = Header(None),
+    admin_code: Optional[str] = Header(None, alias="X-Admin-Code"),
+):
+    _require_admin_from_request(request, authorization, admin_code)
+    org = await _find_org(slug)
+    owner = str(req.owner_email).strip().lower()
+    admin_emails = [str(v).strip().lower() for v in (org.get("admin_emails") or []) if str(v).strip()]
+    if req.add_to_admins and owner not in admin_emails:
+        admin_emails.append(owner)
+    await db.orgs.update_one(
+        {"slug": slug},
+        {"$set": {"owner_email": owner, "admin_emails": sorted(set(admin_emails)), "updated_at": now_iso()}},
+    )
+    await _audit(
+        action="org_ownership_transferred",
+        entity_type="org",
+        entity_id=slug,
+        summary=f"Transferred ownership to {owner}",
+        meta={"owner_email": owner},
+    )
+    return await _find_org(slug)
+
+
+@api.post("/admin/organisations/{slug}/lifecycle")
+async def admin_org_lifecycle(
+    slug: str,
+    req: OrgLifecycleReq,
+    request: Request,
+    authorization: Optional[str] = Header(None),
+    admin_code: Optional[str] = Header(None, alias="X-Admin-Code"),
+):
+    _require_admin_from_request(request, authorization, admin_code)
+    existing = await _find_org(slug)
+    updates: Dict[str, Any] = {"updated_at": now_iso()}
+    if req.action == "approve":
+        updates.update({"status": "approved"})
+    elif req.action == "suspend":
+        updates.update({"status": "suspended", "suspended_at": now_iso()})
+    elif req.action == "archive":
+        updates.update({"status": "archived", "archived_at": now_iso()})
+    elif req.action == "restore":
+        updates.update({"status": "approved", "suspended_at": None})
+    elif req.action == "verify":
+        updates.update({"verified": True})
+    elif req.action == "unverify":
+        updates.update({"verified": False})
+    await db.orgs.update_one({"slug": slug}, {"$set": updates})
+    org = await _find_org(slug)
+    if req.action == "approve" and existing.get("status") != "approved":
+        await _provision_org_credentials_on_approval(org, approved_by="admin-lifecycle")
+    await _audit(
+        action="org_lifecycle",
+        entity_type="org",
+        entity_id=slug,
+        summary=f"Organisation lifecycle action: {req.action}",
+        meta={"action": req.action, "reason": req.reason},
+    )
+    return org
+
+
+@api.get("/admin/organisations/without-admins")
+async def admin_orgs_without_admins(
+    request: Request,
+    authorization: Optional[str] = Header(None),
+    admin_code: Optional[str] = Header(None, alias="X-Admin-Code"),
+):
+    _require_admin_from_request(request, authorization, admin_code)
+    rows = await db.orgs.find({}, {"_id": 0}).to_list(3000)
+    out = []
+    for row in rows:
+        owner = str(row.get("owner_email") or "").strip()
+        admins = [str(v or "").strip() for v in (row.get("admin_emails") or []) if str(v or "").strip()]
+        if not owner and not admins:
+            out.append(row)
+    return out
+
+
+@api.post("/admin/organisations/{slug}/invite-claim")
+async def admin_invite_claim_org(
+    slug: str,
+    req: OrgInviteClaimReq,
+    request: Request,
+    authorization: Optional[str] = Header(None),
+    admin_code: Optional[str] = Header(None, alias="X-Admin-Code"),
+):
+    _require_admin_from_request(request, authorization, admin_code)
+    org = await _find_org(slug)
+    invite_id = new_id()
+    claim_url = f"{PUBLIC_URL}/organisations/{slug}"
+    invite = {
+        "id": invite_id,
+        "org_slug": slug,
+        "org_name": org.get("name") or slug,
+        "email": str(req.email).strip().lower(),
+        "note": req.note.strip(),
+        "status": "pending",
+        "created_at": now_iso(),
+    }
+    await db.org_claim_invites.insert_one(invite)
+    html_body = (
+        f"<p>Hello,</p>"
+        f"<p>You have been invited to claim and manage <strong>{html.escape(invite['org_name'])}</strong> on Blackrod Now.</p>"
+        f"<p>Open the organisation page and click <em>Claim this profile</em>:</p>"
+        f"<p><a href='{claim_url}'>{claim_url}</a></p>"
+        + (f"<p><em>{html.escape(invite['note'])}</em></p>" if invite["note"] else "")
+        + "<p>Once approved by site admin, you will receive dashboard login details.</p>"
+        + _EMAIL_SIGNATURE
+    )
+    asyncio.create_task(asyncio.to_thread(resend_send, invite["email"], f"Claim your Blackrod Now page: {invite['org_name']}", html_body))
+    await _audit(
+        action="org_claim_invited",
+        entity_type="org",
+        entity_id=slug,
+        summary=f"Sent claim invitation to {invite['email']}",
+        meta={"invite_id": invite_id},
+    )
+    return invite
+
+
+@api.get("/admin/org-claim-invites")
+async def admin_list_org_claim_invites(
+    status: Optional[str] = None,
+    request: Request = None,
+    authorization: Optional[str] = Header(None),
+    admin_code: Optional[str] = Header(None, alias="X-Admin-Code"),
+):
+    _require_admin_from_request(request, authorization, admin_code)
+    q: Dict[str, Any] = {}
+    if status:
+        q["status"] = status
+    return await db.org_claim_invites.find(q, {"_id": 0}).sort("created_at", -1).to_list(400)
+
+
+@api.get("/admin/organisations/{slug}/members")
+async def admin_list_org_members(
+    slug: str,
+    request: Request,
+    authorization: Optional[str] = Header(None),
+    admin_code: Optional[str] = Header(None, alias="X-Admin-Code"),
+):
+    _require_admin_from_request(request, authorization, admin_code)
+    await _find_org(slug)
+    members = await db.org_members.find({"org_slug": slug}, {"_id": 0}).sort("created_at", -1).to_list(500)
+    invites = await db.org_member_invites.find({"org_slug": slug}, {"_id": 0}).sort("created_at", -1).to_list(500)
+    return {"members": members, "invites": invites}
+
+
+@api.post("/admin/organisations/{slug}/members/invite")
+async def admin_invite_org_member(
+    slug: str,
+    req: OrgMemberInviteReq,
+    request: Request,
+    authorization: Optional[str] = Header(None),
+    admin_code: Optional[str] = Header(None, alias="X-Admin-Code"),
+):
+    _require_admin_from_request(request, authorization, admin_code)
+    org = await _find_org(slug)
+    invite = OrgMemberInvite(
+        org_slug=slug,
+        org_name=org.get("name") or slug,
+        email=str(req.email).strip().lower(),
+        role=req.role,
+        invited_by="admin",
+        note=req.note.strip(),
+        sent_at=now_iso(),
+    ).model_dump()
+    await db.org_member_invites.insert_one(invite)
+    asyncio.create_task(_send_org_member_invite(invite))
+    await _audit(
+        action="org_member_invited",
+        entity_type="user",
+        entity_id=invite["email"],
+        summary=f"Invited {invite['email']} to {org.get('name') or slug} as {invite['role']}",
+        meta={"org_slug": slug, "invite_id": invite["id"]},
+    )
+    return invite
+
+
+@api.post("/admin/member-invites/{invite_id}/resend")
+async def admin_resend_member_invite(
+    invite_id: str,
+    request: Request,
+    authorization: Optional[str] = Header(None),
+    admin_code: Optional[str] = Header(None, alias="X-Admin-Code"),
+):
+    _require_admin_from_request(request, authorization, admin_code)
+    invite = await db.org_member_invites.find_one({"id": invite_id}, {"_id": 0})
+    if not invite:
+        raise HTTPException(404, "Invitation not found")
+    if invite.get("status") != "pending":
+        raise HTTPException(400, "Only pending invitations can be resent")
+    await db.org_member_invites.update_one({"id": invite_id}, {"$set": {"sent_at": now_iso()}})
+    invite["sent_at"] = now_iso()
+    asyncio.create_task(_send_org_member_invite(invite))
+    await _audit(
+        action="org_member_invite_resent",
+        entity_type="user",
+        entity_id=invite.get("email") or invite_id,
+        summary=f"Resent invitation to {invite.get('email')}",
+        meta={"invite_id": invite_id},
+    )
+    return {"ok": True, "invite_id": invite_id}
+
+
+@api.post("/admin/member-invites/{invite_id}/reset")
+async def admin_reset_member_invite(
+    invite_id: str,
+    request: Request,
+    authorization: Optional[str] = Header(None),
+    admin_code: Optional[str] = Header(None, alias="X-Admin-Code"),
+):
+    _require_admin_from_request(request, authorization, admin_code)
+    invite = await db.org_member_invites.find_one({"id": invite_id}, {"_id": 0})
+    if not invite:
+        raise HTTPException(404, "Invitation not found")
+    if invite.get("status") != "pending":
+        raise HTTPException(400, "Only pending invitations can be reset")
+    new_token = new_token()
+    await db.org_member_invites.update_one(
+        {"id": invite_id},
+        {"$set": {"token": new_token, "sent_at": now_iso()}},
+    )
+    invite["token"] = new_token
+    invite["sent_at"] = now_iso()
+    asyncio.create_task(_send_org_member_invite(invite))
+    await _audit(
+        action="org_member_invite_reset",
+        entity_type="user",
+        entity_id=invite.get("email") or invite_id,
+        summary=f"Reset invitation token for {invite.get('email')}",
+        meta={"invite_id": invite_id},
+    )
+    return {"ok": True, "invite_id": invite_id, "token": new_token}
+
+
+@api.get("/admin/member-invites")
+async def admin_list_member_invites(
+    status: Optional[str] = None,
+    request: Request = None,
+    authorization: Optional[str] = Header(None),
+    admin_code: Optional[str] = Header(None, alias="X-Admin-Code"),
+):
+    _require_admin_from_request(request, authorization, admin_code)
+    q: Dict[str, Any] = {}
+    if status:
+        q["status"] = status
+    return await db.org_member_invites.find(q, {"_id": 0}).sort("created_at", -1).to_list(1000)
+
+
+@api.post("/organisations/member-invites/redeem")
+async def redeem_org_member_invite(req: OrgMemberRedeemReq):
+    invite = await db.org_member_invites.find_one({"token": req.token}, {"_id": 0})
+    if not invite:
+        raise HTTPException(404, "Invitation token not found")
+    if invite.get("status") != "pending":
+        raise HTTPException(400, "Invitation is no longer valid")
+    password = (req.password or "").strip()
+    if len(password) < 8:
+        raise HTTPException(400, "Password must be at least 8 characters")
+
+    salt = secrets.token_hex(16)
+    member = {
+        "id": new_id(),
+        "org_slug": invite.get("org_slug") or "",
+        "email": str(invite.get("email") or "").strip().lower(),
+        "name": (req.name or "").strip(),
+        "role": invite.get("role") or "editor",
+        "status": "active",
+        "permissions": [],
+        "password_salt": salt,
+        "password_hash": _hash_member_password(password, salt),
+        "invited_at": invite.get("created_at"),
+        "accepted_at": now_iso(),
+        "last_login_at": None,
+        "created_at": now_iso(),
+        "updated_at": now_iso(),
+    }
+    existing = await db.org_members.find_one(
+        {"org_slug": member["org_slug"], "email": member["email"]},
+        {"_id": 0},
+    )
+    if existing:
+        await db.org_members.update_one(
+            {"id": existing["id"]},
+            {
+                "$set": {
+                    "name": member["name"] or existing.get("name") or "",
+                    "role": member["role"],
+                    "status": "active",
+                    "password_salt": member["password_salt"],
+                    "password_hash": member["password_hash"],
+                    "accepted_at": now_iso(),
+                    "updated_at": now_iso(),
+                }
+            },
+        )
+        member_id = existing["id"]
+    else:
+        await db.org_members.insert_one(member)
+        member_id = member["id"]
+
+    await db.org_member_invites.update_one(
+        {"id": invite["id"]},
+        {"$set": {"status": "accepted", "accepted_at": now_iso()}},
+    )
+
+    await _audit(
+        action="org_member_invite_accepted",
+        entity_type="user",
+        entity_id=member["email"],
+        summary=f"Member accepted invite for {invite.get('org_name') or invite.get('org_slug')}",
+        actor="public",
+        meta={"member_id": member_id, "org_slug": invite.get("org_slug")},
+    )
+    return {
+        "ok": True,
+        "member_id": member_id,
+        "org_slug": invite.get("org_slug"),
+        "email": member["email"],
+    }
+
+
+@api.post("/organisations/member/login")
+async def org_member_login(req: OrgMemberLoginReq):
+    org = await _find_org(req.org_slug)
+    if org.get("status") in {"pending", "suspended", "archived", "rejected"}:
+        raise HTTPException(403, "This organisation cannot sign in right now")
+    member = await db.org_members.find_one(
+        {"org_slug": req.org_slug, "email": str(req.email).strip().lower()},
+        {"_id": 0},
+    )
+    if not member:
+        raise HTTPException(404, "No member account found for this email")
+    if member.get("status") != "active":
+        raise HTTPException(403, "This member account is suspended")
+    if not _member_password_matches(member, (req.password or "").strip()):
+        raise HTTPException(401, "Invalid email or password")
+    from auth import create_access_token
+    token = create_access_token(
+        sub=member.get("email") or "",
+        role="org_member",
+        extra={
+            "org_slug": req.org_slug,
+            "member_id": member.get("id"),
+            "member_role": member.get("role") or "editor",
+            "member_status": member.get("status") or "active",
+        },
+    )
+    await db.org_members.update_one(
+        {"id": member.get("id")},
+        {"$set": {"last_login_at": now_iso(), "updated_at": now_iso()}},
+    )
+    await _audit(
+        action="org_member_login",
+        entity_type="user",
+        entity_id=member.get("id") or "",
+        summary=f"Member logged in: {member.get('email')}",
+        actor="org",
+        meta={"org_slug": req.org_slug},
+    )
+    return {
+        "ok": True,
+        "slug": req.org_slug,
+        "org_name": org.get("name", ""),
+        "token": f"Bearer {token}",
+        "member": {
+            "id": member.get("id"),
+            "email": member.get("email"),
+            "name": member.get("name") or "",
+            "role": member.get("role") or "editor",
+            "last_login_at": now_iso(),
+        },
+    }
+
+
+@api.post("/admin/organisations/{slug}/members/{member_id}/role")
+async def admin_set_member_role(
+    slug: str,
+    member_id: str,
+    req: OrgMemberRoleReq,
+    request: Request,
+    authorization: Optional[str] = Header(None),
+    admin_code: Optional[str] = Header(None, alias="X-Admin-Code"),
+):
+    _require_admin_from_request(request, authorization, admin_code)
+    await _find_org(slug)
+    res = await db.org_members.update_one(
+        {"id": member_id, "org_slug": slug},
+        {"$set": {"role": req.role, "updated_at": now_iso()}},
+    )
+    if not res.matched_count:
+        raise HTTPException(404, "Member not found")
+    await _audit(
+        action="org_member_role_changed",
+        entity_type="user",
+        entity_id=member_id,
+        summary=f"Updated member role to {req.role}",
+        meta={"org_slug": slug},
+    )
+    return await db.org_members.find_one({"id": member_id}, {"_id": 0})
+
+
+@api.post("/admin/organisations/{slug}/members/{member_id}/suspend")
+async def admin_suspend_member(
+    slug: str,
+    member_id: str,
+    req: OrgMemberSuspendReq,
+    request: Request,
+    authorization: Optional[str] = Header(None),
+    admin_code: Optional[str] = Header(None, alias="X-Admin-Code"),
+):
+    _require_admin_from_request(request, authorization, admin_code)
+    await _find_org(slug)
+    status = "suspended" if req.suspended else "active"
+    res = await db.org_members.update_one(
+        {"id": member_id, "org_slug": slug},
+        {"$set": {"status": status, "updated_at": now_iso()}},
+    )
+    if not res.matched_count:
+        raise HTTPException(404, "Member not found")
+    await _audit(
+        action="org_member_status_changed",
+        entity_type="user",
+        entity_id=member_id,
+        summary=f"Set member status to {status}",
+        meta={"org_slug": slug},
+    )
+    return await db.org_members.find_one({"id": member_id}, {"_id": 0})
+
+
+@api.delete("/admin/organisations/{slug}/members/{member_id}")
+async def admin_remove_member(
+    slug: str,
+    member_id: str,
+    request: Request,
+    authorization: Optional[str] = Header(None),
+    admin_code: Optional[str] = Header(None, alias="X-Admin-Code"),
+):
+    _require_admin_from_request(request, authorization, admin_code)
+    await _find_org(slug)
+    await db.org_members.delete_one({"id": member_id, "org_slug": slug})
+    await _audit(
+        action="org_member_removed",
+        entity_type="user",
+        entity_id=member_id,
+        summary="Removed organisation member",
+        meta={"org_slug": slug},
+    )
+    return {"ok": True}
+
+
+@api.post("/admin/organisations/merge")
+async def admin_merge_organisations(
+    req: OrgMergeReq,
+    request: Request,
+    authorization: Optional[str] = Header(None),
+    admin_code: Optional[str] = Header(None, alias="X-Admin-Code"),
+):
+    _require_admin_from_request(request, authorization, admin_code)
+    if req.primary_slug == req.duplicate_slug:
+        raise HTTPException(400, "Primary and duplicate slug cannot be the same")
+    primary = await _find_org(req.primary_slug)
+    duplicate = await _find_org(req.duplicate_slug)
+    await db.events.update_many({"orgSlug": req.duplicate_slug}, {"$set": {"orgSlug": req.primary_slug}})
+    await db.feed.update_many({"orgSlug": req.duplicate_slug}, {"$set": {"orgSlug": req.primary_slug}})
+    await db.volunteers.update_many({"orgSlug": req.duplicate_slug}, {"$set": {"orgSlug": req.primary_slug}})
+    await db.documents.update_many({"org_slug": req.duplicate_slug}, {"$set": {"org_slug": req.primary_slug}})
+    updates = {
+        "status": "archived" if req.archive_duplicate else duplicate.get("status", "approved"),
+        "merged_into": req.primary_slug,
+        "updated_at": now_iso(),
+    }
+    await db.orgs.update_one({"slug": req.duplicate_slug}, {"$set": updates})
+    await _audit(
+        action="org_merged",
+        entity_type="org",
+        entity_id=req.primary_slug,
+        summary=f"Merged {duplicate.get('name', req.duplicate_slug)} into {primary.get('name', req.primary_slug)}",
+        meta={"duplicate_slug": req.duplicate_slug},
+    )
+    return {
+        "ok": True,
+        "primary_slug": req.primary_slug,
+        "duplicate_slug": req.duplicate_slug,
+        "duplicate_status": updates["status"],
+    }
+
+
+@api.get("/admin/users")
+async def admin_users_overview(
+    q: str = "",
+    request: Request = None,
+    authorization: Optional[str] = Header(None),
+    admin_code: Optional[str] = Header(None, alias="X-Admin-Code"),
+):
+    _require_admin_from_request(request, authorization, admin_code)
+    org_rows = await db.orgs.find({}, {"_id": 0, "slug": 1, "name": 1, "owner_email": 1, "admin_emails": 1}).to_list(4000)
+    member_rows = await db.org_members.find({}, {"_id": 0}).to_list(10000)
+    invite_rows = await db.org_member_invites.find({}, {"_id": 0}).to_list(10000)
+    users: Dict[str, Dict[str, Any]] = {}
+    for row in org_rows:
+        slug = row.get("slug") or ""
+        name = row.get("name") or slug
+        emails = []
+        owner = (row.get("owner_email") or "").strip().lower()
+        if owner:
+            emails.append((owner, "owner"))
+        for mail in (row.get("admin_emails") or []):
+            m = str(mail or "").strip().lower()
+            if m:
+                emails.append((m, "admin"))
+        for email, role_label in emails:
+            if email not in users:
+                users[email] = {
+                    "email": email,
+                    "roles": set(),
+                    "organisations": [],
+                    "last_login": None,
+                    "status": "active",
+                    "pending_invitations": 0,
+                }
+            users[email]["roles"].add(role_label)
+            users[email]["organisations"].append({"slug": slug, "name": name})
+
+    for member in member_rows:
+        email = str(member.get("email") or "").strip().lower()
+        if not email:
+            continue
+        if email not in users:
+            users[email] = {
+                "email": email,
+                "roles": set(),
+                "organisations": [],
+                "last_login": None,
+                "status": "active",
+                "pending_invitations": 0,
+            }
+        users[email]["roles"].add(str(member.get("role") or "editor"))
+        users[email]["organisations"].append({
+            "slug": member.get("org_slug") or "",
+            "name": member.get("org_slug") or "",
+        })
+        users[email]["status"] = member.get("status") or users[email]["status"]
+        if member.get("last_login_at"):
+            current = users[email].get("last_login")
+            if not current or str(member.get("last_login_at")) > str(current):
+                users[email]["last_login"] = member.get("last_login_at")
+
+    for inv in invite_rows:
+        if inv.get("status") != "pending":
+            continue
+        email = str(inv.get("email") or "").strip().lower()
+        if not email:
+            continue
+        if email not in users:
+            users[email] = {
+                "email": email,
+                "roles": set(),
+                "organisations": [],
+                "last_login": None,
+                "status": "invited",
+                "pending_invitations": 0,
+            }
+        users[email]["pending_invitations"] = int(users[email].get("pending_invitations") or 0) + 1
+
+    pending_claims = await db.org_edit_requests.count_documents({"request_type": "claim", "status": "pending"})
+    pending_invites = await db.org_claim_invites.count_documents({"status": "pending"})
+    pending_member_invites = await db.org_member_invites.count_documents({"status": "pending"})
+    out = []
+    needle = q.strip().lower()
+    for email, payload in users.items():
+        row = {
+            **payload,
+            "roles": sorted(payload["roles"]),
+            "organisations": sorted(
+                {f"{o.get('slug')}::{o.get('name')}": o for o in payload["organisations"]}.values(),
+                key=lambda x: x.get("name") or "",
+            ),
+        }
+        if needle and needle not in email and all(needle not in (o.get("name") or "").lower() for o in row["organisations"]):
+            continue
+        out.append(row)
+    out.sort(key=lambda r: r["email"])
+    return {
+        "users": out,
+        "pending_invites": pending_invites,
+        "pending_member_invites": pending_member_invites,
+        "pending_claims": pending_claims,
+    }
+
+
+@api.get("/admin/audit-log")
+async def admin_audit_log(
+    limit: int = 200,
+    request: Request = None,
+    authorization: Optional[str] = Header(None),
+    admin_code: Optional[str] = Header(None, alias="X-Admin-Code"),
+):
+    _require_admin_from_request(request, authorization, admin_code)
+    capped = max(1, min(limit, 1000))
+    return await db.admin_audit.find({}, {"_id": 0}).sort("created_at", -1).to_list(capped)
+
+
+@api.get("/admin/events/attention")
+async def admin_events_attention(
+    request: Request,
+    authorization: Optional[str] = Header(None),
+    admin_code: Optional[str] = Header(None, alias="X-Admin-Code"),
+):
+    _require_admin_from_request(request, authorization, admin_code)
+    rows = await db.events.find({}, {"_id": 0}).to_list(10000)
+    now_dt = datetime.now(timezone.utc)
+
+    def _event_dt(value: Optional[str]) -> Optional[datetime]:
+        try:
+            if not value:
+                return None
+            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except Exception:
+            return None
+
+    def _normalized_title(v: str) -> str:
+        return re.sub(r"[^a-z0-9]+", " ", (v or "").strip().lower()).strip()
+
+    by_key = Counter()
+    for ev in rows:
+        key = (_normalized_title(ev.get("title") or ""), (ev.get("start") or "")[:10])
+        if key[0] and key[1]:
+            by_key[key] += 1
+
+    possible_duplicate = sum(1 for _, count in by_key.items() if count > 1)
+    missing_venue = sum(1 for ev in rows if not (ev.get("venue") or "").strip())
+    missing_time = 0
+    missing_image = sum(1 for ev in rows if not (ev.get("image") or "").strip())
+    date_passed_published = 0
+    status_counts = Counter((ev.get("status") or "pending") for ev in rows)
+    for ev in rows:
+        start = _event_dt(ev.get("start"))
+        if not start:
+            missing_time += 1
+        else:
+            if start.hour == 0 and start.minute == 0 and start.second == 0:
+                missing_time += 1
+        end_val = _event_dt(ev.get("end")) or start
+        if (ev.get("status") or "pending") == "approved" and end_val and end_val < now_dt:
+            date_passed_published += 1
+
+    upcoming = sum(1 for ev in rows if (_event_dt(ev.get("end")) or _event_dt(ev.get("start")) or now_dt) >= now_dt)
+    past = max(0, len(rows) - upcoming)
+
+    return {
+        "counts": {
+            "total": len(rows),
+            "upcoming": upcoming,
+            "past": past,
+            "draft": status_counts.get("draft", 0),
+            "pending": status_counts.get("pending", 0),
+            "cancelled": status_counts.get("cancelled", 0),
+            "approved": status_counts.get("approved", 0),
+            "rejected": status_counts.get("rejected", 0),
+        },
+        "attention": {
+            "missing_venue": missing_venue,
+            "missing_time": missing_time,
+            "missing_image": missing_image,
+            "possible_duplicate": possible_duplicate,
+            "date_passed_but_published": date_passed_published,
+        },
+    }
 
 
 def _clean_org_patch(data: Dict[str, Any]) -> Dict[str, Any]:
@@ -976,18 +2219,173 @@ def _clean_org_patch(data: Dict[str, Any]) -> Dict[str, Any]:
     return updates
 
 
+def _org_claim_code_hash(slug: str, email: str, code: str) -> str:
+    raw = f"{slug}|{email}|{code}|{ORG_AUTH_SECRET}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _org_claim_code() -> str:
+    return f"{secrets.randbelow(1000000):06d}"
+
+
+async def _latest_claim_challenge(slug: str, email: str) -> Optional[Dict[str, Any]]:
+    rows = await db.org_claim_challenges.find(
+        {"org_slug": slug, "contact_email": email, "status": "pending"},
+        {"_id": 0},
+    ).sort("created_at", -1).to_list(1)
+    return rows[0] if rows else None
+
+
+def _ip_from_request(request: Request) -> str:
+    if request.headers.get("x-forwarded-for"):
+        return request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+    return (request.client.host if request and request.client else "") or ""
+
+
 @api.post("/organisations/{slug}/claim")
-async def claim_organisation(slug: str, req: OrgClaimReq):
+async def claim_organisation(slug: str, req: OrgClaimReq, request: Request):
     org = await _find_org(slug)
+    contact_email = str(req.contact_email).strip().lower()
+    contact_name = req.contact_name.strip()
+    contact_phone = req.contact_phone.strip()
+    message = req.message.strip()
+    ip = _ip_from_request(request)
+
+    if len(message) < 20:
+        raise HTTPException(400, "Please include more ownership detail (at least 20 characters)")
+
+    # Step 1: request a verification code by email.
+    if not (req.verification_code or "").strip():
+        pending_existing = await db.org_edit_requests.find_one(
+            {
+                "request_type": "claim",
+                "org_slug": org["slug"],
+                "contact_email": contact_email,
+                "status": "pending",
+            },
+            {"_id": 0, "id": 1},
+        )
+        if pending_existing:
+            raise HTTPException(409, "A claim request is already pending for this email and organisation")
+
+        hour_ago = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+        by_email = await db.org_claim_challenges.count_documents({
+            "contact_email": contact_email,
+            "created_at": {"$gte": hour_ago},
+        })
+        if by_email >= ORG_CLAIM_MAX_STARTS_PER_HOUR:
+            raise HTTPException(429, "Too many claim attempts. Please try again later")
+        if ip:
+            by_ip = await db.org_claim_challenges.count_documents({
+                "ip": ip,
+                "created_at": {"$gte": hour_ago},
+            })
+            if by_ip >= (ORG_CLAIM_MAX_STARTS_PER_HOUR * 2):
+                raise HTTPException(429, "Too many claim attempts from this network. Please try again later")
+
+        code = _org_claim_code()
+        challenge = {
+            "id": new_id(),
+            "org_slug": org["slug"],
+            "org_name": org.get("name") or org["slug"],
+            "contact_name": contact_name,
+            "contact_email": contact_email,
+            "contact_phone": contact_phone,
+            "message": message,
+            "code_hash": _org_claim_code_hash(org["slug"], contact_email, code),
+            "attempts": 0,
+            "status": "pending",
+            "ip": ip,
+            "created_at": now_iso(),
+            "expires_at": (datetime.now(timezone.utc) + timedelta(minutes=ORG_CLAIM_VERIFY_TTL_MINUTES)).isoformat(),
+        }
+        await db.org_claim_challenges.insert_one(challenge)
+
+        verify_html = (
+            f"<p>Hello {html.escape(contact_name or 'there')},</p>"
+            f"<p>Use this verification code to continue your claim for <strong>{html.escape(challenge['org_name'])}</strong> on Blackrod Now:</p>"
+            f"<p style='font-size:28px;letter-spacing:4px;font-weight:700'>{code}</p>"
+            f"<p>This code expires in {ORG_CLAIM_VERIFY_TTL_MINUTES} minutes.</p>"
+            f"<p>If you did not request this, you can ignore this email.</p>"
+            + _EMAIL_SIGNATURE
+        )
+        asyncio.create_task(asyncio.to_thread(
+            resend_send,
+            contact_email,
+            f"Verify your claim for {challenge['org_name']} on Blackrod Now",
+            verify_html,
+        ))
+        return {
+            "ok": True,
+            "requires_verification": True,
+            "detail": "Verification code sent",
+            "expires_in_minutes": ORG_CLAIM_VERIFY_TTL_MINUTES,
+        }
+
+    # Step 2: verify code and create the claim request.
+    code_candidate = re.sub(r"\D", "", str(req.verification_code or ""))
+    if len(code_candidate) != 6:
+        raise HTTPException(400, "Enter a valid 6-digit verification code")
+
+    challenge = await _latest_claim_challenge(org["slug"], contact_email)
+    if not challenge:
+        raise HTTPException(400, "Start your claim first so we can send a verification code")
+    if (challenge.get("expires_at") or "") < now_iso():
+        await db.org_claim_challenges.update_one({"id": challenge["id"]}, {"$set": {"status": "expired"}})
+        raise HTTPException(400, "Verification code has expired. Request a new code")
+    if int(challenge.get("attempts") or 0) >= ORG_CLAIM_VERIFY_MAX_ATTEMPTS:
+        raise HTTPException(429, "Too many incorrect codes. Request a new verification code")
+
+    expected = _org_claim_code_hash(org["slug"], contact_email, code_candidate)
+    if not hmac.compare_digest(expected, challenge.get("code_hash") or ""):
+        await db.org_claim_challenges.update_one(
+            {"id": challenge["id"]},
+            {"$inc": {"attempts": 1}, "$set": {"updated_at": now_iso()}},
+        )
+        raise HTTPException(400, "Verification code is incorrect")
+
+    pending_existing = await db.org_edit_requests.find_one(
+        {
+            "request_type": "claim",
+            "org_slug": org["slug"],
+            "contact_email": contact_email,
+            "status": "pending",
+        },
+        {"_id": 0, "id": 1},
+    )
+    if pending_existing:
+        raise HTTPException(409, "A claim request is already pending for this email and organisation")
+
     edit_request = OrgEditRequest(
         request_type="claim",
         org_slug=org["slug"],
         org_name=org["name"],
-        contact_name=req.contact_name.strip(),
-        contact_email=req.contact_email,
-        message=req.message.strip(),
+        payload={
+            "security": {
+                "email_verified": True,
+                "verification_channel": "email_code",
+                "verified_at": now_iso(),
+                "ip": ip,
+            }
+        },
+        contact_name=challenge.get("contact_name", ""),
+        contact_email=contact_email,
+        contact_phone=challenge.get("contact_phone", ""),
+        message=challenge.get("message", ""),
     )
     await db.org_edit_requests.insert_one(edit_request.model_dump())
+    await db.org_claim_challenges.update_one(
+        {"id": challenge["id"]},
+        {"$set": {"status": "verified", "verified_at": now_iso()}},
+    )
+    await _audit(
+        action="org_claim_submitted",
+        entity_type="org",
+        entity_id=org["slug"],
+        summary=f"Claim submitted after email verification by {contact_email}",
+        actor="public",
+        meta={"channel": "email_code"},
+    )
     return edit_request
 
 
@@ -1058,6 +2456,60 @@ async def review_org_edit_request(request_id: str, req: OrgEditRequestReview):
             if "socials" in org_updates and isinstance(org_updates["socials"], dict):
                 org_updates["socials"] = Socials(**org_updates["socials"])
             await db.orgs.update_one({"slug": existing["org_slug"]}, {"$set": org_updates})
+    if req.status == "approved" and existing.get("request_type") == "claim":
+        # Set the default password (idempotent — won't overwrite a custom one already set).
+        org_slug = existing["org_slug"]
+        existing_pwd = await _get_org_password_doc(org_slug)
+        if not existing_pwd:
+            await _set_org_password(org_slug, ORG_DEFAULT_PASSWORD, updated_by="claim-approval")
+        # Email credentials to the claimant.
+        claimant_email = existing.get("contact_email")
+        claimant_name = existing.get("contact_name") or "there"
+        org_name = existing.get("org_name") or org_slug
+        temp_password = ORG_DEFAULT_PASSWORD if not existing_pwd else "(your existing password)"
+        dashboard_url = f"{PUBLIC_URL}/organisation-dashboard"
+        email_html = (
+            f"<p>Hi {html.escape(claimant_name)},</p>"
+            f"<p>Your request to manage <strong>{html.escape(org_name)}</strong> on Blackrod Now has been approved.</p>"
+            f"<p>You can log in to your organisation dashboard here:<br>"
+            f"<a href='{dashboard_url}'>{dashboard_url}</a></p>"
+            f"<p><strong>Organisation:</strong> {html.escape(org_name)}<br>"
+            f"<strong>Temporary password:</strong> {html.escape(temp_password)}</p>"
+            + (f"<p><em>{html.escape(req.reviewer_notes)}</em></p>" if req.reviewer_notes.strip() else "")
+            + f"<p>Please change your password after your first login.</p>"
+            f"<p>If you have any questions, just reply to this email.</p>"
+            + _EMAIL_SIGNATURE
+        )
+        if claimant_email:
+            asyncio.create_task(asyncio.to_thread(
+                resend_send,
+                claimant_email,
+                f"Your {org_name} page on Blackrod Now \u2014 access granted",
+                email_html,
+                None,
+                None,
+                ADMIN_INBOX_EMAILS or None,
+            ))
+    if req.status == "rejected" and existing.get("request_type") == "claim":
+        claimant_email = existing.get("contact_email")
+        claimant_name = existing.get("contact_name") or "there"
+        org_name = existing.get("org_name") or existing.get("org_slug", "")
+        rejection_html = (
+            f"<p>Hi {html.escape(claimant_name)},</p>"
+            f"<p>Thank you for your request to manage <strong>{html.escape(org_name)}</strong> on Blackrod Now.</p>"
+            f"<p>Unfortunately we were not able to verify your ownership at this time."
+            + (f" {html.escape(req.reviewer_notes)}" if req.reviewer_notes.strip() else "")
+            + "</p>"
+            f"<p>If you believe this is a mistake, please reply to this email with further proof of your connection to the organisation.</p>"
+            + _EMAIL_SIGNATURE
+        )
+        if claimant_email:
+            asyncio.create_task(asyncio.to_thread(
+                resend_send,
+                claimant_email,
+                f"Your claim request for {org_name} \u2014 update",
+                rejection_html,
+            ))
     return await db.org_edit_requests.find_one({"id": request_id}, {"_id": 0})
 
 
@@ -1068,6 +2520,50 @@ def _hash_org_password(password: str, salt: str) -> str:
         salt.encode("utf-8"),
         200000,
     ).hex()
+
+
+def _hash_member_password(password: str, salt: str) -> str:
+    return hashlib.pbkdf2_hmac(
+        "sha256",
+        password.encode("utf-8"),
+        salt.encode("utf-8"),
+        200000,
+    ).hex()
+
+
+def _member_password_matches(doc: Optional[Dict[str, Any]], password: str) -> bool:
+    if not doc or not password:
+        return False
+    expected = str(doc.get("password_hash") or "")
+    salt = str(doc.get("password_salt") or "")
+    if not expected or not salt:
+        return False
+    actual = _hash_member_password(password, salt)
+    return hmac.compare_digest(actual, expected)
+
+
+async def _send_org_member_invite(invite: Dict[str, Any]) -> None:
+    org_slug = invite.get("org_slug") or ""
+    token = invite.get("token") or ""
+    redeem_url = f"{PUBLIC_URL}/member/redeem?token={token}"
+    login_url = f"{PUBLIC_URL}/member/login?slug={org_slug}"
+    html_body = (
+        f"<p>Hello,</p>"
+        f"<p>You have been invited to manage <strong>{html.escape(invite.get('org_name') or org_slug)}</strong> on Blackrod Now as <strong>{html.escape(invite.get('role') or 'editor')}</strong>.</p>"
+        f"<p><strong>Activate your account</strong> by clicking the link below and setting a password:</p>"
+        f"<p><a href='{redeem_url}' style='display:inline-block;padding:12px 24px;background:#000;color:#fff;border-radius:9999px;font-weight:bold;text-decoration:none'>Activate account</a></p>"
+        f"<p>Or copy this link into your browser:<br>{redeem_url}</p>"
+        f"<p>Once activated, sign in here: <a href='{login_url}'>{login_url}</a></p>"
+        + (f"<p><em>{html.escape(invite.get('note') or '')}</em></p>" if invite.get("note") else "")
+        + "<p>If you did not expect this invitation, you can ignore this email.</p>"
+        + _EMAIL_SIGNATURE
+    )
+    await asyncio.to_thread(
+        resend_send,
+        invite.get("email") or "",
+        f"You are invited to manage {invite.get('org_name') or org_slug} on Blackrod Now",
+        html_body,
+    )
 
 
 def _new_org_password_doc(slug: str, password: str, updated_by: str) -> OrgPasswordDoc:
@@ -1084,7 +2580,9 @@ def _password_matches(doc: Optional[Dict[str, Any]], password: str) -> bool:
     if not password:
         return False
     if not doc:
-        return hmac.compare_digest(password, ORG_DEFAULT_PASSWORD)
+        if ALLOW_LEGACY_DEFAULT_ORG_PASSWORD:
+            return hmac.compare_digest(password, ORG_DEFAULT_PASSWORD)
+        return False
     expected = doc.get("password_hash") or ""
     actual = _hash_org_password(password, doc.get("password_salt") or "")
     return hmac.compare_digest(actual, expected)
@@ -1103,6 +2601,64 @@ async def _set_org_password(slug: str, new_password: str, updated_by: str) -> No
     )
 
 
+def _new_temporary_org_password(length: int = 12) -> str:
+    alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$%&*"
+    return "".join(secrets.choice(alphabet) for _ in range(max(10, length)))
+
+
+def _org_contact_email(org: Dict[str, Any]) -> str:
+    return str(org.get("email") or org.get("owner_email") or "").strip().lower()
+
+
+async def _provision_org_credentials_on_approval(org: Dict[str, Any], approved_by: str = "admin") -> bool:
+    """Create first-time org credentials and email them to the setup contact.
+    Returns True when credentials were created and email dispatch was queued."""
+    slug = str(org.get("slug") or "").strip()
+    if not slug:
+        return False
+
+    recipient = _org_contact_email(org)
+    if not recipient:
+        raise HTTPException(400, "Organisation contact email is required before approval")
+
+    existing_pwd = await _get_org_password_doc(slug)
+    if existing_pwd:
+        return False
+
+    temp_password = _new_temporary_org_password()
+    await _set_org_password(slug, temp_password, updated_by=approved_by)
+
+    org_name = org.get("name") or slug
+    dashboard_url = f"{PUBLIC_URL}/organisation-dashboard"
+    html_body = (
+        f"<p>Hello,</p>"
+        f"<p><strong>{html.escape(org_name)}</strong> has now been approved on Blackrod Now.</p>"
+        f"<p>You can now access your organisation dashboard:</p>"
+        f"<p><a href='{dashboard_url}'>{dashboard_url}</a></p>"
+        f"<p><strong>Organisation:</strong> {html.escape(org_name)}<br>"
+        f"<strong>Temporary password:</strong> {html.escape(temp_password)}</p>"
+        f"<p>Please sign in and change this password after your first login.</p>"
+        + _EMAIL_SIGNATURE
+    )
+    asyncio.create_task(asyncio.to_thread(
+        resend_send,
+        recipient,
+        f"{org_name} has been approved on Blackrod Now",
+        html_body,
+        None,
+        None,
+        ADMIN_INBOX_EMAILS or None,
+    ))
+    await _audit(
+        action="org_credentials_provisioned",
+        entity_type="org",
+        entity_id=slug,
+        summary=f"Provisioned first-time credentials and emailed {recipient}",
+        meta={"recipient": recipient},
+    )
+    return True
+
+
 @api.post("/organisations/{slug}/password/verify")
 async def verify_org_password(slug: str, req: OrgPasswordVerifyReq):
     await _find_org(slug)
@@ -1113,54 +2669,112 @@ async def verify_org_password(slug: str, req: OrgPasswordVerifyReq):
 
 @api.post("/organisations/{slug}/auth/login")
 async def org_auth_login(slug: str, req: OrgPasswordVerifyReq):
-    """Password → per-org access token. Frontend stores under `rn-org-tokens`
-    and sends as X-Org-Auth on protected calls."""
+    """Exchange the organisation shared password for a signed, slug-scoped JWT.
+
+    This preserves the simple organisation-password workflow while making every
+    subsequent write request cryptographically verifiable.
+    """
     org = await _find_org(slug)
+    if org.get("status") in {"pending", "suspended", "archived", "rejected"}:
+        raise HTTPException(403, "This organisation cannot sign in right now. Contact site admin for access.")
+
     doc = await _get_org_password_doc(slug)
+    if not doc and not ALLOW_LEGACY_DEFAULT_ORG_PASSWORD:
+        raise HTTPException(
+            403,
+            "Organisation access has not been set up yet. Ask a Blackrod Now admin to reset the organisation password.",
+        )
+
     if not _password_matches(doc, (req.password or "").strip()):
         raise HTTPException(401, "Invalid organisation password")
-    # Token is opaque — the permissive middleware only checks presence today.
-    token = f"org:{slug}:{new_token()}"
+
+    from auth import create_access_token
+
+    token = create_access_token(
+        sub=f"org:{slug}",
+        role="org",
+        extra={
+            "org_slug": slug,
+            "org_name": org.get("name", ""),
+            "member_status": "active",
+            "auth_mode": "shared_password",
+        },
+    )
+
+    await _audit(
+        action="org_login",
+        entity_type="org",
+        entity_id=slug,
+        summary=f"Organisation signed in: {org.get('name') or slug}",
+        actor="org",
+        meta={"auth_mode": "shared_password"},
+    )
+
     return {
         "ok": True,
         "slug": slug,
         "org_name": org.get("name", ""),
-        "token": token,
+        "token": f"Bearer {token}",
     }
 
 
 @api.post("/organisations/{slug}/password/change")
-async def change_org_password(slug: str, req: OrgPasswordChangeReq):
+async def change_org_password(
+    slug: str,
+    req: OrgPasswordChangeReq,
+    request: Request,
+    authorization: Optional[str] = Header(None),
+    admin_code: Optional[str] = Header(None, alias="X-Admin-Code"),
+):
     await _find_org(slug)
     new_password = (req.new_password or "").strip()
     if len(new_password) < 8:
         raise HTTPException(400, "New password must be at least 8 characters")
 
-    using_admin = False
-    if req.admin_code:
-        if not hmac.compare_digest((req.admin_code or "").strip(), ADMIN_LAUNCH_CODE):
-            raise HTTPException(403, "Invalid admin code")
-        using_admin = True
-    else:
+    supplied_admin_code = (req.admin_code or admin_code or "").strip()
+    using_admin = _admin_from_request(request, authorization, supplied_admin_code)
+
+    if not using_admin:
         current_password = (req.current_password or "").strip()
         doc = await _get_org_password_doc(slug)
         if not _password_matches(doc, current_password):
             raise HTTPException(403, "Current organisation password is incorrect")
 
     await _set_org_password(slug, new_password, updated_by=("admin" if using_admin else "org"))
+    await _audit(
+        action="org_password_changed",
+        entity_type="org",
+        entity_id=slug,
+        summary="Organisation password changed",
+        actor=("admin" if using_admin else "org"),
+    )
     return {"ok": True}
 
 
 @api.post("/admin/organisations/{slug}/password/reset")
-async def reset_org_password(slug: str, body: Dict[str, str]):
+async def reset_org_password(
+    slug: str,
+    body: Dict[str, str],
+    request: Request,
+    authorization: Optional[str] = Header(None),
+    admin_code: Optional[str] = Header(None, alias="X-Admin-Code"),
+):
     await _find_org(slug)
-    admin_code = (body.get("admin_code") or "").strip()
-    if not hmac.compare_digest(admin_code, ADMIN_LAUNCH_CODE):
-        raise HTTPException(403, "Invalid admin code")
-    password = (body.get("password") or ORG_DEFAULT_PASSWORD).strip()
+    supplied_admin_code = (admin_code or body.get("admin_code") or "").strip()
+    _require_admin_from_request(request, authorization, supplied_admin_code)
+
+    password = (body.get("password") or "").strip()
     if len(password) < 8:
         raise HTTPException(400, "Password must be at least 8 characters")
+
     await _set_org_password(slug, password, updated_by="admin-reset")
+    await _audit(
+        action="org_password_reset",
+        entity_type="org",
+        entity_id=slug,
+        summary="Organisation password reset by admin",
+        actor="admin",
+    )
     return {"ok": True, "slug": slug}
 
 
@@ -1170,24 +2784,48 @@ async def admin_impersonate_org(
     body: Dict[str, str],
     request: Request,
     authorization: Optional[str] = Header(None),
+    admin_code: Optional[str] = Header(None, alias="X-Admin-Code"),
 ):
-    """Super admin exchanges credentials for an organisation access token so
-    they can operate an organisation dashboard on the owner's behalf. Accepts
-    EITHER an admin JWT (`Authorization: Bearer …` — new preferred flow) OR
-    the legacy `admin_code` body field (backward compat during rollover).
-    The returned token is a synthetic value the frontend passes via X-Org-Auth
-    to signal an admin-impersonation session."""
+    """Issue a signed, organisation-scoped admin-assistance token.
+
+    The token lets a site admin operate that organisation's normal dashboard
+    without learning or using the organisation's own password. It cannot be
+    reused against another organisation.
+    """
     org = await _find_org(slug)
-    admin_payload = read_admin_from_request(request, authorization)
-    admin_code = (body.get("admin_code") or "").strip()
-    if not admin_payload and not (admin_code and hmac.compare_digest(admin_code, ADMIN_LAUNCH_CODE)):
-        raise HTTPException(403, "Admin authentication required")
-    token = f"admin-impersonate:{slug}:{new_token()}"
+    supplied_admin_code = (admin_code or body.get("admin_code") or "").strip()
+    _require_admin_from_request(request, authorization, supplied_admin_code)
+
+    from auth import create_access_token
+
+    admin_payload = read_admin_from_request(request, authorization) or {}
+    actor = admin_payload.get("email") or admin_payload.get("sub") or "legacy-admin"
+
+    token = create_access_token(
+        sub=str(actor),
+        role="admin_impersonation",
+        extra={
+            "org_slug": slug,
+            "org_name": org.get("name", ""),
+            "member_status": "active",
+            "mode": "impersonate",
+        },
+    )
+
+    await _audit(
+        action="admin_impersonation_started",
+        entity_type="org",
+        entity_id=slug,
+        summary=f"Admin assistance session started for {org.get('name') or slug}",
+        actor="admin",
+        meta={"admin": actor},
+    )
+
     return {
         "ok": True,
         "slug": slug,
         "org_name": org.get("name", ""),
-        "token": token,
+        "token": f"Bearer {token}",
         "mode": "impersonate",
     }
 
@@ -1214,21 +2852,25 @@ def _expand_recurring_event(ev: Dict[str, Any], horizon_days: int = 180) -> List
     extra_dates = (rec or {}).get("extra_dates") or []
     if not rec or (freq == "none" and not extra_dates):
         return [ev]
+    # All stored event times are treated as UK wall-clock: normalise every
+    # format (naive, trailing Z, +01:00) to naive so mixed data can never crash.
     try:
-        start = datetime.fromisoformat((ev.get("start") or "").replace("Z", "+00:00"))
-        end = datetime.fromisoformat((ev.get("end") or ev.get("start") or "").replace("Z", "+00:00"))
+        start = datetime.fromisoformat(str(ev.get("start") or "")[:19])
+        end = datetime.fromisoformat(str(ev.get("end") or ev.get("start") or "")[:19])
     except Exception:
         return [ev]
     duration = end - start
-    horizon = datetime.now(timezone.utc) + timedelta(days=horizon_days)
-    if start.tzinfo is None:
-        horizon = horizon.replace(tzinfo=None)
+    horizon = datetime.now(UK_TZ).replace(tzinfo=None) + timedelta(days=horizon_days)
     try:
-        until = datetime.fromisoformat(rec.get("until").replace("Z", "+00:00")) if rec.get("until") else horizon
+        until = datetime.fromisoformat(str(rec.get("until"))[:19]) if rec.get("until") else horizon
     except Exception:
         until = horizon
     upper = min(until, horizon)
-    max_count = min(int(rec.get("count") or 60), 60)
+    max_count_raw = rec.get("count")
+    if max_count_raw is None:
+        max_count = 240
+    else:
+        max_count = min(max(1, int(max_count_raw)), 240)
     try:
         interval = max(1, min(int(rec.get("interval") or 1), 12))
     except Exception:
@@ -1248,6 +2890,17 @@ def _expand_recurring_event(ev: Dict[str, Any], horizon_days: int = 180) -> List
         nth = (start.day - 1) // 7 + 1
         year, month = start.year, start.month
         cur, n = start, 0
+        if cur < datetime.now(UK_TZ).replace(tzinfo=None) - timedelta(days=35):
+            now_ref = datetime.now(UK_TZ).replace(tzinfo=None)
+            diff_months = (now_ref.year - year) * 12 + (now_ref.month - month)
+            if diff_months > interval:
+                skip_cycles = max(0, (diff_months // interval) - 1)
+                total = year * 12 + (month - 1) + (skip_cycles * interval)
+                year, month = total // 12, total % 12 + 1
+                try:
+                    cur = _nth_weekday_of_month(year, month, weekday, nth, start)
+                except Exception:
+                    cur = start
         while cur <= upper and n < max_count:
             occurrences.append(cur)
             n += 1
@@ -1272,6 +2925,9 @@ def _expand_recurring_event(ev: Dict[str, Any], horizon_days: int = 180) -> List
         seen.add(occ.date())
         occurrences.append(occ)
     occurrences.sort()
+    exceptions = {str(d)[:10] for d in (rec.get("exception_dates") or [])}
+    if exceptions:
+        occurrences = [o for o in occurrences if o.date().isoformat() not in exceptions]
 
     out: List[Dict[str, Any]] = []
     for occ in occurrences:
@@ -1288,12 +2944,16 @@ def _expand_recurring_event(ev: Dict[str, Any], horizon_days: int = 180) -> List
 
 @api.get("/events")
 async def list_events(upcoming_only: bool = False, include_pending: bool = False, expand_recurring: bool = True):
-    q: Dict[str, Any] = {} if include_pending else {"status": {"$ne": "pending"}}
+    q: Dict[str, Any] = {} if include_pending else {"status": {"$nin": ["pending", "archived", "rejected"]}}
     events = await db.events.find(q, {"_id": 0}).to_list(2000)
     if expand_recurring:
         expanded: List[Dict[str, Any]] = []
         for e in events:
-            expanded.extend(_expand_recurring_event(e))
+            try:
+                expanded.extend(_expand_recurring_event(e))
+            except Exception as exc:
+                logger.warning("recurrence expansion failed for event %s: %s", e.get("id"), exc)
+                expanded.append(e)
         events = expanded
     if upcoming_only:
         nowi = now_iso()
@@ -1338,7 +2998,10 @@ async def duplicate_event(
             src = await db.events.find_one({"id": event_id.split("__", 1)[0]}, {"_id": 0})
         if not src:
             raise HTTPException(404, "Event not found")
-    role = _require_org_write_access(src["orgSlug"], org_auth=org_auth, admin_code=admin_code)
+    if _admin_from_request(request, authorization, admin_code):
+        role = "admin"
+    else:
+        role = _require_org_write_access(src["orgSlug"], org_auth=org_auth, admin_code=admin_code)
     new_ev = {**src}
     new_ev["id"] = new_id()
     new_ev["title"] = f"Copy of {src.get('title','')}".strip()
@@ -1377,14 +3040,15 @@ async def event_og_page(event_id: str, request: _Req):
     base = _abs_base_url(request)
     canonical = f"{base}/events/{event_id}"
 
-    # Resolve a good preview image (event image → org cover → org logo → site logo)
-    img = e.get("image") or ""
-    if not img and org.get("cover_path"):
-        img = f"{base}/api/organisations/{org['slug']}/cover"
-    if not img and org.get("logo_path"):
-        img = f"{base}/api/organisations/{org['slug']}/logo"
+    # Resolve a good preview image. Priority: real uploaded event image →
+    # the event category's default artwork → generated poster (last resort).
+    img = (e.get("image") or "").strip()
+    if not img or _is_blank_or_legacy_event_image(img) or _is_category_stock_image(img):
+        img = _event_category_image(e.get("category"))
     if not img:
-        img = f"{base}/logo.png"
+        img = f"{base}/api/events/{event_id}/poster.png"
+    elif img.startswith("/"):
+        img = f"{base}{img}"
 
     # Format a human date line for the description prefix
     try:
@@ -1418,6 +3082,12 @@ async def event_og_page(event_id: str, request: _Req):
         img_w, img_h = 512, 512
     elif "/organisations/" in img and img.endswith("/cover"):
         img_w, img_h = 1600, 500
+    elif img.endswith("/poster.png"):
+        img_w, img_h = 1080, 1080
+    elif any(img.endswith(name) for name in ("communityevent.png", "faith.png", "familyevent.png")):
+        img_w, img_h = 1672, 941
+    elif any(img.endswith(v) for v in DEFAULT_EVENT_CATEGORY_IMAGES.values()):
+        img_w, img_h = 1536, 1024
     else:
         img_w, img_h = 1200, 630
 
@@ -1482,17 +3152,23 @@ def _ics_escape(txt: str) -> str:
     )
 
 
-def _ics_dt(iso: str) -> str:
-    """Convert ISO datetime to iCal UTC form: 20260912T140000Z."""
-    if not iso:
-        return ""
+UK_TZ = ZoneInfo("Europe/London")
+
+
+def _uk_wall(iso: str) -> Optional[datetime]:
+    """Stored event times are UK wall-clock; strip any Z/offset suffix and attach Europe/London."""
     try:
-        dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        return datetime.fromisoformat(str(iso)[:19]).replace(tzinfo=UK_TZ)
     except Exception:
+        return None
+
+
+def _ics_dt(iso: str) -> str:
+    """Convert stored UK wall-clock datetime to iCal UTC form: 20260912T140000Z."""
+    dt = _uk_wall(iso)
+    if not dt:
         return ""
+    return dt.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
 
 def _ics_fold(line: str) -> str:
@@ -1741,21 +3417,47 @@ async def create_event(
     org_auth: Optional[str] = Header(None, alias="X-Org-Auth"),
     admin_code: Optional[str] = Header(None, alias="X-Admin-Code"),
 ):
-    authorized = True
-    try:
-        _require_org_write_access(evt.orgSlug, org_auth, admin_code)
-    except HTTPException:
+    # Public event suggestions remain allowed, but an explicitly supplied bad
+    # credential must fail rather than silently falling back to "public".
+    has_credentials = bool((org_auth or "").strip() or (admin_code or "").strip())
+
+    if has_credentials:
+        auth_role = _require_org_write_access(evt.orgSlug, org_auth, admin_code)
+        authorized = True
+    else:
+        auth_role = "public"
         authorized = False
 
     if not authorized:
-        # Public submissions stay allowed, but always as pending and never featured.
+        if not (evt.orgSlug or "").strip():
+            raise HTTPException(400, "Choose an organisation for this event before publishing")
         await _find_org(evt.orgSlug)
         evt.status = "pending"
         evt.featured = False
+    elif auth_role == "admin":
+        if evt.status not in ("pending", "approved", "rejected", "draft", "cancelled"):
+            evt.status = "approved"
+    else:
+        org = await _find_org(evt.orgSlug)
+        trust = (org.get("trust_level") or "new").strip().lower()
+        evt.status = "approved" if trust == "trusted" else "pending"
+        evt.featured = False
 
-    if evt.status not in ("pending", "approved"):
+    if evt.status not in ("pending", "approved", "rejected", "draft", "cancelled"):
         evt.status = "pending"
+    if _is_blank_or_legacy_event_image(evt.image):
+        evt.image = _event_category_image(evt.category)
     await db.events.insert_one(evt.model_dump())
+    if evt.status == "approved":
+        _push_org_event_approved(evt.model_dump())
+    await _audit(
+        action="event_created",
+        entity_type="event",
+        entity_id=evt.id,
+        summary=f"Event created: {evt.title}",
+        meta={"org_slug": evt.orgSlug, "status": evt.status},
+        actor=("admin" if auth_role == "admin" and authorized else "org" if authorized else "public"),
+    )
     return evt
 
 
@@ -1778,7 +3480,7 @@ class EventPatch(BaseModel):
     contactPhone: Optional[str] = None
     image: Optional[str] = None
     featured: Optional[bool] = None
-    status: Optional[Literal["approved", "pending", "rejected"]] = None
+    status: Optional[Literal["approved", "pending", "rejected", "draft", "cancelled"]] = None
     recurrence: Optional[EventRecurrence] = None
 
 
@@ -1796,33 +3498,161 @@ async def update_event(
     updates = patch.model_dump(exclude_none=True)
     if not updates:
         return await get_event(event_id)
+
+    if auth_role != "admin":
+        if "featured" in updates:
+            raise HTTPException(403, "Only site admins can feature events")
+        if "status" in updates and updates["status"] not in {"pending", "draft", "cancelled"}:
+            raise HTTPException(403, "Organisation users cannot approve or reject events")
+
     if updates.get("orgSlug"):
         # Ensure the target org exists
         await _find_org(updates["orgSlug"])
         if auth_role != "admin" and updates["orgSlug"] != existing.get("orgSlug"):
             raise HTTPException(403, "Organisation admins cannot move events between organisations")
+    if "image" in updates and _is_blank_or_legacy_event_image(updates.get("image") or ""):
+        updates["image"] = _event_category_image(updates.get("category") or existing.get("category") or "")
+    elif "category" in updates and _is_blank_or_legacy_event_image(existing.get("image") or ""):
+        updates["image"] = _event_category_image(updates.get("category") or "")
     await db.events.update_one({"id": event_id}, {"$set": updates})
+    await _audit(
+        action="event_updated",
+        entity_type="event",
+        entity_id=event_id,
+        summary=f"Updated event: {updates.get('title') or existing.get('title') or event_id}",
+        meta={"fields": sorted(list(updates.keys()))},
+        actor=("admin" if auth_role == "admin" else "org"),
+    )
+    return await get_event(event_id)
+
+
+@api.post("/events/{event_id}/status")
+async def set_event_status(
+    event_id: str,
+    body: Dict[str, str],
+    request: Request,
+    authorization: Optional[str] = Header(None),
+    org_auth: Optional[str] = Header(None, alias="X-Org-Auth"),
+    admin_code: Optional[str] = Header(None, alias="X-Admin-Code"),
+):
+    existing = await db.events.find_one({"id": event_id}, {"_id": 0})
+    if not existing:
+        raise HTTPException(404, "Event not found")
+
+    status = str(body.get("status") or "").strip()
+    allowed = {"approved", "pending", "rejected", "draft", "cancelled"}
+    if status not in allowed:
+        raise HTTPException(400, "Invalid event status")
+
+    if _admin_from_request(request, authorization, admin_code):
+        auth_role = "admin"
+    else:
+        auth_role = _require_org_write_access(
+            existing.get("orgSlug") or "",
+            org_auth=org_auth,
+            admin_code=admin_code,
+        )
+
+    if auth_role != "admin" and status not in {"pending", "draft", "cancelled"}:
+        raise HTTPException(
+            403,
+            "Organisation users can save drafts, request approval, or cancel their own events",
+        )
+
+    await db.events.update_one({"id": event_id}, {"$set": {"status": status}})
+    if status == "approved" and (existing.get("status") or "") != "approved":
+        _push_org_event_approved({**existing, "status": "approved"})
+    await _audit(
+        action="event_status_changed",
+        entity_type="event",
+        entity_id=event_id,
+        summary=f"Event status set to {status}",
+        meta={"status": status, "org_slug": existing.get("orgSlug")},
+        actor=("admin" if auth_role == "admin" else "org"),
+    )
     return await get_event(event_id)
 
 
 @api.post("/admin/events/{event_id}/status")
-async def admin_event_status(event_id: str, body: Dict[str, str]):
-    await db.events.update_one({"id": event_id}, {"$set": {"status": body.get("status", "approved")}})
+async def admin_event_status(
+    event_id: str,
+    body: Dict[str, str],
+    request: Request,
+    authorization: Optional[str] = Header(None),
+    admin_code: Optional[str] = Header(None, alias="X-Admin-Code"),
+):
+    _require_admin_from_request(request, authorization, admin_code)
+
+    status = str(body.get("status") or "approved").strip()
+    allowed = {"approved", "pending", "rejected", "draft", "cancelled"}
+    if status not in allowed:
+        raise HTTPException(400, "Invalid event status")
+
+    existing = await db.events.find_one({"id": event_id}, {"_id": 0})
+    if not existing:
+        raise HTTPException(404, "Event not found")
+
+    await db.events.update_one({"id": event_id}, {"$set": {"status": status}})
+    if status == "approved" and (existing.get("status") or "") != "approved":
+        _push_org_event_approved({**existing, "status": "approved"})
+    await _audit(
+        action="event_status_changed",
+        entity_type="event",
+        entity_id=event_id,
+        summary=f"Event status set to {status}",
+        meta={"status": status, "org_slug": existing.get("orgSlug")},
+        actor="admin",
+    )
     return await get_event(event_id)
 
 
 @api.post("/admin/events/{event_id}/feature")
-async def admin_feature_event(event_id: str):
+async def admin_feature_event(
+    event_id: str,
+    request: Request,
+    authorization: Optional[str] = Header(None),
+    admin_code: Optional[str] = Header(None, alias="X-Admin-Code"),
+):
+    _require_admin_from_request(request, authorization, admin_code)
+
     e = await db.events.find_one({"id": event_id})
     if not e:
         raise HTTPException(404, "Event not found")
-    await db.events.update_one({"id": event_id}, {"$set": {"featured": not e.get("featured", False)}})
+
+    featured = not e.get("featured", False)
+    await db.events.update_one({"id": event_id}, {"$set": {"featured": featured}})
+    await _audit(
+        action="event_feature_toggled",
+        entity_type="event",
+        entity_id=event_id,
+        summary=("Featured event" if featured else "Unfeatured event"),
+        actor="admin",
+    )
     return await get_event(event_id)
 
 
 @api.delete("/admin/events/{event_id}")
-async def admin_delete_event(event_id: str):
+async def admin_delete_event(
+    event_id: str,
+    request: Request,
+    authorization: Optional[str] = Header(None),
+    admin_code: Optional[str] = Header(None, alias="X-Admin-Code"),
+):
+    _require_admin_from_request(request, authorization, admin_code)
+
+    existing = await db.events.find_one({"id": event_id}, {"_id": 0})
+    if not existing:
+        raise HTTPException(404, "Event not found")
+
     await db.events.delete_one({"id": event_id})
+    await _audit(
+        action="event_deleted",
+        entity_type="event",
+        entity_id=event_id,
+        summary=f"Deleted event: {existing.get('title') or event_id}",
+        meta={"org_slug": existing.get("orgSlug")},
+        actor="admin",
+    )
     return {"ok": True}
 
 
@@ -1840,6 +3670,7 @@ async def create_feed_post(
 ):
     _require_org_write_access(post.orgSlug, org_auth, admin_code)
     await db.feed.insert_one(post.model_dump())
+    _push_org_feed_update(post.model_dump())
     return post
 
 
@@ -2741,6 +4572,8 @@ async def _ai_caption(ev: dict, org: Optional[dict], tone: str, base: Optional[s
     template if key missing or the call fails."""
     if not EMERGENT_LLM_KEY:
         return _template_caption(ev, tone, base)
+    if not await _ensure_llm_loaded():
+        return _template_caption(ev, tone, base)
     try:
         from emergentintegrations.llm.chat import LlmChat, UserMessage
         tone_hint = {
@@ -3276,6 +5109,42 @@ async def patch_preferences(token: str, patch: PrefPatch):
     return await get_preferences(token)
 
 
+@api.get("/admin/subscribers")
+async def admin_list_subscribers(
+    q: str = "",
+    include_unsubscribed: bool = False,
+    digest_only: bool = False,
+    limit: int = 500,
+):
+    safe_limit = max(1, min(limit, 2000))
+    query: Dict[str, Any] = {}
+    if not include_unsubscribed:
+        query["unsubscribed"] = False
+    if digest_only:
+        query["digest"] = True
+    if q.strip():
+        query["email"] = {"$regex": re.escape(q.strip()), "$options": "i"}
+
+    rows = await db.subscribers.find(query, {"_id": 0}).sort("created_at", -1).to_list(safe_limit)
+    items = []
+    for sub in rows:
+        items.append(
+            {
+                **sub,
+                "followed_orgs_count": len(sub.get("followed_orgs") or []),
+                "followed_categories_count": len(sub.get("followed_categories") or []),
+                "saved_events_count": len(sub.get("saved_events") or []),
+            }
+        )
+
+    return {
+        "items": items,
+        "count": len(items),
+        "total_active": await db.subscribers.count_documents({"unsubscribed": False}),
+        "total_digest": await db.subscribers.count_documents({"unsubscribed": False, "digest": True}),
+    }
+
+
 # ─────────── Device follows (anonymous, no email) ───────────
 class FollowReq(BaseModel):
     device_id: str
@@ -3298,18 +5167,196 @@ async def toggle_follow(req: FollowReq):
     return await get_follows(req.device_id)
 
 
+# ─────────── Web push (anonymous device subscriptions, VAPID) ───────────
+VAPID_PRIVATE_KEY = os.environ.get("VAPID_PRIVATE_KEY", "")
+VAPID_PUBLIC_KEY = os.environ.get("VAPID_PUBLIC_KEY", "")
+VAPID_SUBJECT = os.environ.get("VAPID_SUBJECT", "mailto:hello@blackrodnow.com")
+
+
+def _send_webpush_sync(subscription: dict, payload: str) -> bool:
+    """Returns False when the subscription is dead and should be removed."""
+    from pywebpush import webpush, WebPushException
+    try:
+        webpush(
+            subscription_info=subscription,
+            data=payload,
+            vapid_private_key=VAPID_PRIVATE_KEY,
+            vapid_claims={"sub": VAPID_SUBJECT},
+            timeout=10,
+        )
+        return True
+    except WebPushException as exc:
+        code = getattr(getattr(exc, "response", None), "status_code", None)
+        if code in (400, 404, 410):
+            return False
+        logger.warning("webpush send failed: %s", exc)
+        return True
+    except Exception as exc:
+        logger.warning("webpush error: %s", exc)
+        return True
+
+
+async def _push_to_subscriptions(subs: List[dict], title: str, body: str, url: str = "/") -> int:
+    if not VAPID_PRIVATE_KEY or not subs:
+        return 0
+    payload = json.dumps({
+        "title": str(title)[:80],
+        "body": str(body)[:200],
+        "url": url or "/",
+        "icon": "/icons/icon-192.png",
+    })
+    sent = 0
+    for s in subs:
+        info = s.get("subscription") or {}
+        if not info.get("endpoint"):
+            continue
+        if await asyncio.to_thread(_send_webpush_sync, info, payload):
+            sent += 1
+        else:
+            await db.push_subscriptions.delete_one({"endpoint": info.get("endpoint")})
+    return sent
+
+
+async def _push_to_org_followers(org_slug: str, title: str, body: str, url: str) -> int:
+    if not org_slug:
+        return 0
+    device_ids = [d["device_id"] async for d in db.follows.find({"orgs": org_slug}, {"_id": 0, "device_id": 1})]
+    if not device_ids:
+        return 0
+    subs = await db.push_subscriptions.find({"device_id": {"$in": device_ids}}, {"_id": 0}).to_list(5000)
+    return await _push_to_subscriptions(subs, title, body, url)
+
+
+def _push_org_event_approved(event: dict) -> None:
+    """Fire-and-forget: notify followers when an org's event goes live."""
+    async def _go():
+        try:
+            org = await db.orgs.find_one({"slug": event.get("orgSlug")}, {"_id": 0, "name": 1})
+            name = (org or {}).get("name") or "A group you follow"
+            when = str(event.get("start") or "")[:16].replace("T", " · ")
+            await _push_to_org_followers(
+                event.get("orgSlug") or "",
+                f"New event from {name}",
+                f"{event.get('title')} — {when}",
+                f"/events/{event.get('id')}",
+            )
+        except Exception as exc:
+            logger.warning("event push failed: %s", exc)
+    asyncio.create_task(_go())
+
+
+def _push_org_feed_update(post: dict) -> None:
+    """Fire-and-forget: notify followers when an org posts a local feed update."""
+    async def _go():
+        try:
+            org = await db.orgs.find_one({"slug": post.get("orgSlug")}, {"_id": 0, "name": 1})
+            name = (org or {}).get("name") or "A group you follow"
+            await _push_to_org_followers(
+                post.get("orgSlug") or "",
+                f"{name} posted an update",
+                str(post.get("title") or post.get("body") or "")[:140],
+                "/local-feed",
+            )
+        except Exception as exc:
+            logger.warning("feed push failed: %s", exc)
+    asyncio.create_task(_go())
+
+
+class PushSubscribeReq(BaseModel):
+    device_id: str
+    subscription: Dict[str, Any]
+
+
+class PushUnsubscribeReq(BaseModel):
+    endpoint: str
+
+
+class PushAnnounceReq(BaseModel):
+    title: str
+    body: str
+    url: Optional[str] = ""
+
+
+@api.get("/push/public-key")
+async def push_public_key():
+    return {"key": VAPID_PUBLIC_KEY}
+
+
+@api.post("/push/subscribe")
+async def push_subscribe(req: PushSubscribeReq):
+    endpoint = str((req.subscription or {}).get("endpoint") or "")
+    if not endpoint:
+        raise HTTPException(400, "Invalid subscription")
+    await db.push_subscriptions.update_one(
+        {"endpoint": endpoint},
+        {
+            "$set": {
+                "endpoint": endpoint,
+                "device_id": req.device_id,
+                "subscription": req.subscription,
+                "updated_at": now_iso(),
+            },
+            "$setOnInsert": {"created_at": now_iso()},
+        },
+        upsert=True,
+    )
+    return {"ok": True}
+
+
+@api.post("/push/unsubscribe")
+async def push_unsubscribe(req: PushUnsubscribeReq):
+    await db.push_subscriptions.delete_one({"endpoint": req.endpoint})
+    return {"ok": True}
+
+
+@api.post("/admin/push/announce")
+async def admin_push_announce(
+    req: PushAnnounceReq,
+    request: Request,
+    authorization: Optional[str] = Header(None),
+    admin_code: Optional[str] = Header(None, alias="X-Admin-Code"),
+):
+    _require_admin_from_request(request, authorization, admin_code)
+    if not req.title.strip() or not req.body.strip():
+        raise HTTPException(400, "Both a title and a message are required")
+    subs = await db.push_subscriptions.find({}, {"_id": 0}).to_list(10000)
+    sent = await _push_to_subscriptions(subs, req.title.strip(), req.body.strip(), (req.url or "/").strip() or "/")
+    await _audit(
+        action="push_announcement",
+        entity_type="site",
+        entity_id="push",
+        summary=f"Push announcement sent to {sent}/{len(subs)} devices: {req.title.strip()}",
+    )
+    return {"ok": True, "sent": sent, "subscriptions": len(subs)}
+
+
 # ─────────── Notifications (admin → org) ───────────
 class AdminNotifyReq(BaseModel):
     org_slug: str
     title: str
     body: str
+    send_email: bool = True
 
 
 @api.post("/admin/notifications")
 async def admin_send_notification(req: AdminNotifyReq):
     n = Notification(org_slug=req.org_slug, title=req.title, body=req.body)
     await db.notifications.insert_one(n.model_dump())
-    return n
+    email_result: Optional[Dict[str, Any]] = None
+    if req.send_email:
+        org = await db.orgs.find_one({"slug": req.org_slug}, {"_id": 0, "email": 1, "name": 1})
+        org_email = (org or {}).get("email", "")
+        if org_email and EMAIL_RE.match(org_email):
+            html_payload = _render_admin_email_html(req.title, req.body, SENDER_EMAIL)
+            email_result = await asyncio.to_thread(
+                resend_send,
+                org_email,
+                req.title,
+                html_payload,
+                SENDER_EMAIL,
+                SENDER_NAME,
+            )
+    return {**n.model_dump(), "email_delivery": email_result}
 
 
 @api.get("/organisations/{slug}/notifications")
@@ -3358,11 +5405,111 @@ def _render_web_wizard_enquiry_html(req: WebWizardEnquiryReq) -> str:
     return "".join(lines)
 
 
+def _render_contact_admin_html(req: ContactAdminReq) -> str:
+    sender = req.from_name or req.from_org_slug or req.from_email or "Unknown sender"
+    sender_email = req.from_email or "Not provided"
+    org_slug = req.from_org_slug or "Not provided"
+    body_html = _auto_link(req.body or "")
+    reply_hint = (
+        f"<p><b>Related notification:</b> {html.escape(req.in_reply_to)}</p>"
+        if req.in_reply_to
+        else ""
+    )
+    return (
+        "<p><b>New organisation message for site admin</b></p>"
+        f"<p><b>From:</b> {html.escape(sender)}</p>"
+        f"<p><b>Sender email:</b> {html.escape(sender_email)}</p>"
+        f"<p><b>Organisation slug:</b> {html.escape(org_slug)}</p>"
+        f"{reply_hint}"
+        "<p><b>Message:</b></p>"
+        f"{body_html}"
+    )
+
+
+class PublicContactReq(BaseModel):
+    name: str
+    email: str
+    subject: str = ""
+    message: str
+
+
+@api.post("/contact")
+async def public_contact(req: PublicContactReq):
+    """Public website contact form (Contact page)."""
+    name = req.name.strip()
+    email = req.email.strip()
+    message = req.message.strip()
+    if not name or not message:
+        raise HTTPException(400, "Please add your name and a message")
+    if not EMAIL_RE.match(email):
+        raise HTTPException(400, "Please enter a valid email address")
+    subject = req.subject.strip() or "Website contact form"
+    m = AdminMessage(from_name=name, from_email=email, subject=subject, body=message[:5000], direction="inbound_org")
+    await db.messages.insert_one(m.model_dump())
+
+    email_result: Optional[Dict[str, Any]] = None
+    admin_inbox = [addr for addr in ADMIN_INBOX_EMAILS if EMAIL_RE.match(addr)]
+    if admin_inbox:
+        body_html = (
+            f"<h2>Website contact form</h2>"
+            f"<p><strong>{html.escape(name)}</strong> &lt;{html.escape(email)}&gt;</p>"
+            f"<p><strong>Subject:</strong> {html.escape(subject)}</p>"
+            f"<p>{html.escape(message)[:5000].replace(chr(10), '<br/>')}</p>"
+        )
+        email_result = await asyncio.to_thread(
+            resend_send,
+            admin_inbox[0],
+            f"[Contact form] {subject}",
+            body_html,
+            None,
+            name,
+            admin_inbox[1:] or None,
+        )
+        await db.messages.update_one({"id": m.id}, {"$set": {"delivery": email_result}})
+    return {"ok": True, "id": m.id}
+
+
+@api.delete("/admin/subscribers/{sub_id}")
+async def admin_delete_subscriber(sub_id: str):
+    """Delete a subscriber entirely (removes them from every mailing list)."""
+    sub = await db.subscribers.find_one({"id": sub_id}, {"_id": 0, "email": 1})
+    if not sub:
+        raise HTTPException(404, "Subscriber not found")
+    await db.subscribers.delete_one({"id": sub_id})
+    await _audit(
+        action="subscriber_deleted",
+        entity_type="subscriber",
+        entity_id=sub_id,
+        summary=f"Deleted subscriber {sub.get('email')}",
+        meta={"email": sub.get("email")},
+        actor="admin",
+    )
+    return {"ok": True, "deleted": sub.get("email")}
+
+
 @api.post("/contact-admin")
 async def contact_admin(req: ContactAdminReq):
-    m = AdminMessage(**req.model_dump())
+    m = AdminMessage(**req.model_dump(), direction="inbound_org")
     await db.messages.insert_one(m.model_dump())
-    return m
+
+    email_result: Optional[Dict[str, Any]] = None
+    admin_inbox = [addr for addr in ADMIN_INBOX_EMAILS if EMAIL_RE.match(addr)]
+    if admin_inbox:
+        subject = req.subject.strip() or "Message from organisation"
+        primary = admin_inbox[0]
+        bcc = admin_inbox[1:] if len(admin_inbox) > 1 else None
+        email_result = await asyncio.to_thread(
+            resend_send,
+            primary,
+            f"[Org message] {subject}",
+            _render_contact_admin_html(req),
+            req.from_email if req.from_email and EMAIL_RE.match(req.from_email) else None,
+            req.from_name or req.from_org_slug or "Organisation",
+            bcc,
+        )
+        await db.messages.update_one({"id": m.id}, {"$set": {"delivery": email_result}})
+
+    return {**m.model_dump(), "delivery": email_result}
 
 
 @api.post("/web-wizard/enquiry")
@@ -3399,8 +5546,180 @@ async def admin_mark_message_read(mid: str):
     return {"ok": True}
 
 
+@api.delete("/admin/messages/{mid}")
+async def admin_delete_message(mid: str):
+    res = await db.messages.delete_one({"id": mid})
+    if not res.deleted_count:
+        raise HTTPException(404, "Message not found")
+    return {"ok": True}
+
+
+class AdminMessageBulkReq(BaseModel):
+    ids: List[str]
+    action: Literal["delete", "archive"]
+
+
+@api.post("/admin/messages/bulk")
+async def admin_bulk_message_action(req: AdminMessageBulkReq):
+    if not req.ids:
+        raise HTTPException(400, "No message IDs supplied")
+    if req.action == "delete":
+        await db.messages.delete_many({"id": {"$in": req.ids}})
+    else:
+        await db.messages.update_many({"id": {"$in": req.ids}}, {"$set": {"read": True}})
+    return {"ok": True, "affected": len(req.ids)}
+
+
+@api.post("/webhooks/resend")
+async def resend_webhook_email_received(request: Request):
+    raw = await request.body()
+    svix_id = request.headers.get("svix-id", "")
+    svix_timestamp = request.headers.get("svix-timestamp", "")
+    svix_signature = request.headers.get("svix-signature", "")
+    verified, reason = _verify_resend_webhook_signature(raw, svix_id, svix_timestamp, svix_signature)
+    if not verified:
+        raise HTTPException(401, f"Invalid webhook signature: {reason}")
+
+    try:
+        payload = json.loads(raw.decode("utf-8") or "{}")
+    except Exception:
+        raise HTTPException(400, "Invalid JSON payload")
+
+    event_type = str(payload.get("type") or payload.get("event") or "").strip()
+    if event_type != "email.received":
+        return {"ok": True, "ignored": True, "event_type": event_type or "unknown"}
+
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+    from_field = data.get("from") or data.get("sender") or data.get("from_email") or ""
+    from_email = _extract_email_address(from_field)
+    from_name = _extract_sender_name(from_field)
+    subject = str(data.get("subject") or "").strip() or "(No subject)"
+
+    headers = data.get("headers")
+    in_reply_to = str(
+        data.get("in_reply_to")
+        or data.get("inReplyTo")
+        or _extract_header_value(headers, "in-reply-to")
+        or ""
+    ).strip() or None
+    event_id = str(
+        data.get("id")
+        or data.get("message_id")
+        or _extract_header_value(headers, "message-id")
+        or svix_id
+    ).strip()
+
+    duplicate = await db.messages.find_one(
+        {
+            "delivery.provider": "resend-webhook",
+            "delivery.event_id": event_id,
+        },
+        {"_id": 0, "id": 1},
+    )
+    if duplicate:
+        return {"ok": True, "duplicate": True, "message_id": duplicate.get("id")}
+
+    body_text = str(
+        data.get("text")
+        or data.get("text_body")
+        or data.get("plain_text")
+        or ""
+    ).strip()
+    if not body_text:
+        body_text = _html_to_text(data.get("html") or data.get("html_body") or "")
+    if not body_text:
+        body_text = "(No message body provided by webhook)"
+
+    org_slug = None
+    if from_email:
+        org = await db.orgs.find_one({"email": from_email}, {"_id": 0, "slug": 1, "name": 1})
+        if org:
+            org_slug = org.get("slug")
+            if not from_name:
+                from_name = org.get("name") or ""
+
+    created = AdminMessage(
+        from_org_slug=org_slug,
+        from_email=from_email or None,
+        from_name=from_name or None,
+        subject=subject,
+        body=body_text,
+        in_reply_to=in_reply_to,
+        direction="inbound_org",
+        delivery={
+            "provider": "resend-webhook",
+            "event_type": event_type,
+            "event_id": event_id,
+            "svix_id": svix_id,
+        },
+    )
+    await db.messages.insert_one(created.model_dump())
+    return {
+        "ok": True,
+        "created": True,
+        "message_id": created.id,
+        "from_email": from_email,
+        "matched_org_slug": org_slug,
+    }
+
+
+class AdminMessageReplyReq(BaseModel):
+    body: str
+    subject: Optional[str] = None
+    from_email: Optional[str] = None
+    from_name: Optional[str] = None
+
+
+@api.post("/admin/messages/{mid}/reply")
+async def admin_reply_to_message(mid: str, req: AdminMessageReplyReq):
+    original = await db.messages.find_one({"id": mid}, {"_id": 0})
+    if not original:
+        raise HTTPException(404, "Message not found")
+
+    recipient = (original.get("from_email") or "").strip().lower()
+    if not recipient and original.get("from_org_slug"):
+        org = await db.orgs.find_one({"slug": original["from_org_slug"]}, {"_id": 0, "email": 1})
+        recipient = ((org or {}).get("email") or "").strip().lower()
+    if not recipient or not EMAIL_RE.match(recipient):
+        raise HTTPException(400, "No valid recipient email on this message")
+
+    from_addr = (req.from_email or SENDER_EMAIL).strip().lower()
+    if from_addr not in [s.lower() for s in ADMIN_SENDER_EMAILS]:
+        raise HTTPException(400, f"Sender must be one of: {', '.join(ADMIN_SENDER_EMAILS)}")
+    if not (req.body or "").strip():
+        raise HTTPException(400, "Reply body is required")
+
+    subject = (req.subject or f"Re: {original.get('subject', '').strip()}").strip()
+    html_payload = _render_admin_email_html(subject, req.body, from_addr)
+    result = await asyncio.to_thread(
+        resend_send,
+        recipient,
+        subject,
+        html_payload,
+        from_addr,
+        req.from_name or SENDER_NAME,
+    )
+
+    created = AdminMessage(
+        from_name=req.from_name or "Admin",
+        from_email=from_addr,
+        to_org_slug=original.get("from_org_slug"),
+        to_email=recipient,
+        subject=subject,
+        body=req.body,
+        in_reply_to=original.get("in_reply_to") or original.get("id"),
+        parent_message_id=original.get("id"),
+        direction="outbound_admin",
+        read=True,
+        delivery=result,
+    )
+    await db.messages.insert_one(created.model_dump())
+    await db.messages.update_one({"id": original.get("id")}, {"$set": {"read": True}})
+    return {"ok": bool(result.get("ok")), "message": created, "delivery": result}
+
+
 # ─────────── Documents (per org) ───────────
-ALLOWED_EXT = {"pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "jpg", "jpeg", "png", "webp", "txt", "csv"}
+ALLOWED_EXT = {"pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "jpg", "jpeg", "png", "webp", "bmp", "gif", "tif", "tiff", "heic", "heif", "txt", "csv", "md"}
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024  # 10 MB
 MAX_BULK_PARSE_FILES = int(os.environ.get("MAX_BULK_PARSE_FILES", "8"))
 BULK_PARSE_TOTAL_TIMEOUT_SECONDS = int(os.environ.get("BULK_PARSE_TOTAL_TIMEOUT_SECONDS", "80"))
@@ -3722,6 +6041,7 @@ class ParsedItem(BaseModel):
     suggested_type: Literal["event", "volunteer", "organisation", "venue", "update"]
     title: str
     date: Optional[str] = None
+    end_date: Optional[str] = None  # multi-day events (YYYY-MM-DD)
     start_time: Optional[str] = None
     end_time: Optional[str] = None
     location: Optional[str] = None
@@ -3745,7 +6065,7 @@ class ParsedItem(BaseModel):
     date_confidence: Optional[float] = None
     time_confidence: Optional[float] = None
     # Recurrence detected from the source text — e.g. "Mondays, 10am" ⇒ weekly.
-    recurrence_freq: Optional[Literal["none", "daily", "weekly", "biweekly", "monthly", "annually"]] = None
+    recurrence_freq: Optional[Literal["none", "daily", "weekly", "biweekly", "monthly", "monthly_weekday", "annually"]] = None
     recurrence_weekday: Optional[str] = None  # e.g. "Monday" (informational)
     recurrence_confidence: Optional[float] = None
     recurrence_raw_text: Optional[str] = None
@@ -3753,6 +6073,14 @@ class ParsedItem(BaseModel):
     cost: Optional[str] = None
     booking: Optional[str] = None
     url: Optional[str] = None
+    image: Optional[str] = None
+    # Whether the category came from an explicit labeled field (skips inference)
+    category_explicit: bool = False
+    address: Optional[str] = None        # street address, distinct from location/venue name
+    age: Optional[str] = None            # audience/age suitability
+    accessibility: Optional[str] = None  # accessibility notes
+    contact_email: Optional[str] = None
+    contact_phone: Optional[str] = None
 
 
 class ParsedDocument(BaseModel):
@@ -3829,6 +6157,32 @@ def _format_hhmm(hour: int, minute: int, meridiem: Optional[str]) -> str:
 def _extract_iso_date(text: str) -> tuple[Optional[str], Optional[str], Optional[float]]:
     now = datetime.now(timezone.utc)
     year_default = now.year
+
+    # Already ISO: 2026-07-21
+    m = re.search(r"\b(\d{4})-(\d{2})-(\d{2})\b", text)
+    if m:
+        try:
+            return datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)), tzinfo=timezone.utc).strftime("%Y-%m-%d"), m.group(0), 0.95
+        except ValueError:
+            pass
+
+    # 21-23 July (multi-day range) — the first day is the start date
+    m = re.search(
+        r"\b(\d{1,2})(?:st|nd|rd|th)?\s*(?:-|–|—|to|until)\s*\d{1,2}(?:st|nd|rd|th)?\s+"
+        r"(january|february|march|april|may|june|july|august|september|october|november|december)"
+        r"(?:\s+(\d{4}))?\b",
+        text,
+        re.I,
+    )
+    if m:
+        day = int(m.group(1))
+        month = MONTHS.get(m.group(2).lower())
+        year = int(m.group(3)) if m.group(3) else year_default
+        if month:
+            try:
+                return datetime(year, month, day, tzinfo=timezone.utc).strftime("%Y-%m-%d"), m.group(0), 0.85 if m.group(3) else 0.75
+            except ValueError:
+                pass
 
     # 14 June 2026 / Saturday 14 June
     m = re.search(
@@ -3951,7 +6305,7 @@ def _detect_recurrence(text: str) -> Optional[dict]:
         "thursday": "Thursday", "thursdays": "Thursday", "thu": "Thursday", "thur": "Thursday", "thurs": "Thursday",
         "friday": "Friday", "fridays": "Friday", "fri": "Friday",
         "saturday": "Saturday", "saturdays": "Saturday", "sat": "Saturday",
-        "sunday": "Sundays", "sundays": "Sunday", "sun": "Sunday",
+        "sunday": "Sunday", "sundays": "Sunday", "sun": "Sunday",
     }
 
     # 1) "every other <weekday>" or "every second <weekday>" ⇒ biweekly
@@ -3983,18 +6337,242 @@ def _detect_recurrence(text: str) -> Optional[dict]:
     if re.search(r"\b(every\s+week|weekly\s+(group|session|meeting|club|meet\s*up|meetup|drop[- ]?in))\b", lower):
         return {"freq": "weekly", "weekday": None, "confidence": 0.75, "raw_text": "weekly"}
 
-    # 6) "monthly" / "every month" ⇒ monthly
-    if re.search(r"\b(monthly|every\s+month|first\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\s+of\s+(the\s+)?month|last\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\s+of\s+(the\s+)?month)\b", lower):
+    # 6) "first/second/.../last Thursday of the month" ⇒ monthly_weekday
+    m = re.search(
+        r"\b(first|second|third|fourth|fifth|last)\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\s+of\s+(the\s+)?month\b",
+        lower,
+    )
+    if m:
+        wd = weekdays.get(m.group(2))
+        return {"freq": "monthly_weekday", "weekday": wd, "confidence": 0.92, "raw_text": m.group(0)}
+
+    # 7) "monthly" / "every month" ⇒ monthly
+    if re.search(r"\b(monthly|every\s+month)\b", lower):
         return {"freq": "monthly", "weekday": None, "confidence": 0.8, "raw_text": "monthly"}
 
-    # 7) "daily" / "every day" ⇒ daily
+    # 8) "daily" / "every day" ⇒ daily
     if re.search(r"\b(daily|every\s+day)\b", lower):
         return {"freq": "daily", "weekday": None, "confidence": 0.85, "raw_text": "daily"}
 
-    # 8) "annual" / "yearly" / "every year" ⇒ annually
+    # 9) "annual" / "yearly" / "every year" ⇒ annually
     if re.search(r"\b(annual(?:ly)?|yearly|every\s+year)\b", lower):
         return {"freq": "annually", "weekday": None, "confidence": 0.85, "raw_text": "annual"}
 
+    return None
+
+
+# ─────────── Deterministic field extractors (fill event details from text) ───────────
+UK_POSTCODE_RE = r"[A-Za-z]{1,2}\d[A-Za-z\d]?\s*\d[A-Za-z]{2}"
+
+VENUE_KEYWORDS = (
+    "hall", "church", "chapel", "library", "centre", "center", "club", "school",
+    "park", "pavilion", "playing fields?", "ground", "hotel", "pub", "inn", "cafe",
+    "café", "studio", "rooms?", "museum", "green", "institute", "academy", "surgery",
+)
+
+
+def _extract_contact_email(text: str) -> Optional[str]:
+    for m in re.finditer(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b", text or ""):
+        email = m.group(0)
+        if not re.match(r"(?i)^(no-?reply|donotreply)@", email):
+            return email
+    return None
+
+
+def _extract_contact_phone(text: str) -> Optional[str]:
+    # UK formats: 01204 696295, (01204) 696295, 07123 456789, +44 1204 696295
+    m = re.search(r"(?:\+44\s?\(?0?\)?[\s-]?|\(?0)\d{2,4}\)?[\s-]?\d{3,4}[\s-]?\d{3,4}\b", text or "")
+    if m:
+        candidate = m.group(0).strip()
+        digits = re.sub(r"\D", "", candidate)
+        if 10 <= len(digits) <= 13:
+            return candidate
+    return None
+
+
+def _extract_url(text: str) -> Optional[str]:
+    m = re.search(r"https?://[^\s)\]>\"']+", text or "", re.I)
+    if m:
+        return m.group(0).rstrip(".,;!?")
+    m = re.search(r"\bwww\.[a-z0-9.-]+\.[a-z]{2,}(?:/[^\s)\]>\"']*)?", text or "", re.I)
+    if m:
+        return f"https://{m.group(0).rstrip('.,;!?')}"
+    return None
+
+
+def _extract_cost(text: str) -> Optional[str]:
+    if not text:
+        return None
+    # "adults £5, children £3" style phrases first (richest info)
+    m = re.search(r"(?i)\b(?:adults?|children|kids|concessions?|members?|non-members?)\s*[:\-]?\s*£\s?\d+(?:\.\d{2})?(?:[^.\n]{0,60}£\s?\d+(?:\.\d{2})?)?", text)
+    if m:
+        return re.sub(r"\s+", " ", m.group(0)).strip()
+    # "£3", "£3.50 per person", "entry £2", "tickets £5"
+    m = re.search(r"(?i)£\s?\d+(?:\.\d{2})?(?:\s*(?:per|each|pp|a)\s*(?:person|adult|child|family|ticket|session|head)?)?", text)
+    if m:
+        return re.sub(r"\s+", " ", m.group(0)).strip()
+    if re.search(r"(?i)\b(free\s+(?:entry|admission|event|to\s+attend)|entry\s+(?:is\s+)?free|admission\s+free|no\s+charge|free\s+of\s+charge)\b", text):
+        return "Free"
+    if re.search(r"(?i)(?:^|[\s|:])free(?:[\s|.,!]|$)", text):
+        return "Free"
+    if re.search(r"(?i)\bdonations?\s+(?:welcome|appreciated|only|invited)\b", text):
+        return "Donations welcome"
+    return None
+
+
+def _extract_booking(text: str) -> Optional[str]:
+    if not text:
+        return None
+    for line in re.split(r"[\n.]", text):
+        line = line.strip()
+        if not line or len(line) > 160:
+            continue
+        if re.search(r"(?i)\b(book(?:ing)?|tickets?|reserve|register|rsvp|sign\s*up|just\s+turn\s+up|no\s+booking)\b", line):
+            return re.sub(r"\s+", " ", line)
+    return None
+
+
+def _extract_age(text: str) -> Optional[str]:
+    if not text:
+        return None
+    patterns = [
+        r"(?i)\ball\s+ages(?:\s+welcome)?\b",
+        r"(?i)\bages?\s+\d{1,2}\s*(?:-|–|to)\s*\d{1,2}\b",
+        r"(?i)\b(?:under|over)[\s-]?\d{1,2}s?\b",
+        r"(?i)\b\d{1,2}\+\s*(?:only|years)?",
+        r"(?i)\badults?\s+only\b",
+        r"(?i)\bfamily[\s-]friendly\b",
+        r"(?i)\bsuitable\s+for\s+[^.\n]{3,40}",
+    ]
+    for pattern in patterns:
+        m = re.search(pattern, text)
+        if m:
+            return re.sub(r"\s+", " ", m.group(0)).strip().rstrip(",")
+    return None
+
+
+def _extract_accessibility(text: str) -> Optional[str]:
+    if not text:
+        return None
+    notes: list[str] = []
+    for pattern in [
+        r"(?i)\bwheelchair[\s-]?(?:accessible|friendly|access)\b",
+        r"(?i)\bstep[\s-]?free(?:\s+access)?\b",
+        r"(?i)\baccessible\s+(?:toilets?|parking|entrance)\b",
+        r"(?i)\bhearing\s+loop\b",
+        r"(?i)\bdisabled\s+(?:parking|access|toilets?)\b",
+        r"(?i)\b(?:autism|dementia)[\s-]?friendly\b",
+        r"(?i)\bBSL(?:\s+interpret\w*)?\b",
+    ]:
+        m = re.search(pattern, text)
+        if m:
+            notes.append(re.sub(r"\s+", " ", m.group(0)).strip())
+    return "; ".join(dict.fromkeys(notes)) or None
+
+
+def _extract_address(text: str) -> Optional[str]:
+    if not text:
+        return None
+    # Prefer a line containing a UK postcode.
+    for line in text.splitlines():
+        line = line.strip().strip("|•*·")
+        if re.search(rf"\b{UK_POSTCODE_RE}\b", line) and len(line) <= 120:
+            cleaned = re.sub(r"(?i)^(address|venue|where|location)\s*[:\-]\s*", "", line).strip()
+            if cleaned:
+                return cleaned
+    # "15 Church Road" style street address.
+    m = re.search(
+        r"\b\d{1,4}[A-Za-z]?\s+[A-Z][\w']*(?:\s+[A-Z][\w']*)*\s+"
+        r"(?:Road|Street|Lane|Avenue|Drive|Close|Way|Court|Crescent|Terrace|Place|Row|Grove|Gardens|Rd|Ave|Ln)\b"
+        r"(?:,\s*[A-Z][\w' ]+)*",
+        text,
+    )
+    if m:
+        return re.sub(r"\s+", " ", m.group(0)).strip()
+    return None
+
+
+def _extract_venue(text: str) -> Optional[str]:
+    if not text:
+        return None
+    keyword_alt = "|".join(VENUE_KEYWORDS)
+    # Explicit "Venue: X" / "Where: X" lines.
+    m = re.search(r"(?im)^(?:venue|where|location)\s*[:\-]\s*(.+)$", text)
+    if m:
+        value = m.group(1).strip().rstrip(".,;")
+        if value and len(value) <= 100:
+            return value
+    # "at St Katharine's Church Hall" — capitalised phrase ending in a venue keyword.
+    m = re.search(
+        rf"(?:\bat|\bheld at|\btakes place at|@)\s+(?:the\s+)?"
+        rf"((?:[\w'’&.-]+\s+){{0,5}}(?:{keyword_alt}))\b",
+        text,
+        re.I,
+    )
+    if m:
+        candidate = re.sub(r"\s+", " ", m.group(1)).strip().rstrip(".,;")
+        # Require at least one capitalised word so we skip "at the hall".
+        if re.search(r"[A-Z]", candidate) and 3 <= len(candidate) <= 80:
+            return candidate
+    return None
+
+
+CATEGORY_KEYWORDS: list[tuple[str, str]] = [
+    (r"\b(volunteer|volunteering|helpers?\s+needed)\b", "Volunteering"),
+    (r"\b(football|rugby|cricket|netball|tennis|running|fitness|yoga|pilates|zumba|swim|sports?|athletics|bowls|walking\s+group)\b", "Sport"),
+    (r"\b(choir|concert|band|music|gig|singing|orchestra|karaoke|open\s+mic)\b", "Music"),
+    (r"\b(market|fair|fete|food|drink|bake|coffee\s+morning|tea|lunch|supper|bbq|barbecue)\b", "Food & Drink"),
+    # "church" alone is too common in addresses (Church Road/Street) — require worship context.
+    (r"\b(mass|worship|prayer|faith|carol\s+service|parish|chapel|church\s+(service|hall|group|congregation))\b", "Faith"),
+    (r"\b(heritage|history|historical|museum|archive)\b", "Heritage"),
+    (r"\b(health|wellbeing|well-being|mental\s+health|mindfulness|dementia|carers?)\b", "Health & Wellbeing"),
+    (r"\b(school|education|class|course|lesson|tuition|homework)\b", "School"),
+    (r"\b(charity|fundrais\w+|donation|raffle|tombola|sponsored)\b", "Charity"),
+    (r"\b(youth|teen(?:ager)?s?|young\s+people)\b", "Youth"),
+    (r"\b(family|families|kids|children|toddlers?|under\s+5s?|craft)\b", "Family"),
+    (r"\b(business|networking|traders?|enterprise)\b", "Business"),
+]
+
+
+def _infer_category(text: str) -> Optional[str]:
+    lower = (text or "").lower()
+    for pattern, category in CATEGORY_KEYWORDS:
+        if re.search(pattern, lower):
+            return category
+    return None
+
+
+def _extract_end_date(text: str, start_date: Optional[str]) -> Optional[str]:
+    """Detect a multi-day range like '21-23 July' or '14 June - 16 June'."""
+    if not text:
+        return None
+    m = re.search(
+        r"\b(\d{1,2})(?:st|nd|rd|th)?\s*(?:-|–|—|to|until)\s*(\d{1,2})(?:st|nd|rd|th)?\s+"
+        r"(january|february|march|april|may|june|july|august|september|october|november|december)"
+        r"(?:\s+(\d{4}))?\b",
+        text,
+        re.I,
+    )
+    if m:
+        month = MONTHS.get(m.group(3).lower())
+        year = int(m.group(4)) if m.group(4) else datetime.now(timezone.utc).year
+        try:
+            end = datetime(year, month, int(m.group(2)), tzinfo=timezone.utc).strftime("%Y-%m-%d")
+        except (ValueError, TypeError):
+            return None
+        if not start_date or end > start_date:
+            return end
+    # '14 June - 16 July' style: two full dates joined by a range separator.
+    m = re.search(
+        r"(?:-|–|—|\bto\b|\buntil\b)\s*((?:\d{1,2})(?:st|nd|rd|th)?\s+"
+        r"(?:january|february|march|april|may|june|july|august|september|october|november|december)(?:\s+\d{4})?)",
+        text,
+        re.I,
+    )
+    if m and start_date:
+        end_iso, _, _ = _extract_iso_date(m.group(1))
+        if end_iso and end_iso > start_date:
+            return end_iso
     return None
 
 
@@ -4040,6 +6618,54 @@ def _normalize_parsed_item(item: ParsedItem, source_text: str) -> ParsedItem:
             updates["recurrence_confidence"] = rec.get("confidence")
             updates["recurrence_raw_text"] = rec.get("raw_text")
 
+    # Fill any remaining event fields deterministically so events arrive fully populated
+    # regardless of which pipeline (AI, fallback, OCR, spreadsheet, URL) produced the item.
+    if item.suggested_type == "event":
+        if not item.end_date:
+            end_date = _extract_end_date(merged, updates.get("date") or item.date)
+            if end_date:
+                updates["end_date"] = end_date
+        if not item.location:
+            venue = _extract_venue(merged)
+            if venue:
+                updates["location"] = venue
+        if not item.address:
+            address = _extract_address(merged)
+            if address:
+                updates["address"] = address
+        if not item.cost:
+            cost = _extract_cost(merged)
+            if cost:
+                updates["cost"] = cost
+        if not item.booking:
+            booking = _extract_booking(merged)
+            if booking:
+                updates["booking"] = booking
+        if not item.url:
+            url = _extract_url(merged)
+            if url:
+                updates["url"] = url
+        if not item.age:
+            age = _extract_age(merged)
+            if age:
+                updates["age"] = age
+        if not item.accessibility:
+            accessibility = _extract_accessibility(merged)
+            if accessibility:
+                updates["accessibility"] = accessibility
+        if not item.contact_email:
+            email = _extract_contact_email(merged)
+            if email:
+                updates["contact_email"] = email
+        if not item.contact_phone:
+            phone = _extract_contact_phone(merged)
+            if phone:
+                updates["contact_phone"] = phone
+        if (not item.category or item.category == "Community") and not item.category_explicit:
+            inferred = _infer_category(merged)
+            if inferred:
+                updates["category"] = inferred
+
     if updates:
         return item.model_copy(update=updates)
     return item
@@ -4047,6 +6673,27 @@ def _normalize_parsed_item(item: ParsedItem, source_text: str) -> ParsedItem:
 
 def _clean_text_excerpt(text: str, limit: int = 240) -> str:
     return re.sub(r"\s+", " ", (text or "")).strip()[:limit]
+
+
+def _extract_pptx_text(data: bytes) -> tuple[str, list[str]]:
+    warnings: list[str] = []
+    try:
+        namespaces = {"a": "http://schemas.openxmlformats.org/drawingml/2006/main"}
+        slides: list[str] = []
+        with zipfile.ZipFile(BytesIO(data)) as archive:
+            slide_names = sorted(
+                (n for n in archive.namelist() if re.fullmatch(r"ppt/slides/slide\d+\.xml", n)),
+                key=lambda n: int(re.search(r"(\d+)", n).group(1)),
+            )
+            for name in slide_names:
+                root = ET.fromstring(archive.read(name))
+                texts = [node.text.strip() for node in root.findall(".//a:t", namespaces) if node.text and node.text.strip()]
+                if texts:
+                    slides.append("\n".join(texts))
+        return "\n\n".join(slides).strip(), warnings
+    except Exception as exc:
+        warnings.append(f"PPTX extract failed: {exc}")
+        return "", warnings
 
 
 def _extract_docx_text(data: bytes) -> tuple[str, list[str]]:
@@ -4058,8 +6705,16 @@ def _extract_docx_text(data: bytes) -> tuple[str, list[str]]:
         namespaces = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
         paragraphs: list[str] = []
         for para in root.findall(".//w:p", namespaces):
-            texts = [node.text for node in para.findall('.//w:t', namespaces) if node.text]
-            line = "".join(texts).strip()
+            pieces: list[str] = []
+            for node in para.iter():
+                tag = node.tag.rsplit("}", 1)[-1]
+                if tag == "t" and node.text:
+                    pieces.append(node.text)
+                elif tag == "br":
+                    pieces.append("\n")  # preserve Word soft line breaks
+                elif tag == "tab":
+                    pieces.append("\t")
+            line = "".join(pieces).strip()
             if line:
                 paragraphs.append(line)
         return "\n".join(paragraphs).strip(), warnings
@@ -4100,11 +6755,54 @@ def _extract_pdf_text(data: bytes) -> tuple[str, list[str]]:
             chunks.append("\n".join([f"QR code link: {v}" for v in qr_values]))
             warnings.append(f"Detected {len(qr_values)} QR code link{'s' if len(qr_values) != 1 else ''} in PDF: {' | '.join(qr_values)}")
         text = "\n\n".join(chunks).strip()
+        if len(text) < 40:
+            # Little or no embedded text — likely a scanned/exported flyer. OCR the pages.
+            ocr_text, ocr_warnings = _ocr_pdf_pages(data)
+            warnings.extend(ocr_warnings)
+            if len(ocr_text.strip()) > len(text):
+                text = "\n\n".join(filter(None, [ocr_text.strip(), "\n".join(f"QR code link: {v}" for v in qr_values)])).strip()
         if not text:
             warnings.append("No readable text found in PDF")
         return text, warnings
     except Exception as exc:
         warnings.append(f"PDF extract failed: {exc}")
+        return "", warnings
+
+
+MAX_PDF_OCR_PAGES = int(os.environ.get("MAX_PDF_OCR_PAGES", "4"))
+
+
+def _ocr_pdf_pages(data: bytes) -> tuple[str, list[str]]:
+    """Rasterize PDF pages and OCR them — handles scanned flyers and Canva-style image PDFs."""
+    warnings: list[str] = []
+    try:
+        import pypdfium2 as pdfium
+    except Exception:
+        warnings.append("Scanned PDF detected but OCR rasterizer is unavailable")
+        return "", warnings
+    try:
+        pdf = pdfium.PdfDocument(BytesIO(data))
+        page_count = len(pdf)
+        ocr = _get_ocr_engine()
+        chunks: list[str] = []
+        for page_index in range(min(page_count, MAX_PDF_OCR_PAGES)):
+            page = pdf[page_index]
+            bitmap = page.render(scale=2.0)
+            pil_image = bitmap.to_pil().convert("RGB")
+            buffer = BytesIO()
+            pil_image.save(buffer, format="PNG")
+            result, _ = ocr(buffer.getvalue())
+            lines = [_normalize_ocr_line(str(item[1]).strip()) for item in (result or []) if len(item) >= 2 and item[1] and str(item[1]).strip()]
+            if lines:
+                chunks.append("\n".join(lines))
+        if page_count > MAX_PDF_OCR_PAGES:
+            warnings.append(f"OCR limited to the first {MAX_PDF_OCR_PAGES} of {page_count} pages")
+        text = "\n\n".join(chunks).strip()
+        if text:
+            warnings.append("PDF had no embedded text — content recovered with OCR")
+        return text, warnings
+    except Exception as exc:
+        warnings.append(f"PDF OCR failed: {exc}")
         return "", warnings
 
 
@@ -4136,8 +6834,29 @@ def _get_ocr_engine():
     return RapidOCR()
 
 
+@lru_cache(maxsize=1)
+def _register_heif_opener() -> bool:
+    try:
+        from pillow_heif import register_heif_opener
+
+        register_heif_opener()
+        return True
+    except Exception:
+        return False
+
+
+def _normalize_ocr_line(line: str) -> str:
+    """Re-insert word spacing OCR often drops (e.g. 'Saturday12September2026').
+    Short letter runs before digits are left alone to protect postcodes ('BL6') and times ('11am')."""
+    line = re.sub(r"([a-z])([A-Z])", r"\1 \2", line)
+    line = re.sub(r"([A-Za-z]{3,})(\d)", r"\1 \2", line)
+    line = re.sub(r"(\d)([A-Z][a-z]{2,})", r"\1 \2", line)
+    return line
+
+
 def _extract_image_text(data: bytes) -> tuple[str, list[str]]:
     warnings: list[str] = []
+    _register_heif_opener()
     try:
         with Image.open(BytesIO(data)) as img:
             img = ImageOps.exif_transpose(img)
@@ -4156,7 +6875,7 @@ def _extract_image_text(data: bytes) -> tuple[str, list[str]]:
         if len(item) >= 2 and item[1]:
             text = str(item[1]).strip()
             if text:
-                lines.append(text)
+                lines.append(_normalize_ocr_line(text))
 
     qr_values, qr_warnings = _decode_qr_values_from_image(data)
     if qr_values:
@@ -4237,15 +6956,22 @@ def _extract_document_text(filename: str, content_type: str, data: bytes) -> tup
     if ext == "docx":
         text, extra = _extract_docx_text(data)
         return text, "docx", warnings + extra
+    if ext == "pptx":
+        text, extra = _extract_pptx_text(data)
+        return text, "pptx", warnings + extra
     if ext == "pdf":
         text, extra = _extract_pdf_text(data)
         return text, "pdf", warnings + extra
     if ext == "xlsx":
         text, extra = _extract_xlsx_text(data)
         return text, "xlsx", warnings + extra
-    if ext in {"png", "jpg", "jpeg", "webp", "bmp", "gif", "tif", "tiff"} or content_type.startswith("image/"):
+    if ext in {"png", "jpg", "jpeg", "webp", "bmp", "gif", "tif", "tiff", "heic", "heif"} or content_type.startswith("image/"):
         text, extra = _extract_image_text(data)
         return text, "image", warnings + extra
+    if ext in {"doc", "xls", "ppt"}:
+        modern = {"doc": "DOCX", "xls": "XLSX", "ppt": "PPTX"}[ext]
+        warnings.append(f"Legacy .{ext} files can't be read — please re-save the file as {modern} and upload again")
+        return "", ext, warnings
     warnings.append(f"Unsupported auto-parse format: .{ext or 'bin'}")
     return "", ext or "bin", warnings
 
@@ -4406,15 +7132,24 @@ SITE_CATEGORIES = [
 ]
 
 SPREADSHEET_HEADERS = {
-    "organisation": {"organisation", "organization", "org", "group", "club", "host", "provider", "organiser", "organizer"},
+    "organisation": {"organisation", "organization", "org", "group", "club", "host", "provider", "organiser", "organizer", "hostedby", "runby"},
     "title": {"title", "event", "eventtitle", "eventname", "name", "activity", "whatson"},
-    "date": {"date", "dates", "eventdate", "startdate", "day", "when"},
-    "time": {"time", "times", "timings", "starttime", "timeslot"},
-    "venue": {"venue", "location", "where", "address", "place"},
-    "category": {"category", "categories", "type", "cat"},
-    "fee": {"fee", "fees", "cost", "price", "charge", "entry", "entryfee", "admission"},
+    "date": {"date", "dates", "eventdate", "startdate", "day", "when", "datefrom"},
+    "end_date": {"enddate", "finishdate", "dateto", "lastdate", "until", "finishes"},
+    "time": {"time", "times", "timings", "starttime", "timeslot", "start", "doorsopen"},
+    "end_time": {"endtime", "finishtime", "finish", "end", "closes"},
+    "venue": {"venue", "location", "where", "place", "venuename"},
+    "address": {"address", "fulladdress", "streetaddress", "venueaddress", "postcode"},
+    "category": {"category", "categories", "type", "cat", "eventtype"},
+    "fee": {"fee", "fees", "cost", "price", "charge", "entry", "entryfee", "admission", "ticketprice"},
     "url": {"url", "link", "website", "web", "webpage", "moreinfo", "infolink"},
     "booking": {"booking", "bookinginfo", "bookinginformation", "howtobook", "tickets", "bookinglink", "bookingurl"},
+    "description": {"description", "details", "info", "information", "about", "summary", "notes", "eventdescription"},
+    "age": {"age", "ages", "agerange", "agegroup", "agesuitability", "suitablefor", "audience", "whofor", "whoisitfor"},
+    "accessibility": {"accessibility", "access", "accessnotes", "accessibilitynotes", "accessinfo"},
+    "contact_email": {"email", "contactemail", "organiseremail", "emailaddress", "enquiries"},
+    "contact_phone": {"phone", "telephone", "tel", "contactphone", "contactnumber", "phonenumber", "mobile"},
+    "recurrence": {"recurrence", "recurring", "repeats", "repeat", "frequency", "howoften", "schedule"},
 }
 
 
@@ -4491,46 +7226,87 @@ def _try_structured_spreadsheet(filename: str, data: bytes, orgs: list[dict], ev
             continue
         org_name = get("organisation")
         date_raw = get("date")
+        end_date_raw = get("end_date")
         time_raw = get("time")
+        end_time_raw = get("end_time")
         venue = get("venue")
+        address = get("address")
         category_raw = get("category")
         fee = get("fee")
         url = get("url")
         booking = get("booking")
+        description_raw = get("description")
+        age = get("age")
+        accessibility = get("accessibility")
+        contact_email = get("contact_email")
+        contact_phone = get("contact_phone")
+        recurrence_raw = get("recurrence")
 
         category = "Community"
         if category_raw:
             cat_match, cat_score = _best_match(category_raw, [{"name": c} for c in SITE_CATEGORIES], "name")
             if cat_match and cat_score >= 0.6:
                 category = cat_match["name"]
+        if category == "Community":
+            inferred = _infer_category(" ".join([title, description_raw, category_raw]))
+            if inferred:
+                category = inferred
 
-        desc_parts = [p for p in [
-            f"{title} at {venue}." if venue else f"{title}.",
-            f"Organised by {org_name}." if org_name else "",
-            f"Cost: {fee}." if fee else "",
-            f"Booking: {booking}" if booking else "",
-            f"More info: {url}" if url else "",
-        ] if p]
+        end_date = None
+        if end_date_raw:
+            end_date, _, _ = _extract_iso_date(end_date_raw)
+
+        end_time = None
+        if end_time_raw:
+            end_time, _, _, _ = _extract_hhmm_times(end_time_raw)
+
+        recurrence = _detect_recurrence(" ".join([recurrence_raw, date_raw, time_raw])) if (recurrence_raw or date_raw or time_raw) else None
+
+        if description_raw:
+            description = description_raw
+        else:
+            desc_parts = [p for p in [
+                f"{title} at {venue}." if venue else f"{title}.",
+                f"Organised by {org_name}." if org_name else "",
+                f"Cost: {fee}." if fee else "",
+                f"Suitable for: {age}." if age else "",
+                f"Accessibility: {accessibility}." if accessibility else "",
+                f"Booking: {booking}" if booking else "",
+                f"More info: {url}" if url else "",
+            ] if p]
+            description = " ".join(desc_parts)
 
         item = ParsedItem(
             suggested_type="event",
             action="new_event",
             title=title,
             date=date_raw or None,
+            end_date=end_date,
             start_time=time_raw or None,
+            end_time=end_time,
             location=venue or None,
             category=category,
-            description=" ".join(desc_parts),
+            description=description,
             social_caption=f"📣 {title} — happening in Blackrod. More on Blackrod Now.",
             notification_text=f"New on Blackrod Now: {title}",
             confidence=0.9,
             cost=fee or None,
             booking=booking or None,
             url=url or None,
+            category_explicit=bool(category_raw),
+            address=address or None,
+            age=age or None,
+            accessibility=accessibility or None,
+            contact_email=contact_email or None,
+            contact_phone=contact_phone or None,
+            recurrence_freq=recurrence["freq"] if recurrence else None,
+            recurrence_weekday=recurrence.get("weekday") if recurrence else None,
+            recurrence_confidence=recurrence.get("confidence") if recurrence else None,
+            recurrence_raw_text=recurrence.get("raw_text") if recurrence else None,
         )
         if org_name:
             org_match, org_score = _best_match(org_name, orgs, "name")
-            if org_match and org_score >= 0.8:
+            if org_match and org_score >= 0.87:
                 item = item.model_copy(update={
                     "matched_org_slug": org_match.get("slug"),
                     "matched_org_name": org_match.get("name"),
@@ -4572,14 +7348,26 @@ async def _parse_text_to_response(text: str, hint: Optional[str] = None) -> Pars
         "Read the pasted text and return a JSON object with a single key `items` — an ARRAY of one or more "
         "structured suggestions. If the paste describes multiple events (e.g. a newsletter or multi-item flyer), "
         "return one item per event. Each item must have keys: "
-        "suggested_type ('event', 'volunteer', 'organisation', 'venue' or 'update'), title, date (or null), start_time (or null), end_time (or null), "
-        "location (or null), category (one of: Family, Youth, Sport, School, Charity, Business, Community, Music, "
-        "Food & Drink, Volunteering, Faith, Heritage, Health & Wellbeing), "
-        "description (1-3 sentences), social_caption (2-3 emojis, 2-4 hashtags), notification_text (max 90 chars). "
+        "suggested_type ('event', 'volunteer', 'organisation', 'venue' or 'update'), "
+        "title, "
+        "date (YYYY-MM-DD or null), end_date (YYYY-MM-DD when the event spans multiple days, else null), "
+        "start_time (HH:MM 24-hour or null), end_time (HH:MM 24-hour or null), "
+        "location (venue/place name only — e.g. 'St Catherine\'s Hall', NOT an address — or null), "
+        "address (full street address if present — e.g. '15 Church Road, Blackrod BL6 5AQ' — or null), "
+        "category (pick exactly one from: Community, Family, Children & Young People, Sports & Fitness, "
+        "Arts & Culture, Heritage, Faith, Health & Wellbeing, Education, Social, Fundraising, Markets & Fairs, Music & Entertainment), "
+        "description (1-3 sentences), "
+        "cost (ticket price or 'Free' — null if not mentioned), "
+        "booking (booking URL, phone, or instructions — null if not present), "
+        "age (who the event is suitable for, e.g. 'All ages', 'Adults', 'Under 16s' — null if not clear), "
+        "accessibility (any accessibility notes — null if not mentioned), "
+        "contact_email (organiser email if present — null otherwise), "
+        "contact_phone (organiser phone if present — null otherwise), "
+        "social_caption (2-3 emojis, 2-4 hashtags), notification_text (max 90 chars). "
         "Also include action, matched_org_slug, matched_org_name, matched_event_id, matched_event_title, matched_volunteer_id, matched_volunteer_title, matched_venue_id, matched_venue_name and confidence when you can identify the target. "
         "If possible include raw_date_text, raw_time_text, date_confidence, time_confidence and entity_confidence. "
         "For any recurring events (e.g. 'Mondays, 10am', 'every Tuesday', 'first Sunday of the month', 'weekly drop-in', 'monthly meet-up', 'annual switch-on'), "
-        "also set recurrence_freq to one of 'none', 'daily', 'weekly', 'biweekly', 'monthly' or 'annually', and recurrence_weekday to the canonical weekday name when clear. "
+        "also set recurrence_freq to one of 'none', 'daily', 'weekly', 'biweekly', 'monthly', 'monthly_weekday' or 'annually', and recurrence_weekday to the canonical weekday name when clear. "
         "Use action values new_event, update_event, new_volunteer, update_volunteer, new_organisation, update_organisation, new_venue, update_venue or unclear. "
         "Warm, modern, youth-friendly tone. Return ONLY the JSON object — no markdown, no prose."
     )
@@ -4590,6 +7378,9 @@ async def _parse_text_to_response(text: str, hint: Optional[str] = None) -> Pars
             + "\nIf the document is clearly an existing organisation update, event update, volunteering update or venue update, prefer update_organisation, update_event, update_volunteer or update_venue and fill in the matching slug/id."
         )
     try:
+        if not await _ensure_llm_loaded():
+            logger.warning("Classifier: LLM libraries unavailable (ready=%s err=%s key=%s) — using fallback", _llm_ready.is_set(), _llm_preload_error, bool(EMERGENT_LLM_KEY))
+            return ParseResponse(items=[_fallback_parse(text)])
         from emergentintegrations.llm.chat import LlmChat, UserMessage
         chat = LlmChat(
             api_key=EMERGENT_LLM_KEY,
@@ -4614,7 +7405,8 @@ async def _parse_text_to_response(text: str, hint: Optional[str] = None) -> Pars
             try:
                 parsed_item = ParsedItem(**{**{"description": ""}, **it})
                 items.append(_normalize_parsed_item(parsed_item, text))
-            except Exception:
+            except Exception as item_exc:
+                logger.warning("Classifier item rejected: %s | raw keys: %s", item_exc, list(it.keys()) if isinstance(it, dict) else type(it))
                 continue
         if not items:
             items = [_fallback_parse(text)]
@@ -4638,6 +7430,170 @@ def _decode_bulk_sources(raw: Optional[str]) -> list[str]:
     return [part.strip() for part in re.split(r"\n{2,}|\r\n{2,}|\n", raw) if part.strip()]
 
 
+# ─────────── Labeled-block documents (Event title: … / Venue: …) ───────────
+LABELED_FIELD_MAP = {
+    "eventtitle": "title", "title": "title", "eventname": "title",
+    "organisation": "org", "organization": "org", "org": "org", "organiser": "org", "organizer": "org",
+    "category": "category",
+    "date": "date", "dates": "date", "eventdate": "date",
+    "start": "start_time", "starttime": "start_time", "time": "start_time", "times": "start_time",
+    "end": "end_time", "endtime": "end_time",
+    "venue": "venue", "location": "venue", "where": "venue", "place": "venue",
+    "address": "address",
+    "description": "description", "details": "description", "about": "description",
+    "cost": "cost", "fee": "cost", "fees": "cost", "price": "cost", "admission": "cost",
+    "agesuitability": "age", "age": "age", "ages": "age", "agerange": "age",
+    "accessibility": "accessibility", "access": "accessibility",
+    "bookinglink": "booking", "booking": "booking", "bookinginfo": "booking", "howtobook": "booking", "tickets": "booking",
+    "email": "email", "contactemail": "email",
+    "phone": "phone", "contactphone": "phone", "tel": "phone", "telephone": "phone",
+    "url": "url", "link": "url", "website": "url", "web": "url", "moreinfo": "url",
+    "imageurl": "image", "image": "image", "poster": "image",
+    "repeats": "repeats", "recurrence": "repeats", "repeat": "repeats", "frequency": "repeats",
+}
+
+_LABEL_LINE_RE = re.compile(r"^\s*(?:\d+\.\s*)?([A-Za-z][A-Za-z /&]{1,24})\s*:\s*(.*)$")
+_PLACEHOLDER_VALUE_RE = re.compile(
+    r"^(not published|not stated|not specified|not safely verified|not applicable|none stated|none|n/?a|tbc|tba|unknown|no advance booking.*|no booking.*|-+)$",
+    re.I,
+)
+
+
+def _labeled_value(raw: str) -> str:
+    value = (raw or "").strip()
+    return "" if not value or _PLACEHOLDER_VALUE_RE.match(value) else value
+
+
+def _try_labeled_blocks(filename: str, text: str, orgs: list[dict], events: list[dict]) -> Optional[ParsedDocument]:
+    """Deterministic parse for documents where each event is a block of
+    'Label: value' lines (e.g. 'Event title: … / Organisation: … / Date: …').
+    Returns None unless at least 2 titled blocks are found, so free-text
+    flyers still go through the AI pipeline."""
+    if not text:
+        return None
+    title_marker = re.compile(r"^\s*(?:\d+\.\s*)?event\s*title\s*:", re.I | re.M)
+    markers = list(title_marker.finditer(text))
+    if len(markers) < 2:
+        return None
+
+    items: list[ParsedItem] = []
+    for i, marker in enumerate(markers):
+        block_start = marker.start()
+        block_end = markers[i + 1].start() if i + 1 < len(markers) else len(text)
+        block = text[block_start:block_end]
+        fields: dict[str, str] = {}
+        for line in block.splitlines():
+            m = _LABEL_LINE_RE.match(line)
+            if not m:
+                continue
+            key = re.sub(r"[^a-z]", "", m.group(1).lower())
+            field = LABELED_FIELD_MAP.get(key)
+            if field and field not in fields:
+                fields[field] = _labeled_value(m.group(2))
+        title = fields.get("title")
+        if not title:
+            continue
+
+        # Contact-ish fields: treat "No …"/"Not …" prose as empty; sanity-check shape.
+        email_val = fields.get("email") or ""
+        if email_val and ("@" not in email_val or re.match(r"^(no|not)\b", email_val, re.I)):
+            email_val = ""
+        phone_val = fields.get("phone") or ""
+        if phone_val and (not re.search(r"\d{5,}", phone_val.replace(" ", "")) or re.match(r"^(no|not)\b", phone_val, re.I)):
+            phone_val = ""
+        booking_val = fields.get("booking") or ""
+        if re.match(r"^(no|not)\b", booking_val, re.I):
+            booking_val = ""
+
+        category = "Community"
+        if fields.get("category"):
+            cat_match, cat_score = _best_match(fields["category"], [{"name": c} for c in SITE_CATEGORIES], "name")
+            if cat_match and cat_score >= 0.55:
+                category = cat_match["name"]
+
+        recurrence_freq = None
+        recurrence_weekday = None
+        repeats_raw = fields.get("repeats") or ""
+        if repeats_raw and not re.match(r"^no\b", repeats_raw, re.I):
+            repeats_normalized = re.sub(r"\beach month\b", "the month", repeats_raw, flags=re.I)
+            detected = _detect_recurrence(repeats_normalized) or _detect_recurrence(f"every {repeats_normalized}")
+            if detected:
+                recurrence_freq = detected.get("freq")
+                recurrence_weekday = detected.get("weekday")
+            elif re.match(r"^yes\b", repeats_raw, re.I):
+                recurrence_freq = "weekly"
+
+        url_value = fields.get("url") or ""
+        image_value = fields.get("image") or ""
+        item = ParsedItem(
+            suggested_type="event",
+            action="new_event",
+            title=title,
+            date=fields.get("date") or None,
+            start_time=fields.get("start_time") or None,
+            end_time=fields.get("end_time") or None,
+            location=fields.get("venue") or None,
+            address=fields.get("address") or None,
+            category=category,
+            description=fields.get("description") or title,
+            cost=fields.get("cost") or None,
+            age=fields.get("age") or None,
+            accessibility=fields.get("accessibility") or None,
+            booking=booking_val or None,
+            contact_email=email_val or None,
+            contact_phone=phone_val or None,
+            category_explicit=bool(fields.get("category")),
+            url=url_value if url_value.startswith("http") else None,
+            image=image_value if image_value.startswith("http") else None,
+            recurrence_freq=recurrence_freq,
+            recurrence_weekday=recurrence_weekday,
+            recurrence_raw_text=repeats_raw or None,
+            social_caption=f"📣 {title} — happening in Blackrod. More on Blackrod Now.",
+            notification_text=f"New on Blackrod Now: {title}",
+            confidence=0.92,
+        )
+        if fields.get("org"):
+            org_match, org_score = _best_match(fields["org"], orgs, "name")
+            if org_match and org_score >= 0.87:
+                item = item.model_copy(update={
+                    "matched_org_slug": org_match.get("slug"),
+                    "matched_org_name": org_match.get("name"),
+                    "entity_confidence": round(org_score, 2),
+                })
+        ev_match, ev_score = _best_match(title, events, "title")
+        if ev_match and ev_score >= 0.85:
+            item = item.model_copy(update={
+                "action": "update_event",
+                "matched_event_id": ev_match.get("id"),
+                "matched_event_title": ev_match.get("title"),
+            })
+        # Strip placeholder label lines so normalizer back-fill can't re-extract them.
+        clean_lines = []
+        for line in block.splitlines():
+            lm = _LABEL_LINE_RE.match(line)
+            if lm and lm.group(2).strip() and not _labeled_value(lm.group(2)):
+                continue
+            clean_lines.append(line)
+        normalized = _normalize_parsed_item(item, "\n".join(clean_lines))
+        if normalized.date and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", normalized.date):
+            iso = re.search(r"\d{4}-\d{2}-\d{2}", normalized.date)
+            if iso:
+                normalized = normalized.model_copy(update={"date": iso.group(0)})
+        items.append(normalized)
+        if len(items) >= 100:
+            break
+
+    if len(items) < 2:
+        return None
+    return ParsedDocument(
+        filename=filename,
+        source_type="labeled_document",
+        text_excerpt=_clean_text_excerpt(text),
+        warnings=[f"Structured document detected — parsed {len(items)} labeled event blocks without AI"],
+        items=items,
+    )
+
+
 async def _admin_parse_documents(
     file_sources: Optional[list[tuple]] = None,
     source_org_slug: Optional[str] = None,
@@ -4645,8 +7601,14 @@ async def _admin_parse_documents(
     texts_json: Optional[str] = None,
     progress_cb=None,
     total_timeout: Optional[int] = None,
+    per_source_timeout: Optional[int] = None,
+    precomputed_docs: Optional[list] = None,
+    doc_cb=None,
+    use_llm: bool = True,
 ) -> BulkParseResponse:
     file_list = list(file_sources or [])
+    extraction_budget = per_source_timeout or BULK_PARSE_EXTRACTION_TIMEOUT_SECONDS
+    classification_budget = max(BULK_PARSE_CLASSIFICATION_TIMEOUT_SECONDS, per_source_timeout or 0)
 
     url_list = _decode_bulk_sources(urls_json)
     text_list = _decode_bulk_sources(texts_json)
@@ -4660,8 +7622,21 @@ async def _admin_parse_documents(
     source_org = None
     if source_org_slug:
         source_org = await _find_org(source_org_slug)
-    documents: list[ParsedDocument] = []
+    documents: list[ParsedDocument] = list(precomputed_docs or [])
+    skip_remaining = len(documents)  # checkpointed sources already done in a previous attempt
+    flushed = len(documents)
     deadline = asyncio.get_running_loop().time() + (total_timeout or BULK_PARSE_TOTAL_TIMEOUT_SECONDS)
+
+    async def _flush_new():
+        # Checkpoint newly completed documents so retries resume, not restart.
+        nonlocal flushed
+        while flushed < len(documents):
+            if doc_cb:
+                try:
+                    await doc_cb(flushed, documents[flushed])
+                except Exception:
+                    pass
+            flushed += 1
 
     async def _notify(current: str = ""):
         if progress_cb:
@@ -4689,6 +7664,11 @@ async def _admin_parse_documents(
                 items=[_fallback_parse(filename)],
             )
 
+        # Deterministic path for label-formatted documents (Event title: … blocks)
+        labeled = _try_labeled_blocks(filename, text, orgs, events)
+        if labeled:
+            return labeled.model_copy(update={"warnings": warnings + labeled.warnings})
+
         hint = "\n".join([
             f"Filename: {filename}",
             f"Source organisation: {source_org.get('slug')} | {source_org.get('name')}" if source_org else "",
@@ -4701,7 +7681,15 @@ async def _admin_parse_documents(
             "Existing venues:",
             *[f"VENUE:{v['id']}|{v['name']}|{v.get('address','')}" for v in venues[:160]],
         ]).strip()
-        classification_timeout = max(1, min(BULK_PARSE_CLASSIFICATION_TIMEOUT_SECONDS, int(max(1, deadline - asyncio.get_running_loop().time() - BULK_PARSE_TIMEOUT_SAFETY_SECONDS))))
+        classification_timeout = max(1, min(classification_budget, int(max(1, deadline - asyncio.get_running_loop().time() - BULK_PARSE_TIMEOUT_SAFETY_SECONDS))))
+        if not use_llm:
+            return ParsedDocument(
+                filename=filename,
+                source_type=source_type,
+                text_excerpt=_clean_text_excerpt(text),
+                warnings=warnings + ["Parsed without AI (recovery mode) — review suggested fields carefully"],
+                items=_fallback_document_classify(filename, text, orgs, events, volunteers, venues),
+            )
         try:
             parsed = await asyncio.wait_for(_parse_text_to_response(text, hint=hint), timeout=classification_timeout)
         except asyncio.TimeoutError:
@@ -4733,6 +7721,10 @@ async def _admin_parse_documents(
         )
 
     for index, (filename, content_type, data) in enumerate(file_list):
+        await _flush_new()
+        if skip_remaining > 0:
+            skip_remaining -= 1
+            continue
         await _notify(filename)
         remaining = deadline - asyncio.get_running_loop().time()
         if remaining <= BULK_PARSE_TIMEOUT_SAFETY_SECONDS:
@@ -4750,7 +7742,7 @@ async def _admin_parse_documents(
             if structured:
                 documents.append(structured)
                 continue
-        extraction_timeout = max(1, min(BULK_PARSE_EXTRACTION_TIMEOUT_SECONDS, int(max(1, remaining - BULK_PARSE_TIMEOUT_SAFETY_SECONDS))))
+        extraction_timeout = max(1, min(extraction_budget, int(max(1, remaining - BULK_PARSE_TIMEOUT_SAFETY_SECONDS))))
         try:
             text, source_type, warnings = await asyncio.wait_for(
                 asyncio.to_thread(_extract_document_text, filename, content_type or "application/octet-stream", data),
@@ -4766,6 +7758,10 @@ async def _admin_parse_documents(
         documents.append(await _finalize_source(filename, source_type, text, warnings))
 
     for index, url in enumerate(url_list):
+        await _flush_new()
+        if skip_remaining > 0:
+            skip_remaining -= 1
+            continue
         remaining = deadline - asyncio.get_running_loop().time()
         filename = urlparse(url).netloc or "link"
         await _notify(filename)
@@ -4776,7 +7772,7 @@ async def _admin_parse_documents(
                 documents.append(_bulk_timeout_document(remaining_name, "timed_out", timeout_warning))
             break
 
-        extraction_timeout = max(1, min(BULK_PARSE_EXTRACTION_TIMEOUT_SECONDS, int(max(1, remaining - BULK_PARSE_TIMEOUT_SAFETY_SECONDS))))
+        extraction_timeout = max(1, min(extraction_budget, int(max(1, remaining - BULK_PARSE_TIMEOUT_SAFETY_SECONDS))))
         try:
             text, source_type, warnings = await asyncio.wait_for(
                 asyncio.to_thread(_extract_url_text, url),
@@ -4792,6 +7788,10 @@ async def _admin_parse_documents(
         documents.append(await _finalize_source(filename, source_type or "url", text, warnings))
 
     for index, text_source in enumerate(text_list):
+        await _flush_new()
+        if skip_remaining > 0:
+            skip_remaining -= 1
+            continue
         remaining = deadline - asyncio.get_running_loop().time()
         filename = f"pasted-text-{index + 1}.txt"
         await _notify(filename)
@@ -4803,6 +7803,7 @@ async def _admin_parse_documents(
             break
 
         documents.append(await _finalize_source(filename, "text", text_source, []))
+    await _flush_new()
     await _notify("")
     return BulkParseResponse(documents=documents, mocked=not EMERGENT_LLM_KEY)
 
@@ -4818,35 +7819,1105 @@ async def _read_upload_sources(files: List[UploadFile]) -> list[tuple]:
     return file_sources
 
 
-async def _run_parse_job(job_id: str, file_sources: list, source_org_slug: Optional[str], urls_json: Optional[str], texts_json: Optional[str], total: int):
-    async def progress(done: int, current: str):
-        await db.parse_jobs.update_one({"id": job_id}, {"$set": {"done": done, "current": current, "updated_at": now_iso()}})
+PARSE_JOB_HEARTBEAT_SECONDS = int(os.environ.get("PARSE_JOB_HEARTBEAT_SECONDS", "10"))
+PARSE_JOB_STALE_SECONDS = int(os.environ.get("PARSE_JOB_STALE_SECONDS", "300"))
+PARSE_JOB_WORKER_POLL_SECONDS = float(os.environ.get("PARSE_JOB_WORKER_POLL_SECONDS", "1.5"))
+PARSE_JOB_WORKER_CONCURRENCY = max(1, int(os.environ.get("PARSE_JOB_WORKER_CONCURRENCY", "1")))
+PARSE_JOB_MAX_ATTEMPTS = max(1, int(os.environ.get("PARSE_JOB_MAX_ATTEMPTS", "5")))
+PARSE_JOB_TOTAL_TIMEOUT_SECONDS = int(os.environ.get("PARSE_JOB_TOTAL_TIMEOUT_SECONDS", "3600"))
+PARSE_JOB_SOURCE_TIMEOUT_SECONDS = int(os.environ.get("PARSE_JOB_SOURCE_TIMEOUT_SECONDS", "180"))
+PARSE_JOB_SOURCE_RETENTION_DAYS = max(1, int(os.environ.get("PARSE_JOB_SOURCE_RETENTION_DAYS", "7")))
+PARSE_JOB_INTERRUPTED_ERROR = "Parser worker was interrupted; the job has been safely re-queued."
 
+# Durable parser workers. The HTTP request only persists the source material and
+# returns a job id. MongoDB is the queue, so a browser refresh or server restart
+# does not lose the import.
+_parse_worker_tasks: List[asyncio.Task] = []
+_parse_worker_shutdown = asyncio.Event()
+
+
+def _parse_job_is_stale(job: Dict[str, Any]) -> bool:
+    if job.get("status") != "processing":
+        return False
     try:
-        timeout = max(BULK_PARSE_TOTAL_TIMEOUT_SECONDS, 90 * max(1, total))
+        updated_raw = job.get("updated_at") or job.get("started_at") or job.get("created_at")
+        updated = datetime.fromisoformat(str(updated_raw).replace("Z", "+00:00"))
+        if updated.tzinfo is None:
+            updated = updated.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - updated).total_seconds() > PARSE_JOB_STALE_SECONDS
+    except Exception:
+        return False
+
+
+async def _persist_parse_job_sources(
+    job_id: str,
+    file_sources: list[tuple],
+    url_list: List[str],
+    text_list: List[str],
+) -> None:
+    """Persist each source as its own Mongo document.
+
+    Keeping files separate avoids MongoDB's 16 MB per-document limit while
+    still allowing the worker to reconstruct the exact request after a restart.
+    Sources expire automatically after a short retention period once the TTL
+    index is present.
+    """
+    expires_at = datetime.now(timezone.utc) + timedelta(days=PARSE_JOB_SOURCE_RETENTION_DAYS)
+    rows: List[Dict[str, Any]] = []
+    order = 0
+
+    for filename, content_type, data in file_sources:
+        rows.append({
+            "id": new_id(),
+            "job_id": job_id,
+            "order": order,
+            "kind": "file",
+            "filename": filename or "file",
+            "content_type": content_type or "application/octet-stream",
+            "data": data,
+            "size": len(data or b""),
+            "created_at": now_iso(),
+            "expires_at": expires_at,
+        })
+        order += 1
+
+    for url in url_list:
+        rows.append({
+            "id": new_id(),
+            "job_id": job_id,
+            "order": order,
+            "kind": "url",
+            "value": url,
+            "created_at": now_iso(),
+            "expires_at": expires_at,
+        })
+        order += 1
+
+    for source_text in text_list:
+        rows.append({
+            "id": new_id(),
+            "job_id": job_id,
+            "order": order,
+            "kind": "text",
+            "value": source_text,
+            "created_at": now_iso(),
+            "expires_at": expires_at,
+        })
+        order += 1
+
+    if rows:
+        await db.parse_job_sources.insert_many(rows)
+
+
+async def _load_parse_job_sources(job_id: str) -> tuple[list[tuple], List[str], List[str]]:
+    rows = await db.parse_job_sources.find(
+        {"job_id": job_id},
+        {"_id": 0},
+    ).sort("order", 1).to_list(MAX_BULK_PARSE_FILES + 20)
+
+    file_sources: list[tuple] = []
+    url_list: List[str] = []
+    text_list: List[str] = []
+
+    for row in rows:
+        kind = row.get("kind")
+        if kind == "file":
+            raw = row.get("data") or b""
+            try:
+                data = bytes(raw)
+            except Exception:
+                data = raw
+            file_sources.append((
+                row.get("filename") or "file",
+                row.get("content_type") or "application/octet-stream",
+                data,
+            ))
+        elif kind == "url":
+            value = str(row.get("value") or "").strip()
+            if value:
+                url_list.append(value)
+        elif kind == "text":
+            value = str(row.get("value") or "").strip()
+            if value:
+                text_list.append(value)
+
+    return file_sources, url_list, text_list
+
+
+async def _recover_stale_parse_jobs() -> int:
+    """Re-queue jobs whose worker disappeared.
+
+    This is deliberately recovery, not failure. A deploy/restart must not force
+    the administrator to upload the same Word document or pasted text again.
+    """
+    recovered = 0
+    rows = await db.parse_jobs.find({"status": "processing"}, {"_id": 0}).to_list(500)
+    for job in rows:
+        if not _parse_job_is_stale(job):
+            continue
+        attempts = int(job.get("attempts") or 0)
+        if attempts >= PARSE_JOB_MAX_ATTEMPTS:
+            result = await db.parse_jobs.update_one(
+                {
+                    "id": job.get("id"),
+                    "status": "processing",
+                    "updated_at": job.get("updated_at"),
+                },
+                {"$set": {
+                    "status": "failed",
+                    "current": "",
+                    "error": f"Parser stopped responding after {attempts} attempts.",
+                    "updated_at": now_iso(),
+                }},
+            )
+            recovered += int(result.modified_count or 0)
+            continue
+
+        result = await db.parse_jobs.update_one(
+            {
+                "id": job.get("id"),
+                "status": "processing",
+                "updated_at": job.get("updated_at"),
+            },
+            {"$set": {
+                "status": "queued",
+                "current": "Recovering interrupted import",
+                "error": PARSE_JOB_INTERRUPTED_ERROR,
+                "worker_id": None,
+                "updated_at": now_iso(),
+            }, "$inc": {"recoveries": 1}},
+        )
+        recovered += int(result.modified_count or 0)
+    return recovered
+
+
+async def _claim_parse_job(worker_id: str) -> Optional[Dict[str, Any]]:
+    return await db.parse_jobs.find_one_and_update(
+        {
+            "status": "queued",
+            "$or": [
+                {"attempts": {"$lt": PARSE_JOB_MAX_ATTEMPTS}},
+                {"attempts": {"$exists": False}},
+            ],
+        },
+        {
+            "$set": {
+                "status": "processing",
+                "worker_id": worker_id,
+                "started_at": now_iso(),
+                "updated_at": now_iso(),
+                "current": "Preparing sources",
+                "error": None,
+            },
+            "$inc": {"attempts": 1},
+        },
+        sort=[("created_at", 1)],
+        return_document=ReturnDocument.AFTER,
+    )
+
+
+async def _run_claimed_parse_job(job: Dict[str, Any], worker_id: str) -> None:
+    job_id = str(job.get("id") or "")
+    if not job_id:
+        return
+
+    total = int(job.get("total") or 0)
+    source_org_slug = job.get("source_org_slug") or None
+
+    async def progress(done: int, current: str):
+        await db.parse_jobs.update_one(
+            {"id": job_id, "status": "processing", "worker_id": worker_id},
+            {"$set": {
+                "done": int(done or 0),
+                "current": current or "",
+                "updated_at": now_iso(),
+            }},
+        )
+
+    stop_heartbeat = asyncio.Event()
+
+    async def _heartbeat():
+        while not stop_heartbeat.is_set():
+            try:
+                await asyncio.wait_for(stop_heartbeat.wait(), timeout=PARSE_JOB_HEARTBEAT_SECONDS)
+            except asyncio.TimeoutError:
+                try:
+                    await db.parse_jobs.update_one(
+                        {"id": job_id, "status": "processing", "worker_id": worker_id},
+                        {"$set": {"updated_at": now_iso()}},
+                    )
+                except Exception:
+                    logger.exception("Parse-job heartbeat failed for %s", job_id)
+
+    heartbeat_task = asyncio.create_task(_heartbeat())
+    try:
+        file_sources, url_list, text_list = await _load_parse_job_sources(job_id)
+        loaded_total = len(file_sources) + len(url_list) + len(text_list)
+        if loaded_total == 0:
+            raise RuntimeError("The parser job has no stored source material")
+
+        if total <= 0:
+            total = loaded_total
+            await db.parse_jobs.update_one({"id": job_id}, {"$set": {"total": total}})
+
+        # Resume from checkpointed per-source results left by a previous attempt
+        # (crash/restart mid-job) instead of redoing completed sources.
+        fresh_job = await db.parse_jobs.find_one({"id": job_id}, {"_id": 0, "partial_docs": 1, "attempts": 1}) or {}
+        precomputed: list = []
+        for raw_doc in (fresh_job.get("partial_docs") or [])[:loaded_total]:
+            try:
+                precomputed.append(ParsedDocument.model_validate(raw_doc))
+            except Exception:
+                precomputed = []
+                break
+        attempts = int(fresh_job.get("attempts") or job.get("attempts") or 1)
+        if not precomputed and fresh_job.get("partial_docs"):
+            await db.parse_jobs.update_one({"id": job_id}, {"$unset": {"partial_docs": ""}})
+        # After repeated failures (likely infra/LLM trouble), finish the job in
+        # recovery mode without the LLM so admins always get reviewable drafts.
+        use_llm = attempts < max(2, PARSE_JOB_MAX_ATTEMPTS - 1)
+
+        async def checkpoint_doc(index: int, doc: ParsedDocument):
+            await db.parse_jobs.update_one(
+                {"id": job_id},
+                {"$push": {"partial_docs": doc.model_dump()}, "$set": {"updated_at": now_iso()}},
+            )
+
+        # Durable jobs are allowed enough time to finish properly. The per-source
+        # guard still protects us from genuinely wedged extractors/LLM calls.
+        total_timeout = max(PARSE_JOB_TOTAL_TIMEOUT_SECONDS, 240 * max(1, loaded_total))
         result = await _admin_parse_documents(
             file_sources,
             source_org_slug=source_org_slug,
-            urls_json=urls_json,
-            texts_json=texts_json,
+            urls_json=json.dumps(url_list, ensure_ascii=False),
+            texts_json=json.dumps(text_list, ensure_ascii=False),
             progress_cb=progress,
-            total_timeout=timeout,
+            total_timeout=total_timeout,
+            per_source_timeout=PARSE_JOB_SOURCE_TIMEOUT_SECONDS,
+            precomputed_docs=precomputed,
+            doc_cb=checkpoint_doc,
+            use_llm=use_llm,
         )
+
         await db.parse_jobs.update_one(
-            {"id": job_id},
-            {"$set": {"status": "done", "done": total, "current": "", "result": result.model_dump(), "updated_at": now_iso()}},
+            {"id": job_id, "status": "processing", "worker_id": worker_id},
+            {"$set": {
+                "status": "done",
+                "done": total,
+                "current": "",
+                "result": result.model_dump(),
+                "error": None,
+                "completed_at": now_iso(),
+                "updated_at": now_iso(),
+            }, "$unset": {"partial_docs": ""}},
         )
+    except asyncio.CancelledError:
+        # Graceful deploy/restart: put the job straight back on the durable
+        # queue so another worker can resume it immediately. A hard process
+        # crash is handled separately by stale-heartbeat recovery.
+        try:
+            await db.parse_jobs.update_one(
+                {"id": job_id, "status": "processing", "worker_id": worker_id},
+                {"$set": {
+                    "status": "queued",
+                    "current": "Server restarted — resuming import",
+                    "error": PARSE_JOB_INTERRUPTED_ERROR,
+                    "worker_id": None,
+                    "updated_at": now_iso(),
+                }, "$inc": {"recoveries": 1}},
+            )
+        except Exception:
+            pass
+        raise
     except Exception as exc:
-        logger.exception("Parse job %s failed: %s", job_id, exc)
-        await db.parse_jobs.update_one(
-            {"id": job_id},
-            {"$set": {"status": "failed", "error": str(exc), "updated_at": now_iso()}},
-        )
+        logger.exception("Parse job %s failed on worker %s: %s", job_id, worker_id, exc)
+        fresh = await db.parse_jobs.find_one({"id": job_id}, {"_id": 0, "attempts": 1}) or {}
+        attempts = int(fresh.get("attempts") or job.get("attempts") or 1)
+        if attempts < PARSE_JOB_MAX_ATTEMPTS:
+            await db.parse_jobs.update_one(
+                {"id": job_id, "status": "processing", "worker_id": worker_id},
+                {"$set": {
+                    "status": "queued",
+                    "current": "Retrying import",
+                    "error": str(exc),
+                    "worker_id": None,
+                    "updated_at": now_iso(),
+                }},
+            )
+        else:
+            await db.parse_jobs.update_one(
+                {"id": job_id},
+                {"$set": {
+                    "status": "failed",
+                    "current": "",
+                    "error": str(exc),
+                    "failed_at": now_iso(),
+                    "updated_at": now_iso(),
+                }},
+            )
+    finally:
+        stop_heartbeat.set()
+        heartbeat_task.cancel()
+        try:
+            await heartbeat_task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+
+async def _parse_job_worker(worker_number: int) -> None:
+    worker_id = f"{os.getpid()}:{worker_number}:{uuid.uuid4().hex[:8]}"
+    logger.info("Parse worker started: %s", worker_id)
+    recovery_counter = 0
+
+    while not _parse_worker_shutdown.is_set():
+        try:
+            # Periodically recover work abandoned by a killed/restarted process.
+            if recovery_counter <= 0:
+                recovered = await _recover_stale_parse_jobs()
+                if recovered:
+                    logger.warning("Recovered %s stale parse job(s)", recovered)
+                recovery_counter = 20
+            recovery_counter -= 1
+
+            job = await _claim_parse_job(worker_id)
+            if job:
+                await _run_claimed_parse_job(job, worker_id)
+                continue
+
+            try:
+                await asyncio.wait_for(_parse_worker_shutdown.wait(), timeout=PARSE_JOB_WORKER_POLL_SECONDS)
+            except asyncio.TimeoutError:
+                pass
+        except asyncio.CancelledError:
+            break
+        except Exception as exc:
+            logger.exception("Parse worker %s loop error: %s", worker_id, exc)
+            try:
+                await asyncio.wait_for(_parse_worker_shutdown.wait(), timeout=2.0)
+            except asyncio.TimeoutError:
+                pass
+
+    logger.info("Parse worker stopped: %s", worker_id)
 
 
 @api.post("/parse-content", response_model=ParseResponse)
 async def parse_content(req: ParseRequest):
     return await _parse_text_to_response(req.text, hint=req.hint)
+
+
+class PublicListSubmission(BaseModel):
+    submitter_name: str
+    submitter_email: str
+    org_name: str = ""
+    notes: str = ""
+    items: List[ParsedItem]
+
+
+PUBLIC_LIST_FALLBACK_ORG = "blackrod-sports-community-centre"
+
+
+@api.post("/public/event-list/parse")
+async def public_event_list_parse(file: UploadFile = File(...)):
+    """Deterministic-only parse for the public 'Submit your events list' page.
+    Never uses the AI: only the strict template formats are accepted, so
+    submitters (and admins) always see exactly what was written."""
+    filename = file.filename or "file"
+    data = await file.read()
+    if not data:
+        raise HTTPException(400, "The file is empty")
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise HTTPException(413, "File too large (max 10 MB)")
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    orgs = await db.orgs.find({}, {"_id": 0, "slug": 1, "name": 1}).to_list(500)
+    events = await db.events.find({}, {"_id": 0, "id": 1, "title": 1}).to_list(2000)
+
+    doc: Optional[ParsedDocument] = None
+    if ext in {"xlsx", "csv"}:
+        doc = await asyncio.to_thread(_try_structured_spreadsheet, filename, data, orgs, events)
+    elif ext in {"docx", "txt"}:
+        if ext == "docx":
+            text, _warn = await asyncio.to_thread(_extract_docx_text, data)
+        else:
+            text = data.decode("utf-8", errors="ignore")
+        doc = _try_labeled_blocks(filename, text, orgs, events)
+    else:
+        raise HTTPException(422, "Please upload a filled-in Word (.docx), Excel (.xlsx) or CSV template")
+    if not doc or not doc.items:
+        raise HTTPException(
+            422,
+            "We couldn't find the template structure in this file. Please download the Word or "
+            "spreadsheet template, fill it in without changing the labels/columns, and upload again.",
+        )
+    return {"format": doc.source_type, "count": len(doc.items), "warnings": doc.warnings, "items": [it.model_dump() for it in doc.items]}
+
+
+@api.post("/public/event-list/submit")
+async def public_event_list_submit(req: PublicListSubmission):
+    name = req.submitter_name.strip()
+    email = req.submitter_email.strip()
+    if not name or "@" not in email:
+        raise HTTPException(400, "Please provide your name and a valid email address")
+    if not req.items:
+        raise HTTPException(400, "No events to submit")
+    if len(req.items) > 100:
+        raise HTTPException(400, "Maximum 100 events per submission")
+
+    orgs = await db.orgs.find({}, {"_id": 0, "slug": 1, "name": 1}).to_list(500)
+    created_ids: list[str] = []
+    submitted_titles: list[str] = []
+    skipped: list[str] = []
+    for item in req.items:
+        if not item.title or not item.date or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", item.date or ""):
+            skipped.append(item.title or "(untitled)")
+            continue
+        org_slug = item.matched_org_slug
+        if not org_slug and (item.matched_org_name or req.org_name):
+            org_match, org_score = _best_match(item.matched_org_name or req.org_name, orgs, "name")
+            if org_match and org_score >= 0.85:
+                org_slug = org_match.get("slug")
+        org_slug = org_slug or ""  # unmatched → held for admin to assign at review (never guessed)
+        start_time = item.start_time if re.fullmatch(r"\d{2}:\d{2}", item.start_time or "") else "10:00"
+        end_time = item.end_time if re.fullmatch(r"\d{2}:\d{2}", item.end_time or "") else None
+        end_date = item.end_date if re.fullmatch(r"\d{4}-\d{2}-\d{2}", item.end_date or "") else item.date
+        end_value = end_time or start_time
+        start_iso = f"{item.date}T{start_time}:00"
+        end_iso = f"{end_date}T{end_value}:00"
+        try:
+            datetime.fromisoformat(start_iso)
+            datetime.fromisoformat(end_iso)
+        except Exception:
+            skipped.append(item.title)
+            continue
+        recurrence = None
+        if item.recurrence_freq and item.recurrence_freq != "none":
+            recurrence = EventRecurrence(freq=item.recurrence_freq)
+        evt = Event(
+            title=item.title.strip(),
+            orgSlug=org_slug,
+            category=item.category or "Community",
+            start=start_iso,
+            end=end_iso,
+            venue=item.location or "",
+            address=item.address or item.location or "",
+            description=item.description or item.title,
+            cost=item.cost or "",
+            age=item.age or "",
+            accessibility=item.accessibility or "",
+            booking=item.booking or item.url or "",
+            contactEmail=item.contact_email or "",
+            contactPhone=item.contact_phone or "",
+            image=item.image or "",
+            featured=False,
+            status="pending",  # NEVER auto-published — admin must approve each one
+            recurrence=recurrence,
+        )
+        if _is_blank_or_legacy_event_image(evt.image):
+            evt.image = _event_category_image(evt.category)
+        await db.events.insert_one(evt.model_dump())
+        created_ids.append(evt.id)
+        submitted_titles.append(evt.title)
+
+    if not created_ids:
+        raise HTTPException(400, "No valid events found — every event needs at least a title and a date")
+
+    submission = {
+        "id": new_id(),
+        "submitter_name": name,
+        "submitter_email": email,
+        "org_name": req.org_name.strip(),
+        "notes": req.notes.strip()[:2000],
+        "event_ids": created_ids,
+        "skipped": skipped,
+        "created_at": now_iso(),
+    }
+    await db.bulk_submissions.insert_one(submission)
+    await _audit(
+        action="public_event_list_submitted",
+        entity_type="event",
+        entity_id=submission["id"],
+        summary=f"Public events list from {name} ({email}): {len(created_ids)} pending event(s)",
+        meta={"event_ids": created_ids, "org_name": req.org_name, "skipped": skipped},
+        actor="public",
+    )
+
+    # Best-effort notifications (never block or fail the submission)
+    titles_html = "".join(f"<li>{html.escape(t)}</li>" for t in submitted_titles[:30])
+    org_line = f" for <strong>{html.escape(req.org_name.strip())}</strong>" if req.org_name.strip() else ""
+    admin_to = os.environ.get("ADMIN_NOTIFY_EMAIL") or SENDER_EMAIL
+    admin_html = (
+        f"<h2>New events list submitted</h2>"
+        f"<p><strong>{html.escape(name)}</strong> ({html.escape(email)}) submitted "
+        f"{len(created_ids)} event(s){org_line}.</p>"
+        f"<ul>{titles_html}</ul>"
+        + (f"<p>Notes: {html.escape(req.notes.strip())}</p>" if req.notes.strip() else "")
+        + f"<p>All are <strong>pending</strong> — review and approve them in the admin dashboard: "
+        f"<a href=\"{PUBLIC_URL.rstrip('/')}/admin\">{PUBLIC_URL.rstrip('/')}/admin</a></p>"
+    )
+    submitter_html = (
+        f"<h2>We've received your events list</h2>"
+        f"<p>Hi {html.escape(name)},</p>"
+        f"<p>Thanks — we've received {len(created_ids)} event(s){org_line}. "
+        f"The Blackrod Now team will check the details and publish them once approved. "
+        f"Nothing appears on the site until it has been reviewed.</p>"
+        f"<ul>{titles_html}</ul>"
+        f"<p>If anything needs correcting, just reply to this email.</p>"
+        f"<p>— Blackrod Now</p>"
+    )
+
+    def _notify():
+        resend_send(admin_to, f"New events list: {len(created_ids)} event(s) from {name}", admin_html)
+        resend_send(email, "Your events list is under review — Blackrod Now", submitter_html)
+
+    asyncio.create_task(asyncio.to_thread(_notify))
+    return {"ok": True, "created": len(created_ids), "skipped": skipped, "status": "pending_review"}
+
+
+class AdminCheckReq(BaseModel):
+    kind: Literal["event", "org"]
+    id: str
+
+
+CHECK_VERDICTS = {"looks_accurate", "needs_attention", "likely_outdated", "could_not_verify"}
+
+
+@api.post("/admin/check")
+async def admin_check_entity(req: AdminCheckReq):
+    """Fact-check an event or organisation against the live web (Claude web search)."""
+    if req.kind == "event":
+        entity = await db.events.find_one({"id": req.id}, {"_id": 0})
+        if not entity:
+            raise HTTPException(404, "Event not found")
+        org = await db.orgs.find_one({"slug": entity.get("orgSlug")}, {"_id": 0, "name": 1, "website": 1, "socials": 1}) or {}
+        facts = {
+            "event_title": entity.get("title"),
+            "date_start": entity.get("start"),
+            "venue": entity.get("venue"),
+            "address": entity.get("address"),
+            "cost": entity.get("cost"),
+            "booking": entity.get("booking"),
+            "recurrence": (entity.get("recurrence") or {}).get("freq"),
+            "description": (entity.get("description") or "")[:400],
+            "organisation": org.get("name"),
+            "org_website": org.get("website"),
+            "org_socials": org.get("socials"),
+        }
+        subject = f'the community event "{entity.get("title")}"'
+    else:
+        entity = await db.orgs.find_one({"slug": req.id}, {"_id": 0})
+        if not entity:
+            raise HTTPException(404, "Organisation not found")
+        facts = {
+            "name": entity.get("name"),
+            "category": entity.get("category"),
+            "description": (entity.get("description") or "")[:400],
+            "website": entity.get("website"),
+            "socials": entity.get("socials"),
+            "email": entity.get("email"),
+            "phone": entity.get("phone"),
+            "meeting_info": entity.get("meeting_info") or entity.get("meets"),
+        }
+        subject = f'the community organisation "{entity.get("name")}"'
+
+    if not await _ensure_llm_loaded():
+        raise HTTPException(503, "The AI checker isn't available right now — try again shortly")
+    from emergentintegrations.llm.chat import LlmChat, UserMessage
+
+    system = (
+        "You are a careful fact-checker for Blackrod Now, a community website for Blackrod, Bolton, UK. "
+        "Use web search to verify whether the listing below is accurate and still active/running. "
+        "Prioritise the organisation's own website/Facebook page, Bolton Council and local news. "
+        "Be conservative: if you cannot find clear evidence either way, say so rather than guessing. "
+        "Respond with ONLY a JSON object, no markdown: "
+        '{"verdict": one of "looks_accurate"|"needs_attention"|"likely_outdated"|"could_not_verify", '
+        '"summary": "2-3 plain-English sentences for the site admin", '
+        '"issues": ["specific discrepancy or concern", ...] (empty list if none), '
+        '"sources": [{"url": "...", "title": "..."}, ...]}'
+    )
+    chat = (
+        LlmChat(api_key=EMERGENT_LLM_KEY, session_id=f"check-{new_id()}", system_message=system)
+        .with_model("anthropic", "claude-sonnet-4-5-20250929")
+        .with_tools([{"type": "web_search_20250305", "name": "web_search", "max_uses": 4}])
+    )
+    try:
+        raw = await asyncio.wait_for(
+            chat.send_message_with_tools(UserMessage(text=f"Verify {subject}. Current listing data:\n{json.dumps(facts, ensure_ascii=False)}")),
+            timeout=150,
+        )
+        content = getattr(raw, "content", None) or str(raw)
+        cleaned = re.sub(r"^```(?:json)?|```$", "", content.strip(), flags=re.M).strip()
+        m = re.search(r"\{.*\}", cleaned, re.S)
+        data = json.loads(m.group(0) if m else cleaned)
+    except asyncio.TimeoutError:
+        raise HTTPException(504, "The check took too long — please try again")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("admin_check failed: %s", exc)
+        raise HTTPException(502, "The checker couldn't complete — please try again")
+
+    result = {
+        "verdict": data.get("verdict") if data.get("verdict") in CHECK_VERDICTS else "could_not_verify",
+        "summary": str(data.get("summary") or "")[:1200],
+        "issues": [str(i)[:300] for i in (data.get("issues") or [])][:8],
+        "sources": [
+            {"url": str(s.get("url") or "")[:400], "title": str(s.get("title") or "")[:160]}
+            for s in (data.get("sources") or []) if isinstance(s, dict) and s.get("url")
+        ][:6],
+        "checked_at": now_iso(),
+    }
+    if req.kind == "event":
+        await db.events.update_one({"id": req.id}, {"$set": {"check_result": result}})
+    else:
+        await db.orgs.update_one({"slug": req.id}, {"$set": {"check_result": result}})
+    await _audit(
+        action="entity_checked",
+        entity_type=req.kind,
+        entity_id=req.id,
+        summary=f"Web check ({result['verdict']}): {subject}",
+        meta={"verdict": result["verdict"]},
+        actor="admin",
+    )
+    return result
+
+
+# ─────────── AI accuracy audit (bulk event check + approval queue) ───────────
+
+AUDIT_EDITABLE_FIELDS = {"title", "start", "end", "venue", "address", "cost", "booking", "description", "orgSlug"}
+
+
+async def _audit_check_single_event(event: dict) -> dict:
+    """Web-search accuracy check for one event, returning verdict + proposed field edits."""
+    org = await db.orgs.find_one({"slug": event.get("orgSlug")}, {"_id": 0, "name": 1, "website": 1, "socials": 1}) or {}
+    facts = {
+        "event_title": event.get("title"),
+        "date_start": event.get("start"),
+        "date_end": event.get("end"),
+        "venue": event.get("venue"),
+        "address": event.get("address"),
+        "cost": event.get("cost"),
+        "booking": event.get("booking"),
+        "recurrence": (event.get("recurrence") or {}).get("freq"),
+        "description": (event.get("description") or "")[:400],
+        "organisation": org.get("name"),
+        "org_website": org.get("website"),
+        "org_socials": org.get("socials"),
+    }
+    if not await _ensure_llm_loaded():
+        raise RuntimeError("LLM unavailable")
+    from emergentintegrations.llm.chat import LlmChat, UserMessage
+
+    system = (
+        "You are a careful fact-checker for Blackrod Now, a community website for Blackrod, Bolton, UK. "
+        "Use web search to verify whether the event listing below is accurate and still going ahead. "
+        "Prioritise the organisation's own website/Facebook page, Bolton Council and local news. "
+        "Be conservative: only propose an edit when a reliable source CLEARLY contradicts the listing — never guess. "
+        "Never propose changing a date/time to one in the past; if a source only shows a previous year's edition of the event, do not propose a date edit. "
+        "Respond with ONLY a JSON object, no markdown: "
+        '{"verdict": one of "looks_accurate"|"needs_attention"|"likely_outdated"|"could_not_verify", '
+        '"summary": "2-3 plain-English sentences for the site admin", '
+        '"issues": ["specific discrepancy or concern", ...] (empty list if none), '
+        '"proposed_edits": [{"field": one of "title"|"start"|"end"|"venue"|"address"|"cost"|"booking"|"description"|"organisation", '
+        '"new_value": "corrected value", "evidence": "one sentence on what the source says", "source_url": "https://..."}] '
+        "(empty list if everything checks out; for start/end use UK local time format YYYY-MM-DDTHH:MM:SS with no timezone suffix; "
+        'for "organisation" set new_value to the NAME of the organisation that actually runs this event, only when the listing clearly credits the wrong one), '
+        '"sources": [{"url": "...", "title": "..."}, ...]}'
+    )
+    chat = (
+        LlmChat(api_key=EMERGENT_LLM_KEY, session_id=f"audit-{new_id()}", system_message=system)
+        .with_model("anthropic", "claude-sonnet-4-5-20250929")
+        .with_tools([{"type": "web_search_20250305", "name": "web_search", "max_uses": 4}])
+    )
+    raw = await asyncio.wait_for(
+        chat.send_message_with_tools(UserMessage(text=f"Verify this community event listing:\n{json.dumps(facts, ensure_ascii=False)}")),
+        timeout=150,
+    )
+    content = getattr(raw, "content", None) or str(raw)
+    cleaned = re.sub(r"^```(?:json)?|```$", "", content.strip(), flags=re.M).strip()
+    m = re.search(r"\{.*\}", cleaned, re.S)
+    return json.loads(m.group(0) if m else cleaned)
+
+
+async def _audit_sanitise_changes(event: dict, data: dict) -> List[dict]:
+    changes: List[dict] = []
+    for edit in (data.get("proposed_edits") or [])[:8]:
+        if not isinstance(edit, dict):
+            continue
+        field = edit.get("field")
+        new_value = str(edit.get("new_value") or "").strip()
+        if not new_value:
+            continue
+        evidence = str(edit.get("evidence") or "")[:400]
+        source_url = str(edit.get("source_url") or "")[:400]
+        if field == "organisation":
+            target = await db.orgs.find_one(
+                {"name": {"$regex": f"^{re.escape(new_value)}$", "$options": "i"}},
+                {"_id": 0, "slug": 1, "name": 1},
+            )
+            if not target or target["slug"] == (event.get("orgSlug") or ""):
+                continue
+            current = await db.orgs.find_one({"slug": event.get("orgSlug")}, {"_id": 0, "name": 1})
+            changes.append({
+                "field": "orgSlug",
+                "old": str(event.get("orgSlug") or ""),
+                "new": target["slug"],
+                "old_display": (current or {}).get("name") or (event.get("orgSlug") or "—"),
+                "new_display": target["name"],
+                "evidence": evidence,
+                "source_url": source_url,
+            })
+            continue
+        if field not in AUDIT_EDITABLE_FIELDS or field == "orgSlug":
+            continue
+        if field in ("start", "end"):
+            new_value = new_value[:19]
+            try:
+                datetime.fromisoformat(new_value)
+            except Exception:
+                continue
+            # Never suggest moving an event into the past (stale web sources).
+            if new_value[:10] < datetime.now(UK_TZ).strftime("%Y-%m-%d"):
+                continue
+        old_value = str(event.get(field) or "")
+        if new_value == old_value:
+            continue
+        changes.append({
+            "field": field,
+            "old": old_value,
+            "new": new_value,
+            "evidence": evidence,
+            "source_url": source_url,
+        })
+    return changes
+
+
+async def _run_event_audit_job(job_id: str, mode: str, limit: Optional[int] = None) -> None:
+    try:
+        today = datetime.now(UK_TZ).strftime("%Y-%m-%d")
+        rows = await db.events.find({"status": "approved"}, {"_id": 0}).to_list(3000)
+        upcoming = []
+        for e in rows:
+            rec = e.get("recurrence") or {}
+            recurring = (rec.get("freq") or "none") != "none" and (not rec.get("until") or str(rec.get("until"))[:10] >= today)
+            if recurring or str(e.get("end") or e.get("start") or "")[:10] >= today:
+                upcoming.append(e)
+        if mode == "new":
+            upcoming = [e for e in upcoming if not e.get("last_audit_at")]
+        if limit:
+            upcoming = upcoming[:limit]
+        await db.audit_jobs.update_one({"id": job_id}, {"$set": {"total": len(upcoming), "status": "running", "updated_at": now_iso()}})
+
+        done = proposals = errors = 0
+        for e in upcoming:
+            await db.audit_jobs.update_one({"id": job_id}, {"$set": {"current_title": e.get("title") or "", "updated_at": now_iso()}})
+            try:
+                data = await _audit_check_single_event(e)
+                result = {
+                    "verdict": data.get("verdict") if data.get("verdict") in CHECK_VERDICTS else "could_not_verify",
+                    "summary": str(data.get("summary") or "")[:1200],
+                    "issues": [str(i)[:300] for i in (data.get("issues") or [])][:8],
+                    "sources": [
+                        {"url": str(s.get("url") or "")[:400], "title": str(s.get("title") or "")[:160]}
+                        for s in (data.get("sources") or []) if isinstance(s, dict) and s.get("url")
+                    ][:6],
+                    "checked_at": now_iso(),
+                }
+                await db.events.update_one({"id": e["id"]}, {"$set": {"check_result": result, "last_audit_at": now_iso()}})
+                changes = await _audit_sanitise_changes(e, data)
+                if changes:
+                    await db.event_edit_proposals.delete_many({"event_id": e["id"], "status": "pending"})
+                    await db.event_edit_proposals.insert_one({
+                        "id": new_id(),
+                        "event_id": e["id"],
+                        "event_title": e.get("title") or "",
+                        "org_slug": e.get("orgSlug") or "",
+                        "verdict": result["verdict"],
+                        "summary": result["summary"],
+                        "changes": changes,
+                        "sources": result["sources"],
+                        "status": "pending",
+                        "created_at": now_iso(),
+                        "job_id": job_id,
+                    })
+                    proposals += 1
+            except Exception as exc:
+                logger.warning("AI audit failed for event %s: %s", e.get("id"), exc)
+                errors += 1
+            done += 1
+            await db.audit_jobs.update_one(
+                {"id": job_id},
+                {"$set": {"done": done, "proposals": proposals, "errors": errors, "updated_at": now_iso()}},
+            )
+
+        await db.audit_jobs.update_one(
+            {"id": job_id},
+            {"$set": {"status": "done", "current_title": "", "finished_at": now_iso(), "updated_at": now_iso()}},
+        )
+        await _audit(
+            action="ai_audit_finished",
+            entity_type="event",
+            entity_id=job_id,
+            summary=f"AI accuracy audit finished — {done} checked, {proposals} suggested edits, {errors} errors",
+        )
+    except Exception as exc:
+        logger.exception("AI audit job %s crashed: %s", job_id, exc)
+        await db.audit_jobs.update_one(
+            {"id": job_id},
+            {"$set": {"status": "failed", "error": str(exc)[:400], "finished_at": now_iso(), "updated_at": now_iso()}},
+        )
+
+
+class AuditStartReq(BaseModel):
+    mode: Literal["new", "all"] = "new"
+    limit: Optional[int] = None
+
+
+@api.post("/admin/events/audit")
+async def start_event_audit(
+    req: AuditStartReq,
+    request: Request,
+    authorization: Optional[str] = Header(None),
+    admin_code: Optional[str] = Header(None, alias="X-Admin-Code"),
+):
+    _require_admin_from_request(request, authorization, admin_code)
+    running = await db.audit_jobs.find_one({"status": {"$in": ["queued", "running"]}}, {"_id": 0})
+    if running:
+        stale_cutoff = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
+        if (running.get("updated_at") or running.get("created_at") or "") < stale_cutoff:
+            await db.audit_jobs.update_one(
+                {"id": running["id"]},
+                {"$set": {"status": "failed", "error": "Stale — backend restarted mid-run", "finished_at": now_iso()}},
+            )
+        else:
+            raise HTTPException(409, "An audit is already running — wait for it to finish")
+    job = {
+        "id": new_id(), "status": "queued", "mode": req.mode,
+        "total": 0, "done": 0, "proposals": 0, "errors": 0,
+        "current_title": "", "created_at": now_iso(), "updated_at": now_iso(),
+    }
+    await db.audit_jobs.insert_one(dict(job))
+    asyncio.create_task(_run_event_audit_job(job["id"], req.mode, req.limit))
+    await _audit(action="ai_audit_started", entity_type="event", entity_id=job["id"], summary=f"AI accuracy audit started (mode: {req.mode})")
+    return job
+
+
+@api.get("/admin/events/audit/status")
+async def event_audit_status(
+    request: Request,
+    authorization: Optional[str] = Header(None),
+    admin_code: Optional[str] = Header(None, alias="X-Admin-Code"),
+):
+    _require_admin_from_request(request, authorization, admin_code)
+    job = await db.audit_jobs.find_one({}, {"_id": 0}, sort=[("created_at", -1)])
+    pending = await db.event_edit_proposals.count_documents({"status": "pending"})
+    return {"job": job, "pending_proposals": pending}
+
+
+@api.get("/admin/event-edit-proposals")
+async def list_event_edit_proposals(
+    request: Request,
+    status: str = "pending",
+    authorization: Optional[str] = Header(None),
+    admin_code: Optional[str] = Header(None, alias="X-Admin-Code"),
+):
+    _require_admin_from_request(request, authorization, admin_code)
+    return await db.event_edit_proposals.find({"status": status}, {"_id": 0}).sort("created_at", -1).to_list(200)
+
+
+class ProposalDecisionReq(BaseModel):
+    fields: Optional[List[str]] = None
+
+
+@api.post("/admin/event-edit-proposals/{pid}/approve")
+async def approve_event_edit_proposal(
+    pid: str,
+    req: ProposalDecisionReq,
+    request: Request,
+    authorization: Optional[str] = Header(None),
+    admin_code: Optional[str] = Header(None, alias="X-Admin-Code"),
+):
+    _require_admin_from_request(request, authorization, admin_code)
+    p = await db.event_edit_proposals.find_one({"id": pid, "status": "pending"}, {"_id": 0})
+    if not p:
+        raise HTTPException(404, "Suggestion not found or already decided")
+    selected = set(req.fields) if req.fields else {c["field"] for c in p.get("changes", [])}
+    updates = {
+        c["field"]: c["new"]
+        for c in p.get("changes", [])
+        if c["field"] in selected and c["field"] in AUDIT_EDITABLE_FIELDS
+    }
+    if not updates:
+        raise HTTPException(400, "No field changes selected")
+    event = await db.events.find_one({"id": p["event_id"]}, {"_id": 0})
+    if not event:
+        raise HTTPException(404, "The event no longer exists")
+    merged_start = str(updates.get("start", event.get("start") or ""))[:19]
+    merged_end = str(updates.get("end", event.get("end") or ""))[:19]
+    if merged_start and merged_end and merged_end < merged_start:
+        raise HTTPException(400, "That change would put the end before the start — approve both date fields together or edit the event manually")
+    if "orgSlug" in updates and not await db.orgs.find_one({"slug": updates["orgSlug"]}, {"_id": 0, "slug": 1}):
+        raise HTTPException(400, "The suggested organisation no longer exists")
+    await db.events.update_one({"id": p["event_id"]}, {"$set": updates})
+    await db.event_edit_proposals.update_one(
+        {"id": pid},
+        {"$set": {"status": "approved", "applied_fields": sorted(updates.keys()), "decided_at": now_iso()}},
+    )
+    await _audit(
+        action="ai_edit_approved",
+        entity_type="event",
+        entity_id=p["event_id"],
+        summary=f"AI-suggested edit approved for \"{p.get('event_title')}\" ({', '.join(sorted(updates.keys()))})",
+        meta={"proposal_id": pid, "applied": updates},
+    )
+    return {"ok": True, "applied": sorted(updates.keys())}
+
+
+@api.post("/admin/event-edit-proposals/{pid}/reject")
+async def reject_event_edit_proposal(
+    pid: str,
+    request: Request,
+    authorization: Optional[str] = Header(None),
+    admin_code: Optional[str] = Header(None, alias="X-Admin-Code"),
+):
+    _require_admin_from_request(request, authorization, admin_code)
+    p = await db.event_edit_proposals.find_one({"id": pid, "status": "pending"}, {"_id": 0})
+    if not p:
+        raise HTTPException(404, "Suggestion not found or already decided")
+    await db.event_edit_proposals.update_one({"id": pid}, {"$set": {"status": "rejected", "decided_at": now_iso()}})
+    await _audit(
+        action="ai_edit_rejected",
+        entity_type="event",
+        entity_id=p["event_id"],
+        summary=f"AI-suggested edit rejected for \"{p.get('event_title')}\"",
+        meta={"proposal_id": pid},
+    )
+    return {"ok": True}
+
+
+@api.get("/sitemap.xml")
+async def sitemap_xml(request: Request):
+    base = _abs_base_url(request)
+    static_paths = ["", "/events", "/organisations", "/volunteering", "/venues", "/local-feed", "/submit-event", "/submit-events-list", "/contact", "/faq"]
+    urls: list[str] = [f"<url><loc>{base}{p}</loc><changefreq>daily</changefreq></url>" for p in static_paths]
+    horizon = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+    events = await db.events.find(
+        {"status": "approved"}, {"_id": 0, "id": 1, "start": 1, "recurrence": 1}
+    ).to_list(2000)
+    for e in events:
+        rec = e.get("recurrence") or {}
+        if (e.get("start") or "") < horizon and (rec.get("freq") or "none") == "none" and not rec.get("extra_dates"):
+            continue
+        urls.append(f"<url><loc>{base}/events/{e['id']}</loc><changefreq>weekly</changefreq></url>")
+    orgs = await db.orgs.find({"status": {"$ne": "pending"}}, {"_id": 0, "slug": 1}).to_list(500)
+    for o in orgs:
+        urls.append(f"<url><loc>{base}/organisations/{o['slug']}</loc><changefreq>weekly</changefreq></url>")
+    xml = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">' + "".join(urls) + "</urlset>"
+    )
+    return Response(content=xml, media_type="application/xml", headers={"Cache-Control": "public, max-age=3600"})
+
+
+@api.post("/admin/events/archive-past")
+async def admin_archive_past_events():
+    """Archive every non-recurring approved event that has fully finished, plus
+    recurring events whose 'until' date has passed."""
+    now = datetime.now(timezone.utc).isoformat()
+    events = await db.events.find({"status": "approved"}, {"_id": 0, "id": 1, "title": 1, "start": 1, "end": 1, "recurrence": 1}).to_list(3000)
+    to_archive: list[str] = []
+    for e in events:
+        rec = e.get("recurrence") or {}
+        freq = rec.get("freq") or "none"
+        latest = e.get("end") or e.get("start") or ""
+        if freq != "none" or rec.get("extra_dates"):
+            until = rec.get("until") or ""
+            extras = [f"{d}T23:59:59+00:00" for d in (rec.get("extra_dates") or [])]
+            candidates = [c for c in [until, latest] + extras if c]
+            if not until and freq != "none":
+                continue  # open-ended recurring event — still active
+            if max(candidates) >= now:
+                continue
+        elif latest >= now:
+            continue
+        to_archive.append(e["id"])
+    if to_archive:
+        await db.events.update_many({"id": {"$in": to_archive}}, {"$set": {"status": "archived", "archived_at": now_iso()}})
+        await _audit(action="events_archived", entity_type="event", entity_id="bulk", summary=f"Archived {len(to_archive)} past event(s)", meta={"count": len(to_archive)}, actor="admin")
+    return {"ok": True, "archived": len(to_archive)}
+
+
+@api.post("/admin/events/{event_id}/restore")
+async def admin_restore_event(event_id: str):
+    res = await db.events.update_one({"id": event_id, "status": "archived"}, {"$set": {"status": "approved"}, "$unset": {"archived_at": ""}})
+    if not res.matched_count:
+        raise HTTPException(404, "Archived event not found")
+    return {"ok": True}
+
+
+@api.get("/admin/documents/template.docx")
+async def bulk_import_word_template():
+    """Blank Word template matching the labeled-block parser's format."""
+    from docx import Document
+    from docx.shared import Pt
+
+    doc = Document()
+    doc.add_heading("Blackrod Now — Bulk Event Upload", 0)
+    intro = doc.add_paragraph(
+        "Fill in one numbered block per event using the labels below, then upload this "
+        "document via Admin → Bulk document import. Every field is read exactly as written — "
+        "no AI guesswork. Leave a field as 'Not published' (or delete the line) if unknown."
+    )
+    intro.runs[0].font.size = Pt(10)
+
+    def block(n, values):
+        doc.add_heading(f"{n}. {values['Event title']}", level=2)
+        for i, (label, value) in enumerate(values.items(), start=1):
+            doc.add_paragraph(f"{i}. {label}: {value}")
+
+    block(1, {
+        "Event title": "Example Coffee Morning",
+        "Organisation": "Blackrod Community Group",
+        "Category": "community",
+        "Date": "Tuesday 6 October 2026",
+        "Start": "10:00",
+        "End": "11:30",
+        "Venue": "Blackrod Community Centre",
+        "Address": "Blackrod, Bolton, BL6",
+        "Description": "Friendly weekly coffee morning — everyone welcome.",
+        "Cost": "Free",
+        "Age suitability": "All ages",
+        "Accessibility": "Step-free access",
+        "Booking link": "Not published",
+        "Email": "hello@example.org",
+        "Phone": "01204 000000",
+        "Image URL": "Not published",
+        "Repeats": "Yes — Tuesdays",
+    })
+    block(2, {
+        "Event title": "Example Christmas Fair",
+        "Organisation": "St Katharine's Church",
+        "Category": "family",
+        "Date": "Saturday 5 December 2026",
+        "Start": "11:00",
+        "End": "15:00",
+        "Venue": "Church Hall",
+        "Address": "Church Street, Blackrod",
+        "Description": "Stalls, mulled wine and Santa's grotto.",
+        "Cost": "50p entry",
+        "Age suitability": "All ages",
+        "Accessibility": "Accessible entrance at the rear",
+        "Booking link": "https://example.org/fair",
+        "Email": "Not published",
+        "Phone": "Not published",
+        "Image URL": "Not published",
+        "Repeats": "No — one-off",
+    })
+    buf = BytesIO()
+    doc.save(buf)
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": 'attachment; filename="blackrod-now-events-template.docx"'},
+    )
 
 
 @api.get("/admin/documents/template.xlsx")
@@ -4858,14 +8929,26 @@ async def bulk_import_template():
     wb = Workbook()
     ws = wb.active
     ws.title = "Events"
-    headers = ["Organisation", "Title", "Date", "Time/s", "Venue", "Category", "Fee", "URL", "Booking info"]
+    headers = [
+        "Organisation", "Title", "Date", "End date", "Start time", "End time", "Venue", "Address",
+        "Category", "Fee", "Age", "Accessibility", "Booking info", "URL", "Contact email", "Contact phone",
+        "Repeats", "Description",
+    ]
     ws.append(headers)
     for cell in ws[1]:
         cell.font = Font(bold=True, color="FFFFFF")
         cell.fill = PatternFill(start_color="0052FF", end_color="0052FF", fill_type="solid")
-    ws.append(["Blackrod Library", "Summer Craft Morning", "2026-07-21", "10am-12pm", "Blackrod Library", "Family", "Free", "https://example.org/craft", "Just turn up"])
-    ws.append(["St Katharine's Church", "Heritage Talk", "05/08/2026", "7:30pm", "Church Hall", "Heritage", "£3", "", "Book via 01204 000000"])
-    widths = [24, 30, 14, 14, 24, 16, 10, 30, 26]
+    ws.append([
+        "Blackrod Library", "Summer Craft Morning", "2026-07-21", "", "10am", "12pm", "Blackrod Library",
+        "Church Street, Blackrod BL6 5EQ", "Family", "Free", "All ages", "Step-free access", "Just turn up",
+        "https://example.org/craft", "library@example.org", "01204 000000", "", "Crafts, stories and songs for families.",
+    ])
+    ws.append([
+        "St Katharine's Church", "Heritage Talk", "05/08/2026", "", "7:30pm", "9pm", "Church Hall",
+        "Blackrod Brow, Blackrod BL6 5NA", "Heritage", "£3", "Adults", "Hearing loop", "Book via 01204 000000",
+        "", "", "01204 000000", "First Wednesday of the month", "A talk on the history of Blackrod.",
+    ])
+    widths = [24, 30, 12, 12, 11, 11, 24, 30, 16, 10, 14, 18, 26, 30, 24, 16, 24, 40]
     for i, w in enumerate(widths, start=1):
         ws.column_dimensions[ws.cell(row=1, column=i).column_letter].width = w
     buf = BytesIO()
@@ -4895,34 +8978,91 @@ async def admin_create_parse_job(
     urls_json: Optional[str] = Form(None),
     texts_json: Optional[str] = Form(None),
 ):
+    # IMPORTANT: this endpoint does no parsing. It only validates + persists the
+    # sources, then returns immediately. A durable Mongo-backed worker processes
+    # the job independently of the browser request.
     file_sources = await _read_upload_sources(files)
-    url_count = len(_decode_bulk_sources(urls_json))
-    text_count = len(_decode_bulk_sources(texts_json))
-    total = len(file_sources) + url_count + text_count
+    url_list = _decode_bulk_sources(urls_json)
+    text_list = _decode_bulk_sources(texts_json)
+    total = len(file_sources) + len(url_list) + len(text_list)
+
     if total == 0:
         raise HTTPException(400, "Add files, links or pasted text first")
     if total > MAX_BULK_PARSE_FILES:
         raise HTTPException(400, f"Upload at most {MAX_BULK_PARSE_FILES} total sources per bulk parse request")
+    if source_org_slug:
+        await _find_org(source_org_slug)
+
     job_id = new_id()
-    await db.parse_jobs.insert_one({
+    job = {
         "id": job_id,
-        "status": "processing",
+        "status": "queued",
         "total": total,
         "done": 0,
-        "current": "",
+        "current": "Waiting for parser",
         "error": None,
+        "source_org_slug": source_org_slug or "",
+        "file_count": len(file_sources),
+        "url_count": len(url_list),
+        "text_count": len(text_list),
+        "attempts": 0,
+        "recoveries": 0,
         "created_at": now_iso(),
         "updated_at": now_iso(),
-    })
-    asyncio.create_task(_run_parse_job(job_id, file_sources, source_org_slug, urls_json, texts_json, total))
-    return {"job_id": job_id, "total": total, "status": "processing"}
+    }
+
+    await db.parse_jobs.insert_one(dict(job))
+    try:
+        await _persist_parse_job_sources(job_id, file_sources, url_list, text_list)
+    except Exception as exc:
+        await db.parse_jobs.delete_one({"id": job_id})
+        await db.parse_job_sources.delete_many({"job_id": job_id})
+        logger.exception("Could not persist parse-job sources for %s: %s", job_id, exc)
+        raise HTTPException(500, "Could not safely queue the import. Nothing was parsed; please try again.")
+
+    return {
+        "job_id": job_id,
+        "total": total,
+        "status": "queued",
+        "message": "Import safely queued",
+    }
 
 
 @api.get("/admin/documents/parse-jobs/{job_id}")
 async def admin_get_parse_job(job_id: str):
-    job = await db.parse_jobs.find_one({"id": job_id}, {"_id": 0})
+    job = await db.parse_jobs.find_one({"id": job_id}, {"_id": 0, "partial_docs": 0})
     if not job:
         raise HTTPException(404, "Parse job not found")
+
+    # A stale processing job is recoverable. Re-queue it rather than telling the
+    # administrator to upload the source again.
+    if _parse_job_is_stale(job):
+        attempts = int(job.get("attempts") or 0)
+        target_status = "failed" if attempts >= PARSE_JOB_MAX_ATTEMPTS else "queued"
+        target_error = (
+            f"Parser stopped responding after {attempts} attempts."
+            if target_status == "failed"
+            else PARSE_JOB_INTERRUPTED_ERROR
+        )
+        await db.parse_jobs.update_one(
+            {
+                "id": job_id,
+                "status": "processing",
+                "updated_at": job.get("updated_at"),
+            },
+            {
+                "$set": {
+                    "status": target_status,
+                    "current": "" if target_status == "failed" else "Recovering interrupted import",
+                    "error": target_error,
+                    "worker_id": None,
+                    "updated_at": now_iso(),
+                },
+                "$inc": {"recoveries": 1},
+            },
+        )
+        job = await db.parse_jobs.find_one({"id": job_id}, {"_id": 0}) or job
+
     return job
 
 
@@ -4946,10 +9086,9 @@ def _render_welcome(email: str, unsub_link: str, pref_link: str) -> str:
 
 def _gcal_url(event: dict) -> str:
     """Google Calendar 'add event' URL — works from any email client."""
-    try:
-        start = datetime.fromisoformat((event.get("start") or "").replace("Z", "+00:00"))
-        end = datetime.fromisoformat((event.get("end") or event.get("start") or "").replace("Z", "+00:00"))
-    except Exception:
+    start = _uk_wall(event.get("start") or "")
+    end = _uk_wall(event.get("end") or event.get("start") or "")
+    if not start or not end:
         return ""
     def _fmt(dt: datetime) -> str:
         return dt.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -4965,10 +9104,9 @@ def _gcal_url(event: dict) -> str:
 
 
 def _outlook_url(event: dict) -> str:
-    try:
-        start = datetime.fromisoformat((event.get("start") or "").replace("Z", "+00:00"))
-        end = datetime.fromisoformat((event.get("end") or event.get("start") or "").replace("Z", "+00:00"))
-    except Exception:
+    start = _uk_wall(event.get("start") or "")
+    end = _uk_wall(event.get("end") or event.get("start") or "")
+    if not start or not end:
         return ""
     from urllib.parse import urlencode
     params = {
@@ -4983,75 +9121,177 @@ def _outlook_url(event: dict) -> str:
     return "https://outlook.live.com/calendar/0/deeplink/compose?" + urlencode(params, safe=":/")
 
 
-def _render_digest(sub: dict, events: List[dict], updates: List[dict]) -> str:
-    unsub = f"{PUBLIC_URL}/unsubscribe/{sub['unsub_token']}"
-    pref = f"{PUBLIC_URL}/preferences/{sub['pref_token']}"
-    def fmt_time(iso):
-        try:
-            return datetime.fromisoformat(iso.replace("Z", "+00:00")).strftime("%a %d %b · %H:%M")
-        except Exception:
-            return ""
-    def _event_row(e: dict) -> str:
-        gcal = _gcal_url(e)
-        outlook = _outlook_url(e)
-        ics = f"{PUBLIC_URL}/api/events/{e.get('id')}.ics" if e.get("id") else ""
-        cal_row = "".join([
-            f'<a href="{gcal}" style="display:inline-block;margin-right:8px;padding:6px 12px;border-radius:999px;background:#0052FF;color:#fff;font-size:12px;text-decoration:none;font-weight:700">Google</a>' if gcal else "",
-            f'<a href="{outlook}" style="display:inline-block;margin-right:8px;padding:6px 12px;border-radius:999px;background:#0F172A;color:#fff;font-size:12px;text-decoration:none;font-weight:700">Outlook</a>' if outlook else "",
-            f'<a href="{ics}" style="display:inline-block;padding:6px 12px;border-radius:999px;background:#475569;color:#fff;font-size:12px;text-decoration:none;font-weight:700">Apple / iCal</a>' if ics else "",
-        ])
-        return f"""<tr><td style="padding:14px 0;border-bottom:1px solid #E2E8F0">
-            <div style="font-weight:700;color:#0F172A;font-size:15px">{e.get('title','')}</div>
-            <div style="color:#0052FF;font-size:13px;margin-top:2px">{fmt_time(e.get('start',''))}</div>
-            <div style="color:#475569;font-size:13px">{e.get('venue','')}</div>
-            <div style="margin-top:8px">{cal_row}</div>
-        </td></tr>"""
-    ev_rows = "".join(_event_row(e) for e in events[:8]) or "<tr><td style='color:#94A3B8;padding:12px 0'>No events matching your preferences this week.</td></tr>"
-    up_rows = "".join(
-        f"<li style='margin:8px 0;color:#475569'><b style='color:#0F172A'>{u.get('title','')}</b> — {u.get('body','')[:120]}</li>"
-        for u in updates[:5]
-    )
-    return f"""
-<!DOCTYPE html><html><body style="font-family:Helvetica,Arial,sans-serif;background:#F4F5F7;padding:24px;color:#0F172A">
-  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:600px;margin:0 auto;background:#fff;border-radius:24px;overflow:hidden">
-    <tr><td style="padding:28px 28px 8px">
-      <h1 style="margin:0;font-size:24px">Your Blackrod Now digest 📬</h1>
-      <p style="color:#475569;margin:8px 0 0">Curated for you — following {len(sub.get('followed_orgs',[]))} orgs and {len(sub.get('followed_categories',[]))} categories.</p>
-    </td></tr>
-    <tr><td style="padding:8px 28px">
-      <h2 style="margin:16px 0 4px;font-size:16px;color:#0F172A">What's on</h2>
-      <p style="margin:0 0 8px;font-size:12px;color:#94A3B8">Tap Google / Outlook / Apple to add straight to your calendar.</p>
-      <table role="presentation" width="100%">{ev_rows}</table>
-    </td></tr>
-    {"<tr><td style='padding:8px 28px'><h2 style='margin:16px 0 4px;font-size:16px'>Local updates</h2><ul style='padding-left:16px'>" + up_rows + "</ul></td></tr>" if up_rows else ""}
-    <tr><td style="padding:20px 28px 28px;color:#94A3B8;font-size:12px;text-align:center;border-top:1px solid #E2E8F0">
-      <a href="{pref}" style="color:#0052FF">Edit preferences</a> · <a href="{unsub}" style="color:#94A3B8">Unsubscribe</a><br/>
-      Blackrod Now · Made in Blackrod, Bolton
-    </td></tr>
-  </table>
-</body></html>
-"""
+# ─────────── Automated weekly resident digest ───────────
+NEWSLETTER_TIMEZONE = ZoneInfo("Europe/London")
+NEWSLETTER_AUTO_INTERVAL_SECONDS = max(60, int(os.environ.get("NEWSLETTER_AUTO_INTERVAL", "300")))
+NEWSLETTER_DEFAULT_ENABLED = os.environ.get("NEWSLETTER_AUTO_ENABLED", "true").strip().lower() in {
+    "1", "true", "yes", "on"
+}
+NEWSLETTER_DEFAULT_DAY = os.environ.get("NEWSLETTER_AUTO_DAY", "friday").strip().lower()
+NEWSLETTER_DEFAULT_TIME = os.environ.get("NEWSLETTER_AUTO_TIME", "08:00").strip()
+NEWSLETTER_DEFAULT_SUBJECT = os.environ.get(
+    "NEWSLETTER_AUTO_SUBJECT", "Blackrod Now — Your weekend & week ahead"
+).strip()
+NEWSLETTER_DAY_NAMES = [
+    "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"
+]
 
 
-async def _events_for_sub(sub: dict) -> List[dict]:
-    """Personalised upcoming events for a subscriber."""
-    nowi = now_iso()
+def _safe_newsletter_day(value: str) -> str:
+    day = str(value or "").strip().lower()
+    return day if day in NEWSLETTER_DAY_NAMES else "friday"
+
+
+def _safe_newsletter_time(value: str) -> str:
+    raw = str(value or "").strip()
+    if re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", raw):
+        return raw
+    return "08:00"
+
+
+async def _get_newsletter_automation_settings() -> Dict[str, Any]:
+    doc = await db.site_settings.find_one({"_id": _SITE_SETTINGS_ID}) or {}
+    raw = doc.get("newsletter_automation") or {}
+    return {
+        "enabled": bool(raw.get("enabled", NEWSLETTER_DEFAULT_ENABLED)),
+        "day": _safe_newsletter_day(raw.get("day", NEWSLETTER_DEFAULT_DAY)),
+        "time": _safe_newsletter_time(raw.get("time", NEWSLETTER_DEFAULT_TIME)),
+        "subject": str(raw.get("subject") or NEWSLETTER_DEFAULT_SUBJECT).strip() or NEWSLETTER_DEFAULT_SUBJECT,
+        "intro": str(raw.get("intro") or "").strip(),
+        "timezone": "Europe/London",
+        "updated_at": raw.get("updated_at"),
+    }
+
+
+def _newsletter_week_key(local_dt: datetime) -> str:
+    iso = local_dt.isocalendar()
+    return f"{iso.year}-W{iso.week:02d}"
+
+
+def _newsletter_week_start_utc(local_dt: datetime) -> datetime:
+    monday = local_dt.date() - timedelta(days=local_dt.weekday())
+    local_start = datetime.combine(monday, time_cls.min, tzinfo=NEWSLETTER_TIMEZONE)
+    return local_start.astimezone(timezone.utc)
+
+
+def _next_newsletter_run_local(settings: Dict[str, Any], now_local: Optional[datetime] = None) -> datetime:
+    now_local = now_local or datetime.now(NEWSLETTER_TIMEZONE)
+    target_weekday = NEWSLETTER_DAY_NAMES.index(_safe_newsletter_day(settings.get("day", "friday")))
+    hh, mm = [int(part) for part in _safe_newsletter_time(settings.get("time", "08:00")).split(":")]
+    days_ahead = (target_weekday - now_local.weekday()) % 7
+    candidate_date = now_local.date() + timedelta(days=days_ahead)
+    candidate = datetime.combine(candidate_date, time_cls(hour=hh, minute=mm), tzinfo=NEWSLETTER_TIMEZONE)
+    if candidate <= now_local:
+        candidate += timedelta(days=7)
+    return candidate
+
+
+def _digest_window(now_local: Optional[datetime] = None) -> Dict[str, datetime]:
+    """Return the current/upcoming weekend plus the following Monday-Sunday."""
+    now_local = now_local or datetime.now(NEWSLETTER_TIMEZONE)
+    weekday = now_local.weekday()
+    if weekday <= 4:
+        friday_date = now_local.date() + timedelta(days=4 - weekday)
+    else:
+        friday_date = now_local.date() - timedelta(days=weekday - 4)
+    friday_start = datetime.combine(friday_date, time_cls.min, tzinfo=NEWSLETTER_TIMEZONE)
+    weekend_start = max(now_local, friday_start)
+    sunday_end = datetime.combine(friday_date + timedelta(days=2), time_cls.max, tzinfo=NEWSLETTER_TIMEZONE)
+    next_week_start = datetime.combine(friday_date + timedelta(days=3), time_cls.min, tzinfo=NEWSLETTER_TIMEZONE)
+    next_week_end = datetime.combine(friday_date + timedelta(days=9), time_cls.max, tzinfo=NEWSLETTER_TIMEZONE)
+    return {
+        "weekend_start": weekend_start,
+        "weekend_end": sunday_end,
+        "next_week_start": next_week_start,
+        "next_week_end": next_week_end,
+    }
+
+
+def _event_moment(event: dict) -> Optional[datetime]:
+    raw = event.get("start") or ""
+    if not raw:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(NEWSLETTER_TIMEZONE)
+    except Exception:
+        return None
+
+
+def _event_ends_after(event: dict, point: datetime) -> bool:
+    raw = event.get("end") or event.get("start") or ""
+    try:
+        dt = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(NEWSLETTER_TIMEZONE) >= point
+    except Exception:
+        return False
+
+
+async def _digest_event_sections(sub: dict, now_local: Optional[datetime] = None) -> Dict[str, Any]:
+    now_local = now_local or datetime.now(NEWSLETTER_TIMEZONE)
+    window = _digest_window(now_local)
     q: Dict[str, Any] = {"status": "approved"}
-    ors = []
+    ors: List[Dict[str, Any]] = []
     if sub.get("followed_orgs"):
         ors.append({"orgSlug": {"$in": sub["followed_orgs"]}})
     if sub.get("followed_categories"):
         ors.append({"category": {"$in": sub["followed_categories"]}})
     if ors:
         q["$or"] = ors
-    events = await db.events.find(q, {"_id": 0}).to_list(200)
-    events = [e for e in events if (e.get("end") or e.get("start", "")) >= nowi]
-    events.sort(key=lambda e: e.get("start", ""))
-    if not events:  # fallback: any upcoming
-        events = await db.events.find({"status": "approved"}, {"_id": 0}).to_list(200)
-        events = [e for e in events if (e.get("end") or e.get("start", "")) >= nowi]
-        events.sort(key=lambda e: e.get("start", ""))
-    return events
+
+    events = await db.events.find(q, {"_id": 0}).to_list(300)
+    events = [
+        event for event in events
+        if _event_ends_after(event, now_local)
+        and (_event_moment(event) or now_local) <= window["next_week_end"]
+    ]
+    events.sort(key=lambda event: event.get("start", ""))
+
+    personalised = bool(ors)
+    if personalised and not events:
+        events = await db.events.find({"status": "approved"}, {"_id": 0}).to_list(300)
+        events = [
+            event for event in events
+            if _event_ends_after(event, now_local)
+            and (_event_moment(event) or now_local) <= window["next_week_end"]
+        ]
+        events.sort(key=lambda event: event.get("start", ""))
+        personalised = False
+
+    weekend: List[dict] = []
+    next_week: List[dict] = []
+    for event in events:
+        moment = _event_moment(event)
+        if not moment:
+            continue
+        if window["weekend_start"] <= moment <= window["weekend_end"]:
+            weekend.append(event)
+        elif window["next_week_start"] <= moment <= window["next_week_end"]:
+            next_week.append(event)
+
+    saved_ids = list(dict.fromkeys(sub.get("saved_events") or []))
+    saved: List[dict] = []
+    if saved_ids:
+        saved_rows = await db.events.find(
+            {"id": {"$in": saved_ids}, "status": "approved"}, {"_id": 0}
+        ).to_list(100)
+        saved = [
+            event for event in saved_rows
+            if _event_ends_after(event, now_local)
+            and (_event_moment(event) or now_local) <= window["next_week_end"]
+        ]
+        saved.sort(key=lambda event: event.get("start", ""))
+
+    return {
+        "weekend": weekend[:6],
+        "next_week": next_week[:8],
+        "saved": saved[:4],
+        "personalised": personalised,
+    }
 
 
 async def _updates_for_sub(sub: dict) -> List[dict]:
@@ -5061,51 +9301,500 @@ async def _updates_for_sub(sub: dict) -> List[dict]:
     return await db.feed.find(q, {"_id": 0}).sort("time", -1).to_list(20)
 
 
+def _render_digest(
+    sub: dict,
+    weekend_events: List[dict],
+    next_week_events: List[dict],
+    updates: List[dict],
+    saved_events: Optional[List[dict]] = None,
+    intro: str = "",
+) -> str:
+    unsub = f"{PUBLIC_URL}/unsubscribe/{sub['unsub_token']}"
+    pref = f"{PUBLIC_URL}/preferences/{sub['pref_token']}"
+    all_events_url = f"{PUBLIC_URL}/events"
+
+    def esc(value: Any) -> str:
+        return html.escape(str(value or ""), quote=True)
+
+    def fmt_time(iso: str) -> str:
+        try:
+            dt = datetime.fromisoformat(str(iso).replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.astimezone(NEWSLETTER_TIMEZONE).strftime("%a %d %b · %H:%M")
+        except Exception:
+            return ""
+
+    def _event_row(event: dict) -> str:
+        gcal = esc(_gcal_url(event))
+        outlook = esc(_outlook_url(event))
+        ics = esc(f"{PUBLIC_URL}/api/events/{event.get('id')}.ics" if event.get("id") else "")
+        event_url = esc(f"{PUBLIC_URL}/events/{event.get('id')}" if event.get("id") else PUBLIC_URL)
+        cal_row = "".join([
+            f'<a href="{gcal}" style="display:inline-block;margin-right:6px;padding:6px 10px;border-radius:999px;background:#0052FF;color:#fff;font-size:11px;text-decoration:none;font-weight:700">Google</a>' if gcal else "",
+            f'<a href="{outlook}" style="display:inline-block;margin-right:6px;padding:6px 10px;border-radius:999px;background:#0F172A;color:#fff;font-size:11px;text-decoration:none;font-weight:700">Outlook</a>' if outlook else "",
+            f'<a href="{ics}" style="display:inline-block;padding:6px 10px;border-radius:999px;background:#475569;color:#fff;font-size:11px;text-decoration:none;font-weight:700">Apple / iCal</a>' if ics else "",
+        ])
+        cost = esc(event.get("cost"))
+        cost_html = f'<span style="color:#475569"> · {cost}</span>' if cost else ""
+        return f"""<tr><td style="padding:14px 0;border-bottom:1px solid #E2E8F0">
+            <a href="{event_url}" style="font-weight:800;color:#0F172A;font-size:15px;text-decoration:none">{esc(event.get('title'))}</a>
+            <div style="color:#0052FF;font-size:13px;margin-top:3px">{esc(fmt_time(event.get('start','')))}</div>
+            <div style="color:#475569;font-size:13px">{esc(event.get('venue'))}{cost_html}</div>
+            <div style="margin-top:8px">{cal_row}</div>
+        </td></tr>"""
+
+    def _section(title: str, events: List[dict], empty_text: str) -> str:
+        rows = "".join(_event_row(event) for event in events)
+        if not rows:
+            rows = f'<tr><td style="color:#94A3B8;padding:10px 0;font-size:13px">{esc(empty_text)}</td></tr>'
+        return f"""<tr><td style="padding:8px 28px">
+            <h2 style="margin:16px 0 4px;font-size:17px;color:#0F172A">{esc(title)}</h2>
+            <table role="presentation" width="100%">{rows}</table>
+        </td></tr>"""
+
+    intro_html = ""
+    if intro.strip():
+        intro_html = (
+            '<tr><td style="padding:10px 28px">'
+            f'<div style="padding:14px 16px;border-radius:16px;background:#EFF6FF;color:#334155;font-size:14px;line-height:1.55">{esc(intro.strip())}</div>'
+            '</td></tr>'
+        )
+
+    saved_events = saved_events or []
+    saved_html = _section("Saved by you", saved_events, "Nothing saved in this edition.") if saved_events else ""
+    up_rows = "".join(
+        f"<li style='margin:8px 0;color:#475569'><b style='color:#0F172A'>{esc(update.get('title'))}</b> — {esc((update.get('body') or '')[:160])}</li>"
+        for update in updates[:5]
+    )
+    updates_html = (
+        "<tr><td style='padding:8px 28px'><h2 style='margin:16px 0 4px;font-size:17px;color:#0F172A'>From organisations you follow</h2>"
+        f"<ul style='padding-left:18px'>{up_rows}</ul></td></tr>"
+        if up_rows else ""
+    )
+    follow_count = len(sub.get("followed_orgs", [])) + len(sub.get("followed_categories", []))
+    personalise_line = (
+        f"Based on {follow_count} organisation/category preference{'s' if follow_count != 1 else ''}."
+        if follow_count else
+        "A useful round-up of what's happening across Blackrod."
+    )
+
+    return f"""<!DOCTYPE html><html><body style="font-family:Helvetica,Arial,sans-serif;background:#F4F5F7;padding:24px;color:#0F172A">
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:620px;margin:0 auto;background:#fff;border-radius:24px;overflow:hidden">
+        <tr><td style="padding:28px 28px 8px">
+          <div style="font-size:11px;color:#0052FF;letter-spacing:2px;text-transform:uppercase;font-weight:800">Blackrod Now</div>
+          <h1 style="margin:8px 0 0;font-size:26px">Your weekend & week ahead 📬</h1>
+          <p style="color:#64748B;margin:8px 0 0;font-size:13px">{esc(personalise_line)}</p>
+        </td></tr>
+        {intro_html}
+        {_section("This weekend", weekend_events, "Nothing listed for this weekend yet.")}
+        {_section("Coming up next week", next_week_events, "No matching events next week yet.")}
+        {saved_html}
+        {updates_html}
+        <tr><td style="padding:18px 28px;text-align:center">
+          <a href="{esc(all_events_url)}" style="display:inline-block;padding:11px 18px;border-radius:999px;background:#0052FF;color:#fff;text-decoration:none;font-size:13px;font-weight:800">See everything happening in Blackrod →</a>
+        </td></tr>
+        <tr><td style="padding:20px 28px 28px;color:#94A3B8;font-size:12px;text-align:center;border-top:1px solid #E2E8F0">
+          <a href="{esc(pref)}" style="color:#0052FF">Edit preferences</a> · <a href="{esc(unsub)}" style="color:#94A3B8">Unsubscribe</a><br/>
+          Blackrod Now · Made in Blackrod, Bolton
+        </td></tr>
+      </table>
+    </body></html>"""
+
+
+class NewsletterAutomationPatch(BaseModel):
+    enabled: Optional[bool] = None
+    day: Optional[Literal["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]] = None
+    time: Optional[str] = None
+    subject: Optional[str] = None
+    intro: Optional[str] = None
+
+
+async def _subscriber_digest_sent_this_week(now_local: Optional[datetime] = None) -> bool:
+    now_local = now_local or datetime.now(NEWSLETTER_TIMEZONE)
+    week_start = _newsletter_week_start_utc(now_local).isoformat()
+    existing = await db.newsletter.find_one({
+        "audience": "subscribers",
+        "sent_at": {"$gte": week_start},
+    }, {"_id": 0, "id": 1})
+    return bool(existing)
+
+
+async def _deliver_subscriber_digest(subject: str, intro: str, trigger: str) -> Dict[str, Any]:
+    subscribers = await db.subscribers.find(
+        {"unsubscribed": False, "digest": True}, {"_id": 0}
+    ).to_list(5000)
+    sent = 0
+    failed = 0
+    for sub in subscribers:
+        email_addr = (sub.get("email") or "").strip().lower()
+        if not email_addr:
+            continue
+        sections = await _digest_event_sections(sub)
+        updates = await _updates_for_sub(sub)
+        digest_html = _render_digest(
+            sub,
+            sections["weekend"],
+            sections["next_week"],
+            updates,
+            sections["saved"],
+            intro=intro,
+        )
+        result = await asyncio.to_thread(resend_send, email_addr, subject, digest_html)
+        if result.get("ok"):
+            sent += 1
+        else:
+            failed += 1
+
+    edition = NewsletterEdition(
+        subject=subject,
+        body_intro=intro,
+        sent_at=now_iso(),
+        audience="subscribers",
+        trigger=trigger,
+        sent_count=sent,
+        failed_count=failed,
+        recipient_count=len(subscribers),
+        body_html="",
+    )
+    await db.newsletter.insert_one(edition.model_dump())
+    await _record_analytics_event("newsletter_send", entity_type="site", count=sent)
+    return {
+        "ok": True,
+        "audience": "subscribers",
+        "trigger": trigger,
+        "sent": sent,
+        "failed": failed,
+        "recipient_count": len(subscribers),
+        "mocked": not RESEND_API_KEY,
+        "edition_id": edition.id,
+    }
+
+
+async def _newsletter_automation_status() -> Dict[str, Any]:
+    settings = await _get_newsletter_automation_settings()
+    now_local = datetime.now(NEWSLETTER_TIMEZONE)
+    next_local = _next_newsletter_run_local(settings, now_local)
+    current_week_sent = await _subscriber_digest_sent_this_week(now_local)
+    if current_week_sent and _newsletter_week_key(next_local) == _newsletter_week_key(now_local):
+        next_local += timedelta(days=7)
+    active_subscribers = await db.subscribers.count_documents({"unsubscribed": False, "digest": True})
+    last_edition = await db.newsletter.find_one(
+        {"audience": "subscribers", "sent_at": {"$ne": None}},
+        {"_id": 0},
+        sort=[("sent_at", -1)],
+    )
+    last_auto_run = await db.newsletter_auto_runs.find_one({}, {"_id": 0}, sort=[("started_at", -1)])
+    return {
+        **settings,
+        "active_subscribers": active_subscribers,
+        "next_run_local": next_local.isoformat(),
+        "next_run_utc": next_local.astimezone(timezone.utc).isoformat(),
+        "current_week_sent": current_week_sent,
+        "last_send": last_edition,
+        "last_auto_run": last_auto_run,
+    }
+
+
 @api.get("/admin/newsletter/preview")
-async def newsletter_preview(email: Optional[str] = None):
-    """Returns the personalised HTML for a subscriber (or a generic one)."""
+async def newsletter_preview(
+    request: Request,
+    email: Optional[str] = None,
+    subject: Optional[str] = None,
+    body_intro: Optional[str] = None,
+    authorization: Optional[str] = Header(None),
+    admin_code: Optional[str] = Header(None, alias="X-Admin-Code"),
+):
+    _require_admin_from_request(request, authorization, admin_code)
     sub = None
     if email:
         sub = await db.subscribers.find_one({"email": email.lower(), "unsubscribed": False}, {"_id": 0})
     if not sub:
-        # generic preview: no follows
-        sub = {"email": "preview@example.com", "unsub_token": "PREVIEW", "pref_token": "PREVIEW", "followed_orgs": [], "followed_categories": []}
-    events = await _events_for_sub(sub)
+        sub = {
+            "email": "preview@example.com",
+            "unsub_token": "PREVIEW",
+            "pref_token": "PREVIEW",
+            "followed_orgs": [],
+            "followed_categories": [],
+            "saved_events": [],
+        }
+    settings = await _get_newsletter_automation_settings()
+    sections = await _digest_event_sections(sub)
     updates = await _updates_for_sub(sub)
-    return {"subject": "Your Blackrod Now digest 📬", "html": _render_digest(sub, events, updates), "sub": sub, "matched_events": len(events), "matched_updates": len(updates)}
+    preview_subject = (subject or settings["subject"]).strip()
+    preview_intro = body_intro if body_intro is not None else settings["intro"]
+    return {
+        "subject": preview_subject,
+        "html": _render_digest(
+            sub,
+            sections["weekend"],
+            sections["next_week"],
+            updates,
+            sections["saved"],
+            intro=preview_intro or "",
+        ),
+        "sub": sub,
+        "matched_events": len(sections["weekend"]) + len(sections["next_week"]),
+        "weekend_events": len(sections["weekend"]),
+        "next_week_events": len(sections["next_week"]),
+        "saved_events": len(sections["saved"]),
+        "matched_updates": len(updates),
+    }
 
 
 class NewsletterEditReq(BaseModel):
     subject: str
     body_intro: Optional[str] = ""
     scheduled_for: Optional[str] = None
+    audience: Literal["subscribers", "orgs_all", "orgs_selected"] = "subscribers"
+    org_slugs: List[str] = Field(default_factory=list)
+
+
+async def _newsletter_recipients(req: NewsletterEditReq) -> List[Dict[str, Any]]:
+    recipients: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+
+    if req.audience == "subscribers":
+        subs = await db.subscribers.find({"unsubscribed": False, "digest": True}, {"_id": 0}).to_list(5000)
+        for sub in subs:
+            email_addr = (sub.get("email") or "").strip().lower()
+            if not email_addr or email_addr in seen:
+                continue
+            seen.add(email_addr)
+            recipients.append({"email": email_addr, "kind": "subscriber", "subscriber": sub})
+        return recipients
+
+    org_query: Dict[str, Any] = {"status": {"$ne": "rejected"}}
+    if req.audience == "orgs_selected":
+        clean_slugs = [slug.strip() for slug in (req.org_slugs or []) if slug.strip()]
+        if not clean_slugs:
+            raise HTTPException(400, "Select at least one organisation slug")
+        org_query["slug"] = {"$in": clean_slugs}
+
+    orgs = await db.orgs.find(org_query, {"_id": 0, "slug": 1, "name": 1, "email": 1}).to_list(5000)
+    for org in orgs:
+        email_addr = (org.get("email") or "").strip().lower()
+        if not email_addr or not EMAIL_RE.match(email_addr) or email_addr in seen:
+            continue
+        seen.add(email_addr)
+        recipients.append({"email": email_addr, "kind": "org", "org": org})
+    return recipients
 
 
 @api.post("/admin/newsletter/edition")
-async def upsert_edition(req: NewsletterEditReq):
-    ed = NewsletterEdition(subject=req.subject, body_intro=req.body_intro or "", scheduled_for=req.scheduled_for, body_html="")
+async def upsert_edition(
+    req: NewsletterEditReq,
+    request: Request,
+    authorization: Optional[str] = Header(None),
+    admin_code: Optional[str] = Header(None, alias="X-Admin-Code"),
+):
+    _require_admin_from_request(request, authorization, admin_code)
+    ed = NewsletterEdition(
+        subject=req.subject,
+        body_intro=req.body_intro or "",
+        scheduled_for=req.scheduled_for,
+        body_html="",
+        audience=req.audience,
+    )
     await db.newsletter.insert_one(ed.model_dump())
     return ed
 
 
 @api.post("/admin/newsletter/send")
-async def send_newsletter(req: NewsletterEditReq):
-    subs = await db.subscribers.find({"unsubscribed": False, "digest": True}, {"_id": 0}).to_list(5000)
+async def send_newsletter(
+    req: NewsletterEditReq,
+    request: Request,
+    authorization: Optional[str] = Header(None),
+    admin_code: Optional[str] = Header(None, alias="X-Admin-Code"),
+):
+    _require_admin_from_request(request, authorization, admin_code)
+    subject = req.subject.strip()
+    if not subject:
+        raise HTTPException(400, "Subject is required")
+    intro = (req.body_intro or "").strip()
+
+    if req.audience == "subscribers":
+        return await _deliver_subscriber_digest(subject, intro, trigger="manual")
+
+    recipients = await _newsletter_recipients(req)
     sent, failed = 0, 0
-    for sub in subs:
-        events = await _events_for_sub(sub)
-        updates = await _updates_for_sub(sub)
-        html = _render_digest(sub, events, updates)
-        result = await asyncio.to_thread(resend_send, sub["email"], req.subject, html)
+    for recipient in recipients:
+        org_intro = intro or "Community update from Blackrod Now."
+        email_html = _render_admin_email_html(subject, org_intro, SENDER_EMAIL)
+        result = await asyncio.to_thread(resend_send, recipient["email"], subject, email_html)
         if result.get("ok"):
             sent += 1
         else:
             failed += 1
-    await db.newsletter.insert_one(
-        NewsletterEdition(subject=req.subject, body_intro=req.body_intro or "", sent_at=now_iso(), body_html="").model_dump()
+    edition = NewsletterEdition(
+        subject=subject,
+        body_intro=intro,
+        sent_at=now_iso(),
+        audience=req.audience,
+        trigger="manual",
+        sent_count=sent,
+        failed_count=failed,
+        recipient_count=len(recipients),
+        body_html="",
     )
+    await db.newsletter.insert_one(edition.model_dump())
     await _record_analytics_event("newsletter_send", entity_type="site", count=sent)
-    return {"ok": True, "sent": sent, "failed": failed, "mocked": not RESEND_API_KEY}
+    return {
+        "ok": True,
+        "audience": req.audience,
+        "sent": sent,
+        "failed": failed,
+        "recipient_count": len(recipients),
+        "mocked": not RESEND_API_KEY,
+    }
+
+
+@api.get("/admin/newsletter/automation")
+async def get_newsletter_automation(
+    request: Request,
+    authorization: Optional[str] = Header(None),
+    admin_code: Optional[str] = Header(None, alias="X-Admin-Code"),
+):
+    _require_admin_from_request(request, authorization, admin_code)
+    return await _newsletter_automation_status()
+
+
+@api.post("/admin/newsletter/automation")
+async def update_newsletter_automation(
+    patch: NewsletterAutomationPatch,
+    request: Request,
+    authorization: Optional[str] = Header(None),
+    admin_code: Optional[str] = Header(None, alias="X-Admin-Code"),
+):
+    _require_admin_from_request(request, authorization, admin_code)
+    current = await _get_newsletter_automation_settings()
+    updates = patch.model_dump(exclude_none=True)
+    if "time" in updates:
+        if not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", str(updates["time"])):
+            raise HTTPException(400, "Time must be HH:MM in 24-hour format")
+        updates["time"] = _safe_newsletter_time(updates["time"])
+    if "subject" in updates:
+        updates["subject"] = str(updates["subject"]).strip()
+        if not updates["subject"]:
+            raise HTTPException(400, "Subject is required")
+    merged = {**current, **updates, "updated_at": now_iso()}
+    merged.pop("timezone", None)
+    await db.site_settings.update_one(
+        {"_id": _SITE_SETTINGS_ID},
+        {"$set": {"newsletter_automation": merged}},
+        upsert=True,
+    )
+    await _audit(
+        action="newsletter_automation_updated",
+        entity_type="site",
+        entity_id="newsletter",
+        summary="Updated automatic weekly digest settings",
+        meta={key: value for key, value in updates.items() if key != "intro"},
+    )
+    return await _newsletter_automation_status()
+
+
+@api.post("/admin/newsletter/automation/send-now")
+async def send_newsletter_automation_now(
+    request: Request,
+    authorization: Optional[str] = Header(None),
+    admin_code: Optional[str] = Header(None, alias="X-Admin-Code"),
+):
+    _require_admin_from_request(request, authorization, admin_code)
+    settings = await _get_newsletter_automation_settings()
+    result = await _deliver_subscriber_digest(settings["subject"], settings["intro"], trigger="manual_schedule")
+    await _audit(
+        action="newsletter_manual_schedule_send",
+        entity_type="site",
+        entity_id="newsletter",
+        summary=f"Sent weekly digest manually to {result['sent']} subscriber(s)",
+        meta={"sent": result["sent"], "failed": result["failed"]},
+    )
+    return {**result, "automation": await _newsletter_automation_status()}
+
+
+async def _claim_automatic_newsletter_run(week_key: str, settings: Dict[str, Any]) -> bool:
+    doc = {
+        "week_key": week_key,
+        "status": "processing",
+        "scheduled_day": settings["day"],
+        "scheduled_time": settings["time"],
+        "subject": settings["subject"],
+        "started_at": now_iso(),
+        "sent_at": None,
+        "result": None,
+    }
+    try:
+        await db.newsletter_auto_runs.insert_one(doc)
+        return True
+    except DuplicateKeyError:
+        return False
+
+
+async def _maybe_send_automatic_newsletter() -> bool:
+    settings = await _get_newsletter_automation_settings()
+    if not settings["enabled"]:
+        return False
+    now_local = datetime.now(NEWSLETTER_TIMEZONE)
+    target_weekday = NEWSLETTER_DAY_NAMES.index(settings["day"])
+    hh, mm = [int(part) for part in settings["time"].split(":")]
+
+    # Work from the most recent scheduled occurrence. A 36-hour grace window
+    # means a short hosting outage on Friday morning can recover on restart
+    # without sending a stale weekly digest several days later.
+    days_since_target = (now_local.weekday() - target_weekday) % 7
+    scheduled_date = now_local.date() - timedelta(days=days_since_target)
+    scheduled_local = datetime.combine(
+        scheduled_date, time_cls(hour=hh, minute=mm), tzinfo=NEWSLETTER_TIMEZONE
+    )
+    if scheduled_local > now_local:
+        scheduled_local -= timedelta(days=7)
+    if now_local - scheduled_local > timedelta(hours=36):
+        return False
+    if await _subscriber_digest_sent_this_week(scheduled_local):
+        return False
+
+    week_key = _newsletter_week_key(scheduled_local)
+    claimed = await _claim_automatic_newsletter_run(week_key, settings)
+    if not claimed:
+        return False
+
+    try:
+        result = await _deliver_subscriber_digest(settings["subject"], settings["intro"], trigger="automatic")
+        await db.newsletter_auto_runs.update_one(
+            {"week_key": week_key},
+            {"$set": {"status": "sent", "sent_at": now_iso(), "result": result}},
+        )
+        await _audit(
+            action="newsletter_automatic_send",
+            entity_type="site",
+            entity_id="newsletter",
+            summary=f"Automatic weekly digest sent to {result['sent']} subscriber(s)",
+            meta={"week_key": week_key, "sent": result["sent"], "failed": result["failed"]},
+            actor="system",
+        )
+        logger.info("Automatic newsletter %s sent: %s delivered, %s failed", week_key, result["sent"], result["failed"])
+        return True
+    except Exception as exc:
+        await db.newsletter_auto_runs.update_one(
+            {"week_key": week_key},
+            {"$set": {"status": "failed", "result": {"error": str(exc)}, "finished_at": now_iso()}},
+        )
+        logger.exception("Automatic weekly newsletter failed for %s: %s", week_key, exc)
+        return False
+
+
+async def _weekly_newsletter_loop() -> None:
+    if not RESEND_API_KEY:
+        logger.info("Automatic newsletter loop skipped: RESEND_API_KEY not set.")
+        return
+    logger.info("Automatic weekly newsletter loop started (Europe/London)")
+    while True:
+        try:
+            await _maybe_send_automatic_newsletter()
+        except Exception as exc:
+            logger.exception("automatic newsletter loop iteration failed: %s", exc)
+        await asyncio.sleep(NEWSLETTER_AUTO_INTERVAL_SECONDS)
 
 
 class BroadcastReq(BaseModel):
@@ -5236,19 +9925,62 @@ def _auto_link(text: str) -> str:
     return "\n".join(f"<p>{p.replace(chr(10), '<br />')}</p>" for p in paragraphs) or "<p></p>"
 
 
+_EMAIL_SIGNATURE = """<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="width:100%;max-width:610px;border-collapse:collapse;font-family:Arial,Helvetica,sans-serif;color:#0F1729;margin-top:32px">
+  <tr>
+    <td valign="middle" style="width:175px;padding:18px 24px 18px 0">
+      <div style="font-size:23px;line-height:24px;font-weight:800;letter-spacing:-0.6px;color:#0F1729;margin:0">BLACKROD</div>
+      <div style="font-size:31px;line-height:32px;font-weight:900;letter-spacing:1px;color:#004DFF;margin:0">NOW</div>
+      <div style="margin-top:8px;font-size:9px;line-height:13px;font-weight:700;letter-spacing:0.35px;color:#667085;text-transform:uppercase">What&#39;s on. What&#39;s new.<br>What&#39;s next.</div>
+    </td>
+    <td valign="middle" style="width:5px;padding:0">
+      <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="height:96px">
+        <tr><td style="width:3px;height:67px;background:#004DFF;font-size:1px;line-height:1px">&nbsp;</td></tr>
+        <tr><td style="width:3px;height:29px;background:#D5FF00;font-size:1px;line-height:1px">&nbsp;</td></tr>
+      </table>
+    </td>
+    <td valign="middle" style="padding:17px 0 17px 25px">
+      <div style="font-size:18px;line-height:22px;font-weight:800;color:#0F1729">Blackrod Now</div>
+      <div style="margin-top:2px;font-size:12px;line-height:17px;font-weight:700;color:#004DFF">Administration</div>
+      <div style="width:42px;height:3px;background:#D5FF00;margin-top:10px;margin-bottom:10px;font-size:1px;line-height:1px">&nbsp;</div>
+      <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse">
+        <tr>
+          <td style="padding:0 11px 3px 0;font-size:10px;line-height:17px;font-weight:700;color:#98A2B3;text-transform:uppercase">E</td>
+          <td style="padding:0 0 3px 0;font-size:12px;line-height:17px"><a href="mailto:blackrodnow@communityalliances.co.uk" style="color:#344054;text-decoration:none;font-weight:500">blackrodnow@communityalliances.co.uk</a></td>
+        </tr>
+        <tr>
+          <td style="padding:0 11px 0 0;font-size:10px;line-height:17px;font-weight:700;color:#98A2B3;text-transform:uppercase">W</td>
+          <td style="padding:0;font-size:12px;line-height:17px"><a href="https://blackrodnow.com/" style="color:#004DFF;text-decoration:none;font-weight:700">blackrodnow.com</a></td>
+        </tr>
+      </table>
+    </td>
+  </tr>
+  <tr>
+    <td colspan="3" style="padding:0;border-top:1px solid #E4E7EC;font-size:1px;line-height:1px">&nbsp;</td>
+  </tr>
+  <tr>
+    <td colspan="3" style="padding-top:9px;font-size:10px;line-height:15px;color:#98A2B3">
+      Blackrod&#39;s community platform for <span style="color:#667085">events, organisations, volunteering, venues and local information.</span>
+    </td>
+  </tr>
+</table>"""
+
+
 def _render_admin_email_html(subject: str, body_text: str, from_email: str) -> str:
     body_html = _auto_link(body_text)
     return f"""<!doctype html>
 <html><body style="margin:0;padding:0;background:#F9FAFB;font-family:system-ui,-apple-system,Segoe UI,sans-serif;color:#111827">
 <table role="presentation" cellspacing="0" cellpadding="0" width="100%" bgcolor="#F9FAFB">
 <tr><td align="center">
-<table role="presentation" cellspacing="0" cellpadding="0" width="600" style="max-width:600px;padding:32px 24px">
+<table role="presentation" cellspacing="0" cellpadding="0" width="620" style="max-width:620px;padding:32px 24px">
   <tr><td style="padding-bottom:16px">
     <div style="font-size:11px;letter-spacing:0.2em;text-transform:uppercase;color:#0052FF;font-weight:800">Blackrod Now</div>
     <h1 style="font-size:24px;line-height:1.25;color:#111827;margin:8px 0 0 0">{_html_lib.escape(subject)}</h1>
   </td></tr>
   <tr><td style="font-size:15px;line-height:1.6;color:#111827;padding-bottom:24px">
     {body_html}
+  </td></tr>
+  <tr><td style="padding-bottom:24px">
+    {_EMAIL_SIGNATURE}
   </td></tr>
   <tr><td style="border-top:1px solid #E5E7EB;padding-top:16px;color:#9CA3AF;font-size:12px">
     Sent by Blackrod Now via <a href="mailto:{_html_lib.escape(from_email)}" style="color:#9CA3AF">{_html_lib.escape(from_email)}</a>. This is a one-off message from the Blackrod Now admin team.
@@ -5368,7 +10100,8 @@ def _render_reminder_email(sub_email: str, event: dict, kind: str) -> tuple[str,
 
 
 async def _find_events_in_window(minutes_from_now: int, window_minutes: int) -> List[dict]:
-    now = datetime.now(timezone.utc)
+    # Stored event starts are UK wall-clock strings — compare against UK wall-clock now.
+    now = datetime.now(UK_TZ).replace(tzinfo=None)
     target = now + timedelta(minutes=minutes_from_now)
     lo = (target - timedelta(minutes=window_minutes / 2)).isoformat()
     hi = (target + timedelta(minutes=window_minutes / 2)).isoformat()
@@ -5725,6 +10458,11 @@ async def resolve_moderation_report(
 
 @app.on_event("startup")
 async def startup():
+    # Preload the heavy LLM libraries (litellm etc.) in a daemon thread so the
+    # first AI call never does a multi-minute synchronous import on the event
+    # loop thread (which froze the whole API / failed health probes on
+    # CPU-limited production pods).
+    threading.Thread(target=_preload_llm_libs, daemon=True).start()
     init_storage()
     # useful indexes (idempotent)
     try:
@@ -5740,20 +10478,58 @@ async def startup():
         await db.analytics_events.create_index([("kind", 1), ("created_at", -1)])
         await db.analytics_events.create_index([("org_slug", 1), ("created_at", -1)])
         await db.analytics_events.create_index([("entity_id", 1), ("created_at", -1)])
+        await db.messages.create_index([("delivery.provider", 1), ("delivery.event_id", 1)])
         await db.users.create_index("email", unique=True)
         await db.login_attempts.create_index("identifier")
         await db.event_reminders_sent.create_index([("email", 1), ("event_id", 1), ("kind", 1)], unique=True)
+        await db.newsletter.create_index([("audience", 1), ("sent_at", -1)])
+        await db.newsletter_auto_runs.create_index("week_key", unique=True)
     except Exception as e:
         logger.warning("Index setup: %s", e)
     await _seed_admin_user()
+    # Durable bulk-import queue indexes + recovery. Sources are stored in
+    # separate documents so jobs survive browser refreshes and process restarts.
+    try:
+        await db.parse_jobs.create_index("id", unique=True)
+        await db.parse_jobs.create_index([("status", 1), ("created_at", 1)])
+        await db.parse_jobs.create_index([("status", 1), ("updated_at", 1)])
+        await db.parse_job_sources.create_index([("job_id", 1), ("order", 1)])
+        await db.parse_job_sources.create_index("expires_at", expireAfterSeconds=0)
+        recovered = await _recover_stale_parse_jobs()
+        if recovered:
+            logger.warning("Recovered %s parse job(s) after startup", recovered)
+    except Exception as e:
+        logger.warning("Parse queue startup setup failed: %s", e)
+
+    _parse_worker_shutdown.clear()
+    for worker_number in range(PARSE_JOB_WORKER_CONCURRENCY):
+        _parse_worker_tasks.append(asyncio.create_task(_parse_job_worker(worker_number + 1)))
+
     # Background reminder loop for saved events (24h + 2h heads-up).
     asyncio.create_task(_event_reminder_loop())
     # Background scheduled-broadcast loop.
     asyncio.create_task(_scheduled_broadcast_loop())
+    # Automatic personalised resident digest (defaults to Friday 08:00 UK time).
+    asyncio.create_task(_weekly_newsletter_loop())
+    # Warm the OCR engine so the first flyer upload isn't penalised by model load.
+    def _warm_ocr():
+        try:
+            _get_ocr_engine()
+        except Exception as e:
+            logger.warning("OCR warm-up failed: %s", e)
+    asyncio.get_running_loop().run_in_executor(None, _warm_ocr)
 
 
 @app.on_event("shutdown")
 async def shutdown():
+    # Stop parser workers cleanly. Any job interrupted mid-flight keeps its
+    # persisted sources and will be recovered/re-queued on the next process.
+    _parse_worker_shutdown.set()
+    for task in list(_parse_worker_tasks):
+        task.cancel()
+    if _parse_worker_tasks:
+        await asyncio.gather(*_parse_worker_tasks, return_exceptions=True)
+    _parse_worker_tasks.clear()
     client.close()
 
 

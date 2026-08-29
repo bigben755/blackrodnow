@@ -45,6 +45,24 @@ def _create_event(admin_headers, recurrence, title="TEST_AdvRecur"):
     return r.json()["id"], start
 
 
+def _create_event_at(admin_headers, recurrence, start, title="TEST_AdvRecur_At"):
+    end = start + timedelta(hours=1)
+    payload = {
+        "title": title,
+        "orgSlug": TEST_ORG_SLUG,
+        "category": "Community",
+        "start": start.isoformat(),
+        "end": end.isoformat(),
+        "venue": "Blackrod",
+        "description": "advanced recurrence test",
+        "status": "approved",
+        "recurrence": recurrence,
+    }
+    r = requests.post(f"{API}/events", json=payload, headers=admin_headers, timeout=15)
+    assert r.status_code == 200, r.text
+    return r.json()["id"], start
+
+
 def _instances(eid):
     r = requests.get(f"{API}/events", timeout=15)
     assert r.status_code == 200
@@ -76,6 +94,18 @@ def test_monthly_weekday(admin_headers):
             d = datetime.fromisoformat(m["start"])
             assert d.weekday() == start.weekday(), f"weekday mismatch on {m['start']}"
             assert (d.day - 1) // 7 + 1 in (nth, nth - 1), f"nth mismatch on {m['start']}"
+    finally:
+        requests.delete(f"{API}/admin/events/{eid}", headers=admin_headers, timeout=15)
+
+
+def test_monthly_weekday_old_anchor_still_has_future_instances(admin_headers):
+    old_start = datetime(2012, 1, 5, 10, 30, tzinfo=timezone.utc)  # first Thursday anchor
+    eid, _ = _create_event_at(admin_headers, {"freq": "monthly_weekday"}, old_start, title="TEST_OldMonthlyWeekday")
+    try:
+        matches = _instances(eid)
+        now = datetime.now()
+        future = [m for m in matches if datetime.fromisoformat(m["start"][:19]) >= now - timedelta(days=1)]
+        assert future, "expected at least one upcoming recurrence instance from old monthly_weekday anchor"
     finally:
         requests.delete(f"{API}/admin/events/{eid}", headers=admin_headers, timeout=15)
 
@@ -119,3 +149,64 @@ def test_virtual_instance_detail_fetch(admin_headers):
         assert r.json()["start"][:10] == extra
     finally:
         requests.delete(f"{API}/admin/events/{eid}", headers=admin_headers, timeout=15)
+
+
+def test_naive_start_with_z_suffixed_until_does_not_500(admin_headers):
+    """Regression: naive wall-clock start + Z-suffixed until must not crash /api/events."""
+    start = (datetime.now() + timedelta(days=3)).replace(hour=10, minute=0, second=0, microsecond=0)
+    until = (start + timedelta(days=28)).strftime("%Y-%m-%dT23:59:59Z")
+    eid, _ = _create_event_at(
+        admin_headers,
+        {"freq": "weekly", "until": until},
+        start,
+        title="TEST_NaiveStartZUntil",
+    )
+    try:
+        inst = _instances(eid)
+        assert len(inst) >= 4, [e["start"] for e in inst]
+        assert all("T10:00" in e["start"] for e in inst)
+    finally:
+        requests.delete(f"{API}/admin/events/{eid}", headers=admin_headers, timeout=15)
+
+
+def test_naive_until_matches_naive_start(admin_headers):
+    """New UI saves until as naive string — expansion must respect it."""
+    start = (datetime.now() + timedelta(days=2)).replace(hour=9, minute=30, second=0, microsecond=0)
+    until = (start + timedelta(days=21)).strftime("%Y-%m-%dT23:59:59")
+    eid, _ = _create_event_at(
+        admin_headers,
+        {"freq": "weekly", "until": until, "exception_dates": [(start + timedelta(days=7)).strftime("%Y-%m-%d")]},
+        start,
+        title="TEST_NaiveUntil",
+    )
+    try:
+        inst = _instances(eid)
+        starts = [e["start"][:10] for e in inst]
+        assert (start + timedelta(days=7)).strftime("%Y-%m-%d") not in starts
+        assert len(inst) == 3, starts
+    finally:
+        requests.delete(f"{API}/admin/events/{eid}", headers=admin_headers, timeout=15)
+
+
+def test_mixed_naive_start_aware_end_does_not_500(admin_headers):
+    """Regression: AI-edit left naive start + legacy Z end on a recurring event → /api/events crashed."""
+    import uuid as _uuid
+    from pymongo import MongoClient
+    client = MongoClient(os.environ["MONGO_URL"])
+    dbh = client[os.environ["DB_NAME"]]
+    eid = f"evt-mixed-{_uuid.uuid4().hex[:8]}"
+    dbh.events.insert_one({
+        "id": eid, "title": "TEST_MixedTz", "orgSlug": "blackrod-town-council",
+        "category": "Community", "start": "2026-11-02T10:00:00",
+        "end": "2026-11-02T11:00:00.000Z", "venue": "Hall", "status": "approved",
+        "recurrence": {"freq": "weekly", "until": "2026-12-14"},
+    })
+    try:
+        r = requests.get(f"{API}/events", timeout=20)
+        assert r.status_code == 200
+        inst = [e for e in r.json() if e.get("id") == eid or e.get("parent_id") == eid]
+        assert len(inst) >= 4
+        assert all("T10:00" in e["start"] for e in inst)
+    finally:
+        dbh.events.delete_one({"id": eid})
+        client.close()

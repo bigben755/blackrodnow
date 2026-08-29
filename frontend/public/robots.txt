@@ -1,0 +1,6 @@
+User-agent: *
+Allow: /
+Disallow: /admin
+Disallow: /org-dashboard
+
+Sitemap: https://blackrodnow.com/api/sitemap.xml

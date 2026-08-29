@@ -14,6 +14,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import OrgAvatar from "@/components/OrgAvatar";
 import { api } from "@/lib/api";
+import { resolveEventImage } from "@/lib/eventCategoryImage";
 import { useApp } from "@/context/AppContext";
 import { toast } from "sonner";
 
@@ -45,12 +46,16 @@ export const CategoryBadge = ({ category }) => (
     </span>
 );
 
+// Event times are stored as UK wall-clock strings — render the literal digits,
+// never convert through the browser timezone (that caused the BST drift bug).
 const formatDate = (iso) => {
-    const d = new Date(iso);
+    const d = new Date(String(iso).slice(0, 16));
     return d.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" });
 };
-const formatTime = (iso) =>
-    new Date(iso).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+const formatTime = (iso) => String(iso).slice(11, 16);
+
+export const isMultiDay = (event) =>
+    !!event?.end && String(event.end).slice(0, 10) !== String(event.start).slice(0, 10);
 
 const LINK_RE = /(https?:\/\/[^\s]+)/gi;
 
@@ -78,6 +83,7 @@ const renderTextWithLinks = (text) => {
 export const EventCard = ({ event, featured = false, orgName }) => {
     const { isEventSaved, toggleSaveEvent } = useApp();
     const saved = isEventSaved?.(event.id);
+    const eventImage = resolveEventImage(event);
 
     return (
         <article
@@ -107,14 +113,12 @@ export const EventCard = ({ event, featured = false, orgName }) => {
                     featured ? "md:w-1/2 aspect-[4/3] md:aspect-auto" : "aspect-[16/10]"
                 }`}
             >
-                {event.image && (
-                    <img
-                        src={event.image}
-                        alt={event.title}
-                        className="absolute inset-0 h-full w-full object-cover group-hover:scale-105 transition-transform duration-700"
-                        loading="lazy"
-                    />
-                )}
+                <img
+                    src={eventImage}
+                    alt={event.title}
+                    className="absolute inset-0 h-full w-full object-cover group-hover:scale-105 transition-transform duration-700"
+                    loading="lazy"
+                />
                 <div className="absolute top-3 left-3 flex items-center gap-2">
                     <CategoryBadge category={event.category} />
                     {event.cost === "Free" && (
@@ -122,12 +126,20 @@ export const EventCard = ({ event, featured = false, orgName }) => {
                             Free
                         </span>
                     )}
+                    {event.recurrence?.term_time_only && (
+                        <span
+                            data-testid={`term-time-badge-${event.id}`}
+                            className="px-2 py-1 rounded-full text-[10px] font-bold tracking-wider uppercase bg-amber-100 text-amber-900"
+                        >
+                            Term-time only
+                        </span>
+                    )}
                 </div>
                 <div className="absolute bottom-3 left-3 bg-background/90 backdrop-blur rounded-2xl px-3 py-2 flex items-center gap-3">
                     <CalendarDays className="h-4 w-4 text-primary" />
                     <div className="leading-tight">
                         <div className="text-xs font-bold tracking-wide uppercase">
-                            {formatDate(event.start)}
+                            {formatDate(event.start)}{isMultiDay(event) ? ` – ${formatDate(event.end)}` : ""}
                         </div>
                         <div className="text-[11px] text-muted-foreground">{formatTime(event.start)}</div>
                     </div>
