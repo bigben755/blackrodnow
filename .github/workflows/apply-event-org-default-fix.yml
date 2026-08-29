@@ -1,0 +1,144 @@
+name: Apply event organisation default fix
+
+on:
+  push:
+    branches:
+      - fix/event-org-default
+    paths:
+      - .github/workflows/apply-event-org-default-fix.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply-fix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/event-org-default
+
+      - name: Remove unsafe organisation defaults
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          def must_replace(text, old, new, label, expected=None):
+              count = text.count(old)
+              if expected is not None and count != expected:
+                  raise SystemExit(f"{label}: expected {expected} matches, found {count}")
+              if count == 0:
+                  raise SystemExit(f"{label}: pattern not found")
+              return text.replace(old, new)
+
+          def add_select_placeholder(text, value_expr, label):
+              pattern = re.compile(
+                  r'(<select\b(?=[^>]*value=\{' + re.escape(value_expr) + r'\})[^>]*>\s*)(?!<option\s+value="")',
+                  re.S,
+              )
+              matches = list(pattern.finditer(text))
+              if not matches:
+                  raise SystemExit(f"{label}: select not found")
+              return pattern.sub(lambda m: m.group(1) + '<option value="">Choose organisation…</option>\n', text)
+
+          # Admin: parsed/imported content must never fall back to the first organisation.
+          admin_path = Path('frontend/src/pages/Admin.jsx')
+          admin = admin_path.read_text(encoding='utf-8')
+          admin = must_replace(
+              admin,
+              'draft.matched_org_slug || sourceOrgSlug || orgs[0]?.slug',
+              'draft.matched_org_slug || sourceOrgSlug || ""',
+              'bulk import organisation fallback',
+              expected=4,
+          )
+          admin = must_replace(
+              admin,
+              'const firstOrgSlug = orgs[0]?.slug || "";',
+              'const firstOrgSlug = "";',
+              'quick-create first organisation default',
+              expected=1,
+          )
+          admin = must_replace(
+              admin,
+              '''    useEffect(() => {\n        const slug = orgs[0]?.slug || "";\n        if (!slug) return;\n        setEventForm((prev) => (prev.orgSlug ? prev : { ...prev, orgSlug: slug }));\n        setFeedForm((prev) => (prev.orgSlug ? prev : { ...prev, orgSlug: slug }));\n        setVolForm((prev) => (prev.orgSlug ? prev : { ...prev, orgSlug: slug }));\n    }, [orgs]);\n''',
+              '',
+              'quick-create auto-select effect',
+              expected=1,
+          )
+          admin = add_select_placeholder(admin, 'eventForm.orgSlug', 'event quick-create organisation')
+          admin = add_select_placeholder(admin, 'feedForm.orgSlug', 'feed quick-create organisation')
+          admin = add_select_placeholder(admin, 'volForm.orgSlug', 'volunteering quick-create organisation')
+          admin_path.write_text(admin, encoding='utf-8')
+
+          # Public event submission: reject an unknown organisation instead of silently assigning one.
+          submit_path = Path('frontend/src/pages/SubmitEvent.jsx')
+          submit = submit_path.read_text(encoding='utf-8')
+          submit = must_replace(
+              submit,
+              '''        const orgSlug =\n            orgs.find((o) => o.name.toLowerCase() === form.orgName.toLowerCase())?.slug ||\n            "blackrod-sports-community-centre";\n''',
+              '''        const submittedOrgName = form.orgName.trim().toLowerCase();\n        const matchedOrg = orgs.find(\n            (o) => o.name.trim().toLowerCase() === submittedOrgName,\n        );\n        if (!matchedOrg) {\n            setBusy(false);\n            toast.error("Please choose a listed organisation", {\n                description: "Blackrod Now will not guess the organiser. Select a name from the organisation list before submitting.",\n            });\n            return;\n        }\n        const orgSlug = matchedOrg.slug;\n''',
+              'public submission organisation fallback',
+              expected=1,
+          )
+          submit_path.write_text(submit, encoding='utf-8')
+
+          # Organisation dashboard: use the active/authenticated organisation only; never array position 0.
+          dashboard_path = Path('frontend/src/pages/OrgDashboard.jsx')
+          dashboard = dashboard_path.read_text(encoding='utf-8')
+          dashboard = must_replace(
+              dashboard,
+              'const [selectedOrgSlug, setSelectedOrgSlug] = useState(activeOrgSlug || orgs[0]?.slug || "");',
+              'const [selectedOrgSlug, setSelectedOrgSlug] = useState(activeOrgSlug || "");',
+              'organisation dashboard initial default',
+              expected=1,
+          )
+          dashboard = must_replace(
+              dashboard,
+              '''    useEffect(() => {\n        if (!selectedOrgSlug && orgs.length) setSelectedOrgSlug(orgs[0].slug);\n    }, [orgs, selectedOrgSlug]);\n''',
+              '''    useEffect(() => {\n        if (selectedOrgSlug || !orgs.length) return;\n        const accessibleOrg = orgs.find((o) => hasOrgAccess(o.slug));\n        if (accessibleOrg) setSelectedOrgSlug(accessibleOrg.slug);\n    }, [orgs, selectedOrgSlug, hasOrgAccess]);\n''',
+              'organisation dashboard auto-default effect',
+              expected=1,
+          )
+          dashboard = must_replace(
+              dashboard,
+              '''    const publishEvent = async (it, { recurrenceFreq = "none", recurrenceUntil = "" } = {}) => {\n        let start;''',
+              '''    const publishEvent = async (it, { recurrenceFreq = "none", recurrenceUntil = "" } = {}) => {\n        if (!selectedOrgSlug) return toast.error("Choose an organisation first");\n        let start;''',
+              'organisation dashboard event guard',
+              expected=1,
+          )
+          dashboard = must_replace(
+              dashboard,
+              '''    const publishUpdate = async (it) => {\n        try {''',
+              '''    const publishUpdate = async (it) => {\n        if (!selectedOrgSlug) return toast.error("Choose an organisation first");\n        try {''',
+              'organisation dashboard update guard',
+              expected=1,
+          )
+          dashboard = add_select_placeholder(dashboard, 'selectedOrgSlug', 'organisation dashboard selector')
+          dashboard_path.write_text(dashboard, encoding='utf-8')
+
+          # Regression checks: no creation flow may silently use the first org in the array.
+          admin_check = admin_path.read_text(encoding='utf-8')
+          submit_check = submit_path.read_text(encoding='utf-8')
+          dashboard_check = dashboard_path.read_text(encoding='utf-8')
+          if '|| orgs[0]?.slug' in admin_check or 'orgs[0]?.slug' in dashboard_check:
+              raise SystemExit('Unsafe first-organisation fallback remains')
+          if '"blackrod-sports-community-centre"' in submit_check:
+              raise SystemExit('Unsafe public submission fallback remains')
+          if admin_check.count('draft.matched_org_slug || sourceOrgSlug || ""') != 4:
+              raise SystemExit('Bulk import guards were not applied consistently')
+
+          print('Event organisation assignment safeguards applied successfully.')
+          PY
+
+      - name: Commit fix and remove one-shot workflow
+        shell: bash
+        run: |
+          rm .github/workflows/apply-event-org-default-fix.yml
+          git config user.name "Blackrod Now maintenance"
+          git config user.email "actions@users.noreply.github.com"
+          git add frontend/src/pages/Admin.jsx frontend/src/pages/SubmitEvent.jsx frontend/src/pages/OrgDashboard.jsx .github/workflows/apply-event-org-default-fix.yml
+          git diff --cached --check
+          git commit -m "fix: stop events defaulting to first organisation"
+          git push origin HEAD:fix/event-org-default
