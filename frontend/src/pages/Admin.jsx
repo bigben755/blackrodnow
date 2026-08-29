@@ -2919,7 +2919,7 @@ function QuickAddContentCard({ orgs, onCreated }) {
     const [orgOpen, setOrgOpen] = useState(false);
     const [venueOpen, setVenueOpen] = useState(false);
     const [busy, setBusy] = useState(false);
-    const firstOrgSlug = orgs[0]?.slug || "";
+    const firstOrgSlug = "";
     const [eventForm, setEventForm] = useState({
         title: "", orgSlug: firstOrgSlug, category: "Community",
         date: "", start: "", end: "",
@@ -2949,13 +2949,6 @@ function QuickAddContentCard({ orgs, onCreated }) {
         accessibility: "", capacity: 0, booking: "", image: "",
     });
 
-    useEffect(() => {
-        const slug = orgs[0]?.slug || "";
-        if (!slug) return;
-        setEventForm((prev) => (prev.orgSlug ? prev : { ...prev, orgSlug: slug }));
-        setFeedForm((prev) => (prev.orgSlug ? prev : { ...prev, orgSlug: slug }));
-        setVolForm((prev) => (prev.orgSlug ? prev : { ...prev, orgSlug: slug }));
-    }, [orgs]);
 
     const createEvent = async () => {
         if (!eventForm.title || !eventForm.orgSlug || !eventForm.date) {
@@ -3157,6 +3150,7 @@ function QuickAddContentCard({ orgs, onCreated }) {
                             <div className="grid sm:grid-cols-2 gap-3">
                                 <Field label="Organisation">
                                     <select data-testid="qc-ev-org" value={eventForm.orgSlug} onChange={(e) => setEventForm((p) => ({ ...p, orgSlug: e.target.value }))} className={inp}>
+                                        <option value="">Choose organisation…</option>
                                         {orgs.map((o) => <option key={o.slug} value={o.slug}>{o.name}</option>)}
                                     </select>
                                 </Field>
@@ -3257,6 +3251,7 @@ function QuickAddContentCard({ orgs, onCreated }) {
                         <div className="grid gap-3">
                             <Field label="Organisation">
                                 <select value={feedForm.orgSlug} onChange={(e) => setFeedForm((prev) => ({ ...prev, orgSlug: e.target.value }))} className={inp}>
+                                    <option value="">Choose organisation…</option>
                                     {orgs.map((org) => <option key={org.slug} value={org.slug}>{org.name}</option>)}
                                 </select>
                             </Field>
@@ -3298,6 +3293,7 @@ function QuickAddContentCard({ orgs, onCreated }) {
                         <div className="grid gap-3">
                             <Field label="Organisation">
                                 <select value={volForm.orgSlug} onChange={(e) => setVolForm((prev) => ({ ...prev, orgSlug: e.target.value }))} className={inp}>
+                                    <option value="">Choose organisation…</option>
                                     {orgs.map((org) => <option key={org.slug} value={org.slug}>{org.name}</option>)}
                                 </select>
                             </Field>

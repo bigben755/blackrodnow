@@ -99,7 +99,7 @@ export default function OrgDashboard() {
     } = useApp();
 
     const [selectedOrgSlug, setSelectedOrgSlug] = useState(
-        activeOrgSlug || orgs[0]?.slug || ""
+        activeOrgSlug || ""
     );
 
     const [text, setText] = useState("");
@@ -129,10 +129,16 @@ export default function OrgDashboard() {
     const [duplicatingId, setDuplicatingId] = useState("");
 
     useEffect(() => {
-        if (!selectedOrgSlug && orgs.length) {
-            setSelectedOrgSlug(orgs[0].slug);
+        if (selectedOrgSlug || !orgs.length) return;
+
+        const accessibleOrg = orgs.find((item) =>
+            hasOrgAccess(item.slug)
+        );
+
+        if (accessibleOrg) {
+            setSelectedOrgSlug(accessibleOrg.slug);
         }
-    }, [orgs, selectedOrgSlug]);
+    }, [orgs, selectedOrgSlug, hasOrgAccess]);
 
     useEffect(() => {
         if (selectedOrgSlug) {
@@ -323,6 +329,11 @@ export default function OrgDashboard() {
         item,
         { recurrenceFreq = "none", recurrenceUntil = "" } = {}
     ) => {
+        if (!selectedOrgSlug) {
+            toast.error("Choose an organisation first");
+            return;
+        }
+
         let start;
 
         try {
@@ -424,6 +435,11 @@ export default function OrgDashboard() {
     };
 
     const publishUpdate = async (item) => {
+        if (!selectedOrgSlug) {
+            toast.error("Choose an organisation first");
+            return;
+        }
+
         try {
             await addFeedPost({
                 orgSlug: selectedOrgSlug,
@@ -568,6 +584,7 @@ export default function OrgDashboard() {
                             }
                             className="w-full px-4 py-2.5 rounded-2xl border border-border bg-background text-base sm:text-sm"
                         >
+                            <option value="">Choose organisation…</option>
                             {orgs.map((item) => (
                                 <option key={item.slug} value={item.slug}>
                                     {item.name}
@@ -694,6 +711,7 @@ export default function OrgDashboard() {
                         }
                         className="min-w-0 max-w-full px-4 py-2.5 rounded-full border border-border bg-surface text-sm"
                     >
+                        <option value="">Choose organisation…</option>
                         {orgs.map((item) => (
                             <option key={item.slug} value={item.slug}>
                                 {item.name}

@@ -329,8 +329,8 @@ export default function Home() {
                     className="absolute inset-0 h-full w-full object-cover object-[center_63%]"
                     loading="eager"
                 />
-                <div className="absolute inset-0 bg-gradient-to-r from-black/80 via-black/55 to-black/25" />
-                <div className="absolute inset-0 bg-gradient-to-t from-black/35 via-transparent to-black/10" />
+                <div className="absolute inset-0 bg-gradient-to-r from-black/70 via-black/50 to-black/20" />
+                <div className="absolute inset-0 bg-gradient-to-t from-black/30 via-transparent to-black/5" />
                 <div className="relative max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-14 sm:py-20 lg:py-24 grid lg:grid-cols-12 gap-10 lg:gap-14 items-center">
                     <div className="lg:col-span-7">
                         <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-white/15 border border-white/20 backdrop-blur-sm text-white text-[11px] font-bold tracking-wider uppercase mb-5">
