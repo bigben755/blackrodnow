@@ -1657,6 +1657,7 @@ async def admin_invite_claim_org(
         summary=f"Sent claim invitation to {invite['email']}",
         meta={"invite_id": invite_id},
     )
+    invite.pop("_id", None)
     return invite
 
 
@@ -1716,6 +1717,7 @@ async def admin_invite_org_member(
         summary=f"Invited {invite['email']} to {org.get('name') or slug} as {invite['role']}",
         meta={"org_slug": slug, "invite_id": invite["id"]},
     )
+    invite.pop("_id", None)
     return invite
 
 
@@ -1758,12 +1760,12 @@ async def admin_reset_member_invite(
         raise HTTPException(404, "Invitation not found")
     if invite.get("status") != "pending":
         raise HTTPException(400, "Only pending invitations can be reset")
-    new_token = new_token()
+    new_token_value = new_token()
     await db.org_member_invites.update_one(
         {"id": invite_id},
-        {"$set": {"token": new_token, "sent_at": now_iso()}},
+        {"$set": {"token": new_token_value, "sent_at": now_iso()}},
     )
-    invite["token"] = new_token
+    invite["token"] = new_token_value
     invite["sent_at"] = now_iso()
     asyncio.create_task(_send_org_member_invite(invite))
     await _audit(

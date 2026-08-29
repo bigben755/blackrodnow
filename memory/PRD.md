@@ -222,3 +222,12 @@ A modern community website for Blackrod, Bolton showcasing local events, clubs, 
 ## 27 Jun 2026 — Mobile hero: village focal point no longer hidden behind "This week" box
 - Issue: on mobile the stacked frosted-glass "This week" card landed over the aerial image's village housing band (backdrop-blur obscured the focal point). Desktop was fine.
 - Fix (Home.jsx): glass "This week" card is now `hidden lg:flex` (desktop only). On mobile the count is surfaced as a compact third stat ("This week") in the hero stats row (`lg:hidden`), which sits higher and leaves the lower image band fully visible. Desktop layout unchanged.
+
+## 29 Aug 2026 — Synced Preview to GitHub main (bigben755/blackrodnow)
+- Added git remote `origin` = https://github.com/bigben755/blackrodnow.git and hard-synced working tree to `origin/main` (5bbef56). Clean fast-forward — no local commits lost. GitHub main was authoritative and already contained all prior local history + 7 newer commits (events no longer default to "Blackrod Bloomers", "Choose organisation…" empty defaults in Admin/OrgDashboard selectors, lighter hero gradient).
+- Protected/untouched: .env (gitignored) secrets, MONGO_URL/DB_NAME, REACT_APP_BACKEND_URL, deployment job_id 0c271ea0… (production attachment, DB, custom domain, secrets all preserved). NOT deployed — awaiting user approval.
+- Approved intentional divergence from main (3 files):
+  1. server.py — invite-reset endpoint bug `new_token = new_token()` (UnboundLocalError crash) fixed → uses new_token_value; admin_invite_org_member + org_claim_invite now `invite.pop("_id")` before return (ObjectId serialization leak). Mandated by platform lint gate; also live bugs in production.
+  2. sw.js — bare `clients` → `self.clients` (behaviour identical).
+  3. Layout.jsx — footer "Web Design Wizard" credit redesign (larger logo + link to thewebdesignwizard.co.uk). Was local uncommitted, re-applied on user request. Patch backup: /app/memory/footer_wizard_change.patch.
+- Verified in preview: backend startup + all background loops (parser, reminders, newsletter, push) running; /api/events 200; homepage loads (162 events, 34 orgs); footer renders new credit.

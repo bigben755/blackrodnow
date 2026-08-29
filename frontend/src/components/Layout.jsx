@@ -1278,26 +1278,43 @@ function Footer({ onAdminLoginOpen }) {
                         A community project.
                     </div>
 
-                    <button
-                        type="button"
-                        onClick={() => setWizardOpen(true)}
-                        className="inline-flex w-fit items-center gap-2 text-muted-foreground hover:text-foreground transition"
-                        aria-label="Contact The Web Design Wizard"
-                    >
-                        <span>
-                            Website by{" "}
-                            <span className="font-semibold">
-                                The Web Design Wizard
-                            </span>
-                        </span>
+                    <div className="flex items-center gap-3">
+                        <button
+                            type="button"
+                            onClick={() => setWizardOpen(true)}
+                            className="shrink-0 hover:scale-105 transition-transform"
+                            aria-label="Contact The Web Design Wizard"
+                        >
+                            <img
+                                src="/webwizard.png"
+                                alt="The Web Design Wizard"
+                                className="h-14 sm:h-16 w-auto object-contain"
+                                loading="lazy"
+                            />
+                        </button>
 
-                        <img
-                            src="/webwizard.png"
-                            alt=""
-                            className="h-8 w-auto object-contain"
-                            loading="lazy"
-                        />
-                    </button>
+                        <div className="flex flex-col">
+                            <button
+                                type="button"
+                                onClick={() => setWizardOpen(true)}
+                                className="text-left text-muted-foreground hover:text-foreground transition"
+                            >
+                                Website by{" "}
+                                <span className="font-semibold">
+                                    The Web Design Wizard
+                                </span>
+                            </button>
+
+                            <a
+                                href="http://thewebdesignwizard.co.uk/"
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="mt-1 font-medium text-primary hover:underline"
+                            >
+                                thewebdesignwizard.co.uk
+                            </a>
+                        </div>
+                    </div>
 
                     <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
                         <Link
