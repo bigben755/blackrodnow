@@ -24,180 +24,98 @@ jobs:
         shell: python
         run: |
           from pathlib import Path
+          import re
 
           def replace_once(text, old, new, label):
               if old not in text:
                   raise SystemExit(f"Expected pattern not found for {label}")
               return text.replace(old, new, 1)
 
-          # --- Homepage hero: make the aerial scene slightly lighter ---
+          def sub_once(text, pattern, replacement, label):
+              updated, count = re.subn(pattern, replacement, text, count=1, flags=re.S)
+              if count != 1:
+                  raise SystemExit(f"Expected one regex match for {label}, found {count}")
+              return updated
+
+          # Homepage hero — slightly lighten both overlay gradients.
           home_path = Path("frontend/src/pages/Home.jsx")
           home = home_path.read_text()
           home = replace_once(
               home,
-              'bg-gradient-to-r from-black/80 via-black/55 to-black/25',
-              'bg-gradient-to-r from-black/70 via-black/50 to-black/20',
-              'hero horizontal overlay',
+              "bg-gradient-to-r from-black/80 via-black/55 to-black/25",
+              "bg-gradient-to-r from-black/70 via-black/50 to-black/20",
+              "hero horizontal overlay",
           )
           home = replace_once(
               home,
-              'bg-gradient-to-t from-black/35 via-transparent to-black/10',
-              'bg-gradient-to-t from-black/30 via-transparent to-black/5',
-              'hero vertical overlay',
+              "bg-gradient-to-t from-black/35 via-transparent to-black/10",
+              "bg-gradient-to-t from-black/30 via-transparent to-black/5",
+              "hero vertical overlay",
           )
           home_path.write_text(home)
 
-          # --- Admin Quick Add: never auto-select the first organisation ---
+          # Admin Quick Add — blank organisation until the admin explicitly chooses one.
           admin_path = Path("frontend/src/pages/Admin.jsx")
           admin = admin_path.read_text()
           admin = replace_once(
               admin,
-              '    const firstOrgSlug = orgs[0]?.slug || "";\n',
-              '    const firstOrgSlug = "";\n',
-              'admin first organisation default',
+              'const firstOrgSlug = orgs[0]?.slug || "";',
+              'const firstOrgSlug = "";',
+              "Admin first organisation default",
           )
-
-          auto_fill = '''    useEffect(() => {
-              const slug = orgs[0]?.slug || "";
-              if (!slug) return;
-              setEventForm((prev) => (prev.orgSlug ? prev : { ...prev, orgSlug: slug }));
-              setFeedForm((prev) => (prev.orgSlug ? prev : { ...prev, orgSlug: slug }));
-              setVolForm((prev) => (prev.orgSlug ? prev : { ...prev, orgSlug: slug }));
-          }, [orgs]);
-
-          '''
-          if auto_fill not in admin:
-              raise SystemExit("Expected Admin organisation auto-fill effect not found")
-          admin = admin.replace(auto_fill, "", 1)
-
-          admin = replace_once(
+          admin = sub_once(
               admin,
-              '''                                    <select data-testid="qc-ev-org" value={eventForm.orgSlug} onChange={(e) => setEventForm((p) => ({ ...p, orgSlug: e.target.value }))} className={inp}>
-                                          {orgs.map((o) => <option key={o.slug} value={o.slug}>{o.name}</option>)}''',
-              '''                                    <select data-testid="qc-ev-org" value={eventForm.orgSlug} onChange={(e) => setEventForm((p) => ({ ...p, orgSlug: e.target.value }))} className={inp}>
-                                          <option value="">Choose organisation…</option>
-                                          {orgs.map((o) => <option key={o.slug} value={o.slug}>{o.name}</option>)}''',
-              'admin event organisation selector',
+              r'''\n\s{4}useEffect\(\(\) => \{\n\s+const slug = orgs\[0\]\?\.slug \|\| "";\n\s+if \(!slug\) return;\n\s+setEventForm\(\(prev\) => \(prev\.orgSlug \? prev : \{ \.\.\.prev, orgSlug: slug \}\)\);\n\s+setFeedForm\(\(prev\) => \(prev\.orgSlug \? prev : \{ \.\.\.prev, orgSlug: slug \}\)\);\n\s+setVolForm\(\(prev\) => \(prev\.orgSlug \? prev : \{ \.\.\.prev, orgSlug: slug \}\)\);\n\s+\}, \[orgs\]\);\n''',
+              "\n",
+              "Admin organisation auto-fill effect",
           )
 
-          admin = replace_once(
-              admin,
-              '''                                <select value={feedForm.orgSlug} onChange={(e) => setFeedForm((prev) => ({ ...prev, orgSlug: e.target.value }))} className={inp}>
-                                      {orgs.map((org) => <option key={org.slug} value={org.slug}>{org.name}</option>)}''',
-              '''                                <select value={feedForm.orgSlug} onChange={(e) => setFeedForm((prev) => ({ ...prev, orgSlug: e.target.value }))} className={inp}>
-                                      <option value="">Choose organisation…</option>
-                                      {orgs.map((org) => <option key={org.slug} value={org.slug}>{org.name}</option>)}''',
-              'admin feed organisation selector',
-          )
-
-          admin = replace_once(
-              admin,
-              '''                                <select value={volForm.orgSlug} onChange={(e) => setVolForm((prev) => ({ ...prev, orgSlug: e.target.value }))} className={inp}>
-                                      {orgs.map((org) => <option key={org.slug} value={org.slug}>{org.name}</option>)}''',
-              '''                                <select value={volForm.orgSlug} onChange={(e) => setVolForm((prev) => ({ ...prev, orgSlug: e.target.value }))} className={inp}>
-                                      <option value="">Choose organisation…</option>
-                                      {orgs.map((org) => <option key={org.slug} value={org.slug}>{org.name}</option>)}''',
-              'admin volunteering organisation selector',
-          )
+          event_select = '<select data-testid="qc-ev-org" value={eventForm.orgSlug} onChange={(e) => setEventForm((p) => ({ ...p, orgSlug: e.target.value }))} className={inp}>'
+          feed_select = '<select value={feedForm.orgSlug} onChange={(e) => setFeedForm((prev) => ({ ...prev, orgSlug: e.target.value }))} className={inp}>'
+          vol_select = '<select value={volForm.orgSlug} onChange={(e) => setVolForm((prev) => ({ ...prev, orgSlug: e.target.value }))} className={inp}>'
+          admin = replace_once(admin, event_select, event_select + '\n                                        <option value="">Choose organisation…</option>', "Admin event selector")
+          admin = replace_once(admin, feed_select, feed_select + '\n                                    <option value="">Choose organisation…</option>', "Admin feed selector")
+          admin = replace_once(admin, vol_select, vol_select + '\n                                    <option value="">Choose organisation…</option>', "Admin volunteering selector")
           admin_path.write_text(admin)
 
-          # --- Organisation dashboard: do not silently choose orgs[0] ---
+          # Organisation dashboard — do not silently fall back to orgs[0].
           org_path = Path("frontend/src/pages/OrgDashboard.jsx")
           org = org_path.read_text()
+          org = sub_once(
+              org,
+              r'''const \[selectedOrgSlug, setSelectedOrgSlug\] = useState\(\s*activeOrgSlug \|\| orgs\[0\]\?\.slug \|\| ""\s*\);''',
+              '''const [selectedOrgSlug, setSelectedOrgSlug] = useState(\n        activeOrgSlug || ""\n    );''',
+              "Organisation dashboard initial selection",
+          )
+          org = sub_once(
+              org,
+              r'''useEffect\(\(\) => \{\s*if \(!selectedOrgSlug && orgs\.length\) \{\s*setSelectedOrgSlug\(orgs\[0\]\.slug\);\s*\}\s*\}, \[orgs, selectedOrgSlug\]\);''',
+              '''useEffect(() => {\n        if (selectedOrgSlug || !orgs.length) return;\n\n        const accessibleOrg = orgs.find((item) =>\n            hasOrgAccess(item.slug)\n        );\n\n        if (accessibleOrg) {\n            setSelectedOrgSlug(accessibleOrg.slug);\n        }\n    }, [orgs, selectedOrgSlug, hasOrgAccess]);''',
+              "Organisation dashboard first-org effect",
+          )
           org = replace_once(
               org,
-              '''    const [selectedOrgSlug, setSelectedOrgSlug] = useState(
-                  activeOrgSlug || orgs[0]?.slug || ""
-              );''',
-              '''    const [selectedOrgSlug, setSelectedOrgSlug] = useState(
-                  activeOrgSlug || ""
-              );''',
-              'organisation dashboard initial selection',
+              ''') => {\n        let start;''',
+              ''') => {\n        if (!selectedOrgSlug) {\n            toast.error("Choose an organisation first");\n            return;\n        }\n\n        let start;''',
+              "Organisation event publish guard",
           )
-
           org = replace_once(
               org,
-              '''    useEffect(() => {
-                  if (!selectedOrgSlug && orgs.length) {
-                      setSelectedOrgSlug(orgs[0].slug);
-                  }
-              }, [orgs, selectedOrgSlug]);''',
-              '''    useEffect(() => {
-                  if (selectedOrgSlug || !orgs.length) return;
-
-                  const accessibleOrg = orgs.find((item) =>
-                      hasOrgAccess(item.slug)
-                  );
-
-                  if (accessibleOrg) {
-                      setSelectedOrgSlug(accessibleOrg.slug);
-                  }
-              }, [orgs, selectedOrgSlug, hasOrgAccess]);''',
-              'organisation dashboard first-org effect',
+              '''const publishUpdate = async (item) => {\n        try {''',
+              '''const publishUpdate = async (item) => {\n        if (!selectedOrgSlug) {\n            toast.error("Choose an organisation first");\n            return;\n        }\n\n        try {''',
+              "Organisation update publish guard",
           )
 
-          org = replace_once(
-              org,
-              '''    const publishEvent = async (
-                  item,
-                  { recurrenceFreq = "none", recurrenceUntil = "" } = {}
-              ) => {
-                  let start;''',
-              '''    const publishEvent = async (
-                  item,
-                  { recurrenceFreq = "none", recurrenceUntil = "" } = {}
-              ) => {
-                  if (!selectedOrgSlug) {
-                      toast.error("Choose an organisation first");
-                      return;
-                  }
-
-                  let start;''',
-              'organisation event publish guard',
-          )
-
-          org = replace_once(
-              org,
-              '''    const publishUpdate = async (item) => {
-                  try {''',
-              '''    const publishUpdate = async (item) => {
-                  if (!selectedOrgSlug) {
-                      toast.error("Choose an organisation first");
-                      return;
-                  }
-
-                  try {''',
-              'organisation update publish guard',
-          )
-
-          org = replace_once(
-              org,
-              '''                            className="w-full px-4 py-2.5 rounded-2xl border border-border bg-background text-base sm:text-sm"
-                          >
-                              {orgs.map((item) => (''',
-              '''                            className="w-full px-4 py-2.5 rounded-2xl border border-border bg-background text-base sm:text-sm"
-                          >
-                              <option value="">Choose organisation…</option>
-                              {orgs.map((item) => (''',
-              'locked organisation selector',
-          )
-
-          org = replace_once(
-              org,
-              '''                        className="min-w-0 max-w-full px-4 py-2.5 rounded-full border border-border bg-surface text-sm"
-                      >
-                          {orgs.map((item) => (''',
-              '''                        className="min-w-0 max-w-full px-4 py-2.5 rounded-full border border-border bg-surface text-sm"
-                      >
-                          <option value="">Choose organisation…</option>
-                          {orgs.map((item) => (''',
-              'dashboard organisation selector',
-          )
+          locked_marker = 'className="w-full px-4 py-2.5 rounded-2xl border border-border bg-background text-base sm:text-sm"\n                        >'
+          switcher_marker = 'className="min-w-0 max-w-full px-4 py-2.5 rounded-full border border-border bg-surface text-sm"\n                    >'
+          org = replace_once(org, locked_marker, locked_marker + '\n                            <option value="">Choose organisation…</option>', "Locked organisation selector")
+          org = replace_once(org, switcher_marker, switcher_marker + '\n                        <option value="">Choose organisation…</option>', "Dashboard organisation selector")
           org_path.write_text(org)
 
-          # --- Safety checks ---
-          assert 'from-black/80 via-black/55 to-black/25' not in home
-          assert 'from-black/70 via-black/50 to-black/20' in home
+          # Safety checks. SubmitEvent on the current Emergent branch already uses an exact directory match.
+          submit = Path("frontend/src/pages/SubmitEvent.jsx").read_text()
+          assert "from-black/70 via-black/50 to-black/20" in home
+          assert "from-black/80 via-black/55 to-black/25" not in home
           assert 'const firstOrgSlug = "";' in admin
           assert 'const firstOrgSlug = orgs[0]?.slug || "";' not in admin
           assert admin.count('<option value="">Choose organisation…</option>') >= 3
@@ -205,10 +123,8 @@ jobs:
           assert 'setSelectedOrgSlug(orgs[0].slug)' not in org
           assert org.count('Choose an organisation first') >= 2
           assert org.count('<option value="">Choose organisation…</option>') >= 2
-
-          submit = Path("frontend/src/pages/SubmitEvent.jsx").read_text()
-          assert 'matchingOrg' in submit
-          assert 'blackrod-sports-community-centre' not in submit
+          assert "matchingOrg" in submit
+          assert "blackrod-sports-community-centre" not in submit
 
       - name: Commit patched project and remove one-shot workflow
         shell: bash
@@ -216,6 +132,6 @@ jobs:
           git config user.name "OpenAI"
           git config user.email "actions@users.noreply.github.com"
           git rm .github/workflows/sync-emergent-fixes.yml
-          git add frontend/src/pages/Home.jsx frontend/src/pages/Admin.jsx frontend/src/pages/OrgDashboard.jsx frontend/src/pages/SubmitEvent.jsx
+          git add frontend/src/pages/Home.jsx frontend/src/pages/Admin.jsx frontend/src/pages/OrgDashboard.jsx
           git commit -m "Sync Emergent code with organisation safety fix and lighter hero"
           git push origin HEAD:sync/emergent-current-fixes
