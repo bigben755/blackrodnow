@@ -1,0 +1,64 @@
+name: Resolve Emergent sync conflicts
+
+on:
+  push:
+    branches:
+      - sync/emergent-current-fixes
+    paths:
+      - .github/workflows/resolve-emergent-sync.yml
+
+permissions:
+  contents: write
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out sync branch
+        uses: actions/checkout@v4
+        with:
+          ref: sync/emergent-current-fixes
+          fetch-depth: 0
+
+      - name: Merge main while keeping the newer Emergent versions of conflicted pages
+        shell: bash
+        run: |
+          set -e
+          git config user.name "OpenAI"
+          git config user.email "actions@users.noreply.github.com"
+          git fetch origin main
+
+          set +e
+          git merge origin/main --no-commit --no-ff
+          merge_status=$?
+          set -e
+
+          if [ "$merge_status" -ne 0 ]; then
+            git checkout --ours -- \
+              frontend/src/pages/Admin.jsx \
+              frontend/src/pages/OrgDashboard.jsx \
+              frontend/src/pages/SubmitEvent.jsx
+            git add \
+              frontend/src/pages/Admin.jsx \
+              frontend/src/pages/OrgDashboard.jsx \
+              frontend/src/pages/SubmitEvent.jsx
+          fi
+
+          unresolved="$(git diff --name-only --diff-filter=U)"
+          if [ -n "$unresolved" ]; then
+            echo "Unresolved merge conflicts remain:"
+            echo "$unresolved"
+            exit 1
+          fi
+
+          # Confirm the newer branch still contains the safety and hero changes.
+          grep -q 'from-black/70 via-black/50 to-black/20' frontend/src/pages/Home.jsx
+          grep -q 'const firstOrgSlug = "";' frontend/src/pages/Admin.jsx
+          ! grep -q 'const firstOrgSlug = orgs\[0\]?.slug || "";' frontend/src/pages/Admin.jsx
+          ! grep -q 'activeOrgSlug || orgs\[0\]?.slug || ""' frontend/src/pages/OrgDashboard.jsx
+          grep -q 'matchingOrg' frontend/src/pages/SubmitEvent.jsx
+
+          git rm .github/workflows/resolve-emergent-sync.yml
+          git add -A
+          git commit -m "Merge main into current Emergent sync"
+          git push origin HEAD:sync/emergent-current-fixes
