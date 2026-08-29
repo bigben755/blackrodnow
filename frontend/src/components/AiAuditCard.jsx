@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { toast } from "sonner";
-import { Sparkles, ExternalLink, Check, X, Loader2, RefreshCw } from "lucide-react";
+import { Sparkles, ExternalLink, Check, X, Loader2, RefreshCw, Building2, ShieldCheck } from "lucide-react";
 import { api } from "@/lib/api";
 
 const FIELD_LABELS = {
@@ -116,6 +116,31 @@ export default function AiAuditCard({ onApplied }) {
         });
     };
 
+    const approveSuggestedOrg = async (change) => {
+        const slug = String(change?.new || "").trim();
+        if (!slug) return;
+        setBusy(`org:${slug}`);
+        try {
+            await api.setOrgStatus(slug, "approved");
+            setProposals((current) =>
+                current.map((proposal) => ({
+                    ...proposal,
+                    changes: (proposal.changes || []).map((item) =>
+                        item.field === "orgSlug" && item.new === slug
+                            ? { ...item, org_status: "approved" }
+                            : item
+                    ),
+                }))
+            );
+            toast.success(`Organisation approved: ${change.new_display || slug}`);
+            if (onApplied) onApplied();
+        } catch (error) {
+            toast.error(error?.response?.data?.detail || "Could not approve organisation");
+        } finally {
+            setBusy("");
+        }
+    };
+
     const decide = async (proposal, approve) => {
         const fields = ticks[proposal.id] || [];
         if (approve && !fields.length) {
@@ -153,7 +178,7 @@ export default function AiAuditCard({ onApplied }) {
                     </h3>
                     <p className="text-sm text-muted-foreground mt-1 max-w-xl">
                         Checks upcoming events against the live web (organisers' sites, Facebook, Bolton Council). Suggested
-                        corrections appear below with sources — nothing changes until you approve it.
+                        corrections appear below with sources. If the real organiser is not on Blackrod Now, a pending organisation is created for review — nothing public changes until you approve it.
                     </p>
                 </div>
                 <div className="flex gap-2 flex-wrap">
@@ -281,6 +306,37 @@ export default function AiAuditCard({ onApplied }) {
                                                 </span>
                                             </div>
                                             {c.evidence ? <div className="mt-1 text-muted-foreground">{c.evidence}</div> : null}
+                                            {c.field === "orgSlug" && c.org_status === "approved" ? (
+                                                <div className="mt-2 inline-flex items-center gap-1.5 rounded-full bg-emerald-100 px-2.5 py-1 text-[10px] font-bold text-emerald-900">
+                                                    <ShieldCheck className="h-3 w-3" /> Organisation approved and ready to assign
+                                                </div>
+                                            ) : null}
+                                            {c.field === "orgSlug" && c.org_status && c.org_status !== "approved" && c.org_status !== "missing" ? (
+                                                <div className="mt-2 flex flex-wrap items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 p-2.5 text-amber-950">
+                                                    <Building2 className="h-3.5 w-3.5 shrink-0" />
+                                                    <span className="font-semibold">
+                                                        {c.created_org_for_approval ? "New organisation created — approval required" : `Organisation status: ${c.org_status}`}
+                                                    </span>
+                                                    <button
+                                                        type="button"
+                                                        disabled={busy === `org:${c.new}`}
+                                                        onClick={(event) => {
+                                                            event.preventDefault();
+                                                            event.stopPropagation();
+                                                            approveSuggestedOrg(c);
+                                                        }}
+                                                        className="ml-auto rounded-full bg-amber-900 px-2.5 py-1 text-[10px] font-bold text-white disabled:opacity-50"
+                                                    >
+                                                        {busy === `org:${c.new}` ? "Approving…" : "Approve organisation"}
+                                                    </button>
+                                                </div>
+                                            ) : null}
+                                            {c.field === "orgSlug" && c.org_status === "missing" ? (
+                                                <div className="mt-2 rounded-xl border border-red-200 bg-red-50 p-2.5 text-[10px] font-semibold text-red-800">
+                                                    Suggested organisation is missing. Re-run the audit before applying this change.
+                                                </div>
+                                            ) : null}
+
                                             {c.source_url ? (
                                                 <a
                                                     href={c.source_url}

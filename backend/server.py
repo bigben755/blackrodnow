@@ -8551,13 +8551,83 @@ async def _audit_sanitise_changes(event: dict, data: dict) -> List[dict]:
         evidence = str(edit.get("evidence") or "")[:400]
         source_url = str(edit.get("source_url") or "")[:400]
         if field == "organisation":
-            target = await db.orgs.find_one(
-                {"name": {"$regex": f"^{re.escape(new_value)}$", "$options": "i"}},
-                {"_id": 0, "slug": 1, "name": 1},
+            # If the verified organiser does not exist yet, create a
+            # pending profile for explicit admin review rather than
+            # silently discarding the organisation correction.
+            def _org_key(value: Any) -> str:
+                return re.sub(r"[^a-z0-9]+", "", str(value or "").lower())
+
+            current = await db.orgs.find_one(
+                {"slug": event.get("orgSlug")},
+                {"_id": 0, "slug": 1, "name": 1, "status": 1},
             )
-            if not target or target["slug"] == (event.get("orgSlug") or ""):
+            wanted_key = _org_key(new_value)
+            if current and _org_key(current.get("name")) == wanted_key:
                 continue
-            current = await db.orgs.find_one({"slug": event.get("orgSlug")}, {"_id": 0, "name": 1})
+
+            org_rows = await db.orgs.find(
+                {},
+                {"_id": 0, "slug": 1, "name": 1, "status": 1},
+            ).to_list(1000)
+            target = next(
+                (row for row in org_rows if _org_key(row.get("name")) == wanted_key),
+                None,
+            )
+            created_for_approval = False
+
+            if not target:
+                # New profiles require source evidence and remain hidden
+                # from the public site until an admin approves them.
+                if not source_url:
+                    continue
+                base_slug = re.sub(r"[^a-z0-9]+", "-", new_value.lower()).strip("-")[:72]
+                if not base_slug:
+                    base_slug = f"organisation-{new_id()[:8]}"
+                used_slugs = {str(row.get("slug") or "") for row in org_rows}
+                target_slug = base_slug
+                suffix = 2
+                while target_slug in used_slugs:
+                    target_slug = f"{base_slug[:68]}-{suffix}"
+                    suffix += 1
+
+                new_org = Organisation(
+                    slug=target_slug,
+                    name=new_value,
+                    category="Community groups",
+                    status="pending",
+                    verified=False,
+                    trust_level="new",
+                ).model_dump()
+                new_org["audit_origin"] = {
+                    "source": "event_accuracy_audit",
+                    "event_id": event.get("id") or "",
+                    "event_title": event.get("title") or "",
+                    "evidence": evidence,
+                    "source_url": source_url,
+                    "created_at": now_iso(),
+                }
+                await db.orgs.insert_one(new_org)
+                target = {
+                    "slug": target_slug,
+                    "name": new_value,
+                    "status": "pending",
+                }
+                created_for_approval = True
+                await _audit(
+                    action="ai_org_suggested",
+                    entity_type="org",
+                    entity_id=target_slug,
+                    summary=f"AI audit created a pending organisation for review: {new_value}",
+                    meta={
+                        "event_id": event.get("id") or "",
+                        "event_title": event.get("title") or "",
+                        "source_url": source_url,
+                    },
+                    actor="system",
+                )
+
+            if target["slug"] == (event.get("orgSlug") or ""):
+                continue
             changes.append({
                 "field": "orgSlug",
                 "old": str(event.get("orgSlug") or ""),
@@ -8566,6 +8636,8 @@ async def _audit_sanitise_changes(event: dict, data: dict) -> List[dict]:
                 "new_display": target["name"],
                 "evidence": evidence,
                 "source_url": source_url,
+                "org_status": target.get("status") or "pending",
+                "created_org_for_approval": created_for_approval,
             })
             continue
         if field not in AUDIT_EDITABLE_FIELDS or field == "orgSlug":
@@ -8576,7 +8648,6 @@ async def _audit_sanitise_changes(event: dict, data: dict) -> List[dict]:
                 datetime.fromisoformat(new_value)
             except Exception:
                 continue
-            # Never suggest moving an event into the past (stale web sources).
             if new_value[:10] < datetime.now(UK_TZ).strftime("%Y-%m-%d"):
                 continue
         old_value = str(event.get(field) or "")
@@ -8722,7 +8793,23 @@ async def list_event_edit_proposals(
     admin_code: Optional[str] = Header(None, alias="X-Admin-Code"),
 ):
     _require_admin_from_request(request, authorization, admin_code)
-    return await db.event_edit_proposals.find({"status": status}, {"_id": 0}).sort("created_at", -1).to_list(200)
+    proposals = await db.event_edit_proposals.find({"status": status}, {"_id": 0}).sort("created_at", -1).to_list(200)
+    # Resolve the organisation's current status each time so the audit
+    # card accurately shows whether a suggested organiser is ready.
+    for proposal in proposals:
+        for change in proposal.get("changes", []):
+            if change.get("field") != "orgSlug":
+                continue
+            target_org = await db.orgs.find_one(
+                {"slug": change.get("new")},
+                {"_id": 0, "name": 1, "status": 1},
+            )
+            if target_org:
+                change["org_status"] = target_org.get("status") or "pending"
+                change["new_display"] = target_org.get("name") or change.get("new_display") or change.get("new")
+            else:
+                change["org_status"] = "missing"
+    return proposals
 
 
 class ProposalDecisionReq(BaseModel):
@@ -8756,8 +8843,18 @@ async def approve_event_edit_proposal(
     merged_end = str(updates.get("end", event.get("end") or ""))[:19]
     if merged_start and merged_end and merged_end < merged_start:
         raise HTTPException(400, "That change would put the end before the start — approve both date fields together or edit the event manually")
-    if "orgSlug" in updates and not await db.orgs.find_one({"slug": updates["orgSlug"]}, {"_id": 0, "slug": 1}):
-        raise HTTPException(400, "The suggested organisation no longer exists")
+    if "orgSlug" in updates:
+        target_org = await db.orgs.find_one(
+            {"slug": updates["orgSlug"]},
+            {"_id": 0, "slug": 1, "name": 1, "status": 1},
+        )
+        if not target_org:
+            raise HTTPException(400, "The suggested organisation no longer exists")
+        if target_org.get("status") != "approved":
+            raise HTTPException(
+                409,
+                f"Approve {target_org.get('name') or updates['orgSlug']} before assigning this event to it",
+            )
     await db.events.update_one({"id": p["event_id"]}, {"$set": updates})
     await db.event_edit_proposals.update_one(
         {"id": pid},
