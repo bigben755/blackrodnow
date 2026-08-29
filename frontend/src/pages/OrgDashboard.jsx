@@ -253,10 +253,10 @@ export default function OrgDashboard() {
                     <div className="mt-5 grid gap-3">
                         <select
                             value={selectedOrgSlug}
-                            onChange={(e) => <option value="">Choose organisation…</option>
-setSelectedOrgSlug(e.target.value)}
+                            onChange={(e) => setSelectedOrgSlug(e.target.value)}
                             className="w-full px-4 py-2.5 rounded-2xl border border-border bg-background text-sm"
                         >
+                            <option value="">Choose organisation…</option>
                             {orgs.map((o) => (
                                 <option key={o.slug} value={o.slug}>{o.name}</option>
                             ))}
@@ -322,9 +322,9 @@ setSelectedOrgSlug(e.target.value)}
                     >
                         <Send className="h-3.5 w-3.5" /> Contact admin
                     </button>
-                    <select data-testid="org-switcher" value={selectedOrgSlug} onChange={(e) => <option value="">Choose organisation…</option>
-setSelectedOrgSlug(e.target.value)}
+                    <select data-testid="org-switcher" value={selectedOrgSlug} onChange={(e) => setSelectedOrgSlug(e.target.value)}
                         className="flex-1 sm:flex-none min-w-0 max-w-full truncate px-4 py-2 rounded-full border border-border bg-surface text-sm">
+                        <option value="">Choose organisation…</option>
                         {orgs.map((o) => (<option key={o.slug} value={o.slug}>{o.name}</option>))}
                     </select>
                 </div>

@@ -2053,8 +2053,8 @@ function QuickAddContentCard({ orgs, onCreated }) {
                             </Field>
                             <div className="grid sm:grid-cols-2 gap-3">
                                 <Field label="Organisation">
-                                    <select data-testid="qc-ev-org" value={eventForm.orgSlug} onChange={(e) => <option value="">Choose organisation…</option>
-setEventForm((p) => ({ ...p, orgSlug: e.target.value }))} className={inp}>
+                                    <select data-testid="qc-ev-org" value={eventForm.orgSlug} onChange={(e) => setEventForm((p) => ({ ...p, orgSlug: e.target.value }))} className={inp}>
+                                        <option value="">Choose organisation…</option>
                                         {orgs.map((o) => <option key={o.slug} value={o.slug}>{o.name}</option>)}
                                     </select>
                                 </Field>
@@ -2154,8 +2154,8 @@ setEventForm((p) => ({ ...p, orgSlug: e.target.value }))} className={inp}>
                         <DialogHeader><DialogTitle>Create feed post</DialogTitle></DialogHeader>
                         <div className="grid gap-3">
                             <Field label="Organisation">
-                                <select value={feedForm.orgSlug} onChange={(e) => <option value="">Choose organisation…</option>
-setFeedForm((prev) => ({ ...prev, orgSlug: e.target.value }))} className={inp}>
+                                <select value={feedForm.orgSlug} onChange={(e) => setFeedForm((prev) => ({ ...prev, orgSlug: e.target.value }))} className={inp}>
+                                    <option value="">Choose organisation…</option>
                                     {orgs.map((org) => <option key={org.slug} value={org.slug}>{org.name}</option>)}
                                 </select>
                             </Field>
@@ -2196,8 +2196,8 @@ setFeedForm((prev) => ({ ...prev, orgSlug: e.target.value }))} className={inp}>
                         <DialogHeader><DialogTitle>Create volunteering opportunity</DialogTitle></DialogHeader>
                         <div className="grid gap-3">
                             <Field label="Organisation">
-                                <select value={volForm.orgSlug} onChange={(e) => <option value="">Choose organisation…</option>
-setVolForm((prev) => ({ ...prev, orgSlug: e.target.value }))} className={inp}>
+                                <select value={volForm.orgSlug} onChange={(e) => setVolForm((prev) => ({ ...prev, orgSlug: e.target.value }))} className={inp}>
+                                    <option value="">Choose organisation…</option>
                                     {orgs.map((org) => <option key={org.slug} value={org.slug}>{org.name}</option>)}
                                 </select>
                             </Field>
