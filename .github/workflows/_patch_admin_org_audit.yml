@@ -166,47 +166,47 @@ jobs:
               raise SystemExit(f"Audit sanitiser replacement count was {count}; refusing to continue")
 
           old_list_line = '    return await db.event_edit_proposals.find({"status": status}, {"_id": 0}).sort("created_at", -1).to_list(200)'
-          new_list_block = textwrap.dedent('''\
-              proposals = await db.event_edit_proposals.find({"status": status}, {"_id": 0}).sort("created_at", -1).to_list(200)
-              # Resolve the organisation's current status each time so the audit
-              # card accurately shows whether a suggested organiser is ready.
-              for proposal in proposals:
-                  for change in proposal.get("changes", []):
-                      if change.get("field") != "orgSlug":
-                          continue
-                      target_org = await db.orgs.find_one(
-                          {"slug": change.get("new")},
-                          {"_id": 0, "name": 1, "status": 1},
-                      )
-                      if target_org:
-                          change["org_status"] = target_org.get("status") or "pending"
-                          change["new_display"] = target_org.get("name") or change.get("new_display") or change.get("new")
-                      else:
-                          change["org_status"] = "missing"
-              return proposals
-          ''')
+          new_list_block = textwrap.indent(textwrap.dedent('''\
+          proposals = await db.event_edit_proposals.find({"status": status}, {"_id": 0}).sort("created_at", -1).to_list(200)
+          # Resolve the organisation's current status each time so the audit
+          # card accurately shows whether a suggested organiser is ready.
+          for proposal in proposals:
+              for change in proposal.get("changes", []):
+                  if change.get("field") != "orgSlug":
+                      continue
+                  target_org = await db.orgs.find_one(
+                      {"slug": change.get("new")},
+                      {"_id": 0, "name": 1, "status": 1},
+                  )
+                  if target_org:
+                      change["org_status"] = target_org.get("status") or "pending"
+                      change["new_display"] = target_org.get("name") or change.get("new_display") or change.get("new")
+                  else:
+                      change["org_status"] = "missing"
+          return proposals
+          '''), "    ").rstrip()
           if server.count(old_list_line) != 1:
               raise SystemExit("Expected proposal list return line was not unique")
-          server = server.replace(old_list_line, new_list_block.rstrip(), 1)
+          server = server.replace(old_list_line, new_list_block, 1)
 
           old_approve = (
               '    if "orgSlug" in updates and not await db.orgs.find_one({"slug": updates["orgSlug"]}, {"_id": 0, "slug": 1}):\n'
               '        raise HTTPException(400, "The suggested organisation no longer exists")\n'
           )
-          new_approve = textwrap.dedent('''\
-              if "orgSlug" in updates:
-                  target_org = await db.orgs.find_one(
-                      {"slug": updates["orgSlug"]},
-                      {"_id": 0, "slug": 1, "name": 1, "status": 1},
+          new_approve = textwrap.indent(textwrap.dedent('''\
+          if "orgSlug" in updates:
+              target_org = await db.orgs.find_one(
+                  {"slug": updates["orgSlug"]},
+                  {"_id": 0, "slug": 1, "name": 1, "status": 1},
+              )
+              if not target_org:
+                  raise HTTPException(400, "The suggested organisation no longer exists")
+              if target_org.get("status") != "approved":
+                  raise HTTPException(
+                      409,
+                      f"Approve {target_org.get('name') or updates['orgSlug']} before assigning this event to it",
                   )
-                  if not target_org:
-                      raise HTTPException(400, "The suggested organisation no longer exists")
-                  if target_org.get("status") != "approved":
-                      raise HTTPException(
-                          409,
-                          f"Approve {target_org.get('name') or updates['orgSlug']} before assigning this event to it",
-                      )
-          ''')
+          '''), "    ")
           if old_approve not in server:
               raise SystemExit("Expected organisation approval guard not found")
           server = server.replace(old_approve, new_approve, 1)
@@ -223,36 +223,36 @@ jobs:
               raise SystemExit("AiAuditCard icon import was not recognised")
 
           decide_marker = '    const decide = async (proposal, approve) => {'
-          approve_org_fn = textwrap.dedent('''\
-              const approveSuggestedOrg = async (change) => {
-                  const slug = String(change?.new || "").trim();
-                  if (!slug) return;
-                  setBusy(`org:${slug}`);
-                  try {
-                      await api.setOrgStatus(slug, "approved");
-                      setProposals((current) =>
-                          current.map((proposal) => ({
-                              ...proposal,
-                              changes: (proposal.changes || []).map((item) =>
-                                  item.field === "orgSlug" && item.new === slug
-                                      ? { ...item, org_status: "approved" }
-                                      : item
-                              ),
-                          }))
-                      );
-                      toast.success(`Organisation approved: ${change.new_display || slug}`);
-                      if (onApplied) onApplied();
-                  } catch (error) {
-                      toast.error(error?.response?.data?.detail || "Could not approve organisation");
-                  } finally {
-                      setBusy("");
-                  }
-              };
-          ''')
+          approve_org_fn = textwrap.indent(textwrap.dedent('''\
+          const approveSuggestedOrg = async (change) => {
+              const slug = String(change?.new || "").trim();
+              if (!slug) return;
+              setBusy(`org:${slug}`);
+              try {
+                  await api.setOrgStatus(slug, "approved");
+                  setProposals((current) =>
+                      current.map((proposal) => ({
+                          ...proposal,
+                          changes: (proposal.changes || []).map((item) =>
+                              item.field === "orgSlug" && item.new === slug
+                                  ? { ...item, org_status: "approved" }
+                                  : item
+                          ),
+                      }))
+                  );
+                  toast.success(`Organisation approved: ${change.new_display || slug}`);
+                  if (onApplied) onApplied();
+              } catch (error) {
+                  toast.error(error?.response?.data?.detail || "Could not approve organisation");
+              } finally {
+                  setBusy("");
+              }
+          };
+          '''), "    ")
           if "const approveSuggestedOrg = async" not in card:
               if decide_marker not in card:
                   raise SystemExit("AiAuditCard decision marker not found")
-              card = card.replace(decide_marker, approve_org_fn + "\n    " + decide_marker.strip(), 1)
+              card = card.replace(decide_marker, approve_org_fn + "\n" + decide_marker, 1)
 
           old_desc = "Checks upcoming events against the live web (organisers' sites, Facebook, Bolton Council). Suggested\n                        corrections appear below with sources — nothing changes until you approve it."
           new_desc = "Checks upcoming events against the live web (organisers' sites, Facebook, Bolton Council). Suggested\n                        corrections appear below with sources. If the real organiser is not on Blackrod Now, a pending organisation is created for review — nothing public changes until you approve it."
@@ -260,43 +260,42 @@ jobs:
               card = card.replace(old_desc, new_desc, 1)
 
           source_marker = '                                            {c.source_url ? ('
-          org_status_ui = textwrap.dedent('''\
-              {c.field === "orgSlug" && c.org_status === "approved" ? (
-                  <div className="mt-2 inline-flex items-center gap-1.5 rounded-full bg-emerald-100 px-2.5 py-1 text-[10px] font-bold text-emerald-900">
-                      <ShieldCheck className="h-3 w-3" /> Organisation approved and ready to assign
-                  </div>
-              ) : null}
-              {c.field === "orgSlug" && c.org_status && c.org_status !== "approved" && c.org_status !== "missing" ? (
-                  <div className="mt-2 flex flex-wrap items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 p-2.5 text-amber-950">
-                      <Building2 className="h-3.5 w-3.5 shrink-0" />
-                      <span className="font-semibold">
-                          {c.created_org_for_approval ? "New organisation created — approval required" : `Organisation status: ${c.org_status}`}
-                      </span>
-                      <button
-                          type="button"
-                          disabled={busy === `org:${c.new}`}
-                          onClick={(event) => {
-                              event.preventDefault();
-                              event.stopPropagation();
-                              approveSuggestedOrg(c);
-                          }}
-                          className="ml-auto rounded-full bg-amber-900 px-2.5 py-1 text-[10px] font-bold text-white disabled:opacity-50"
-                      >
-                          {busy === `org:${c.new}` ? "Approving…" : "Approve organisation"}
-                      </button>
-                  </div>
-              ) : null}
-              {c.field === "orgSlug" && c.org_status === "missing" ? (
-                  <div className="mt-2 rounded-xl border border-red-200 bg-red-50 p-2.5 text-[10px] font-semibold text-red-800">
-                      Suggested organisation is missing. Re-run the audit before applying this change.
-                  </div>
-              ) : null}
-          ''')
+          org_status_ui = textwrap.indent(textwrap.dedent('''\
+          {c.field === "orgSlug" && c.org_status === "approved" ? (
+              <div className="mt-2 inline-flex items-center gap-1.5 rounded-full bg-emerald-100 px-2.5 py-1 text-[10px] font-bold text-emerald-900">
+                  <ShieldCheck className="h-3 w-3" /> Organisation approved and ready to assign
+              </div>
+          ) : null}
+          {c.field === "orgSlug" && c.org_status && c.org_status !== "approved" && c.org_status !== "missing" ? (
+              <div className="mt-2 flex flex-wrap items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 p-2.5 text-amber-950">
+                  <Building2 className="h-3.5 w-3.5 shrink-0" />
+                  <span className="font-semibold">
+                      {c.created_org_for_approval ? "New organisation created — approval required" : `Organisation status: ${c.org_status}`}
+                  </span>
+                  <button
+                      type="button"
+                      disabled={busy === `org:${c.new}`}
+                      onClick={(event) => {
+                          event.preventDefault();
+                          event.stopPropagation();
+                          approveSuggestedOrg(c);
+                      }}
+                      className="ml-auto rounded-full bg-amber-900 px-2.5 py-1 text-[10px] font-bold text-white disabled:opacity-50"
+                  >
+                      {busy === `org:${c.new}` ? "Approving…" : "Approve organisation"}
+                  </button>
+              </div>
+          ) : null}
+          {c.field === "orgSlug" && c.org_status === "missing" ? (
+              <div className="mt-2 rounded-xl border border-red-200 bg-red-50 p-2.5 text-[10px] font-semibold text-red-800">
+                  Suggested organisation is missing. Re-run the audit before applying this change.
+              </div>
+          ) : null}
+          '''), "                                            ")
           if "New organisation created — approval required" not in card:
               if source_marker not in card:
                   raise SystemExit("AiAuditCard source marker not found")
-              indented_ui = "\n".join("                                            " + line if line else "" for line in org_status_ui.splitlines())
-              card = card.replace(source_marker, indented_ui + "\n" + source_marker, 1)
+              card = card.replace(source_marker, org_status_ui + "\n" + source_marker, 1)
 
           card_path.write_text(card)
           PY
@@ -310,6 +309,7 @@ jobs:
           grep -q 'approveSuggestedOrg' frontend/src/components/AiAuditCard.jsx
           grep -q 'New organisation created — approval required' frontend/src/components/AiAuditCard.jsx
           grep -q 'created_org_for_approval' backend/server.py
+          grep -q 'before assigning this event to it' backend/server.py
 
       - name: Commit patch and remove one-shot workflow
         shell: bash
