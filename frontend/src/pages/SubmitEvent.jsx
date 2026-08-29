@@ -71,9 +71,18 @@ export default function SubmitEvent() {
         setBusy(true);
         const start = new Date(`${form.date}T${form.start || "10:00"}`).toISOString();
         const end = new Date(`${form.date}T${form.end || form.start || "11:00"}`).toISOString();
-        const orgSlug =
-            orgs.find((o) => o.name.toLowerCase() === form.orgName.toLowerCase())?.slug ||
-            "blackrod-sports-community-centre";
+        const submittedOrgName = form.orgName.trim().toLowerCase();
+        const matchedOrg = orgs.find(
+            (o) => o.name.trim().toLowerCase() === submittedOrgName,
+        );
+        if (!matchedOrg) {
+            setBusy(false);
+            toast.error("Please choose a listed organisation", {
+                description: "Blackrod Now will not guess the organiser. Select a name from the organisation list before submitting.",
+            });
+            return;
+        }
+        const orgSlug = matchedOrg.slug;
 
         try {
             await addEvent({

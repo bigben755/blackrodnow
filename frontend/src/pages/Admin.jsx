@@ -961,7 +961,7 @@ function BulkDocumentImportCard({ orgs }) {
         const draft = item.draft || item;
         const destination = inferDestination(draft);
         const errors = [];
-        const orgSlug = draft.matched_org_slug || sourceOrgSlug || orgs[0]?.slug;
+        const orgSlug = draft.matched_org_slug || sourceOrgSlug || "";
 
         if (!draft.title) errors.push("Missing title");
 
@@ -1071,7 +1071,7 @@ function BulkDocumentImportCard({ orgs }) {
                     toast.error("Add a date and time before posting this event");
                     return false;
                 }
-                const orgSlug = draft.matched_org_slug || sourceOrgSlug || orgs[0]?.slug;
+                const orgSlug = draft.matched_org_slug || sourceOrgSlug || "";
                 if (!orgSlug) {
                     toast.error("Pick a source organisation first");
                     return false;
@@ -1104,7 +1104,7 @@ function BulkDocumentImportCard({ orgs }) {
                     await api.createEvent(payload);
                 }
             } else if (destination === "volunteering") {
-                const orgSlug = draft.matched_org_slug || sourceOrgSlug || orgs[0]?.slug;
+                const orgSlug = draft.matched_org_slug || sourceOrgSlug || "";
                 if (!orgSlug) {
                     toast.error("Pick a source organisation first");
                     return false;
@@ -1123,7 +1123,7 @@ function BulkDocumentImportCard({ orgs }) {
                     await api.createVolunteer(volunteerPayload);
                 }
             } else if (destination === "local_feed") {
-                const orgSlug = draft.matched_org_slug || sourceOrgSlug || orgs[0]?.slug;
+                const orgSlug = draft.matched_org_slug || sourceOrgSlug || "";
                 if (!orgSlug) {
                     toast.error("Pick a source organisation first");
                     return false;
@@ -1823,7 +1823,7 @@ function QuickAddContentCard({ orgs, onCreated }) {
     const [orgOpen, setOrgOpen] = useState(false);
     const [venueOpen, setVenueOpen] = useState(false);
     const [busy, setBusy] = useState(false);
-    const firstOrgSlug = orgs[0]?.slug || "";
+    const firstOrgSlug = "";
     const [eventForm, setEventForm] = useState({
         title: "", orgSlug: firstOrgSlug, category: "Community",
         date: "", start: "", end: "",
@@ -1853,13 +1853,6 @@ function QuickAddContentCard({ orgs, onCreated }) {
         accessibility: "", capacity: 0, booking: "", image: "",
     });
 
-    useEffect(() => {
-        const slug = orgs[0]?.slug || "";
-        if (!slug) return;
-        setEventForm((prev) => (prev.orgSlug ? prev : { ...prev, orgSlug: slug }));
-        setFeedForm((prev) => (prev.orgSlug ? prev : { ...prev, orgSlug: slug }));
-        setVolForm((prev) => (prev.orgSlug ? prev : { ...prev, orgSlug: slug }));
-    }, [orgs]);
 
     const createEvent = async () => {
         if (!eventForm.title || !eventForm.orgSlug || !eventForm.date) {
@@ -2060,7 +2053,8 @@ function QuickAddContentCard({ orgs, onCreated }) {
                             </Field>
                             <div className="grid sm:grid-cols-2 gap-3">
                                 <Field label="Organisation">
-                                    <select data-testid="qc-ev-org" value={eventForm.orgSlug} onChange={(e) => setEventForm((p) => ({ ...p, orgSlug: e.target.value }))} className={inp}>
+                                    <select data-testid="qc-ev-org" value={eventForm.orgSlug} onChange={(e) => <option value="">Choose organisation…</option>
+setEventForm((p) => ({ ...p, orgSlug: e.target.value }))} className={inp}>
                                         {orgs.map((o) => <option key={o.slug} value={o.slug}>{o.name}</option>)}
                                     </select>
                                 </Field>
@@ -2160,7 +2154,8 @@ function QuickAddContentCard({ orgs, onCreated }) {
                         <DialogHeader><DialogTitle>Create feed post</DialogTitle></DialogHeader>
                         <div className="grid gap-3">
                             <Field label="Organisation">
-                                <select value={feedForm.orgSlug} onChange={(e) => setFeedForm((prev) => ({ ...prev, orgSlug: e.target.value }))} className={inp}>
+                                <select value={feedForm.orgSlug} onChange={(e) => <option value="">Choose organisation…</option>
+setFeedForm((prev) => ({ ...prev, orgSlug: e.target.value }))} className={inp}>
                                     {orgs.map((org) => <option key={org.slug} value={org.slug}>{org.name}</option>)}
                                 </select>
                             </Field>
@@ -2201,7 +2196,8 @@ function QuickAddContentCard({ orgs, onCreated }) {
                         <DialogHeader><DialogTitle>Create volunteering opportunity</DialogTitle></DialogHeader>
                         <div className="grid gap-3">
                             <Field label="Organisation">
-                                <select value={volForm.orgSlug} onChange={(e) => setVolForm((prev) => ({ ...prev, orgSlug: e.target.value }))} className={inp}>
+                                <select value={volForm.orgSlug} onChange={(e) => <option value="">Choose organisation…</option>
+setVolForm((prev) => ({ ...prev, orgSlug: e.target.value }))} className={inp}>
                                     {orgs.map((org) => <option key={org.slug} value={org.slug}>{org.name}</option>)}
                                 </select>
                             </Field>

@@ -39,7 +39,7 @@ export default function OrgDashboard() {
         adminCodeSession,
     } = useApp();
 
-    const [selectedOrgSlug, setSelectedOrgSlug] = useState(activeOrgSlug || orgs[0]?.slug || "");
+    const [selectedOrgSlug, setSelectedOrgSlug] = useState(activeOrgSlug || "");
     const [text, setText] = useState("");
     const [loading, setLoading] = useState(false);
     const [items, setItems] = useState([]); // multi-parse result
@@ -54,8 +54,10 @@ export default function OrgDashboard() {
     const [postNowEvent, setPostNowEvent] = useState(null);
 
     useEffect(() => {
-        if (!selectedOrgSlug && orgs.length) setSelectedOrgSlug(orgs[0].slug);
-    }, [orgs, selectedOrgSlug]);
+        if (selectedOrgSlug || !orgs.length) return;
+        const accessibleOrg = orgs.find((o) => hasOrgAccess(o.slug));
+        if (accessibleOrg) setSelectedOrgSlug(accessibleOrg.slug);
+    }, [orgs, selectedOrgSlug, hasOrgAccess]);
     useEffect(() => { if (selectedOrgSlug) setActiveOrgSlug(selectedOrgSlug); }, [selectedOrgSlug, setActiveOrgSlug]);
 
     const org = orgs.find((o) => o.slug === selectedOrgSlug);
@@ -120,6 +122,7 @@ export default function OrgDashboard() {
     };
 
     const publishEvent = async (it, { recurrenceFreq = "none", recurrenceUntil = "" } = {}) => {
+        if (!selectedOrgSlug) return toast.error("Choose an organisation first");
         let start;
         try {
             let d;
@@ -179,6 +182,7 @@ export default function OrgDashboard() {
     };
 
     const publishUpdate = async (it) => {
+        if (!selectedOrgSlug) return toast.error("Choose an organisation first");
         try {
             await addFeedPost({
                 orgSlug: selectedOrgSlug,
@@ -249,7 +253,8 @@ export default function OrgDashboard() {
                     <div className="mt-5 grid gap-3">
                         <select
                             value={selectedOrgSlug}
-                            onChange={(e) => setSelectedOrgSlug(e.target.value)}
+                            onChange={(e) => <option value="">Choose organisation…</option>
+setSelectedOrgSlug(e.target.value)}
                             className="w-full px-4 py-2.5 rounded-2xl border border-border bg-background text-sm"
                         >
                             {orgs.map((o) => (
@@ -317,7 +322,8 @@ export default function OrgDashboard() {
                     >
                         <Send className="h-3.5 w-3.5" /> Contact admin
                     </button>
-                    <select data-testid="org-switcher" value={selectedOrgSlug} onChange={(e) => setSelectedOrgSlug(e.target.value)}
+                    <select data-testid="org-switcher" value={selectedOrgSlug} onChange={(e) => <option value="">Choose organisation…</option>
+setSelectedOrgSlug(e.target.value)}
                         className="flex-1 sm:flex-none min-w-0 max-w-full truncate px-4 py-2 rounded-full border border-border bg-surface text-sm">
                         {orgs.map((o) => (<option key={o.slug} value={o.slug}>{o.name}</option>))}
                     </select>
