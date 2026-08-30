@@ -1,0 +1,400 @@
+name: Patch rich Facebook event sharing
+
+on:
+  push:
+    paths:
+      - '.github/workflows/_rich_facebook_event_share.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Patch Facebook event sharing
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path, old, new, label):
+              p = Path(path)
+              text = p.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{label}: expected exactly 1 match in {path}, found {count}")
+              p.write_text(text.replace(old, new, 1))
+
+          # ------------------------------------------------------------
+          # Backend: make the OG endpoint itself Facebook's object URL,
+          # keep the human event page as the canonical destination, and
+          # guarantee an event-specific image (uploaded image or poster).
+          # ------------------------------------------------------------
+          path = 'backend/server.py'
+
+          replace_once(path,
+          '''    org = await db.orgs.find_one({"slug": e.get("orgSlug")}, {"_id": 0}) or {}
+    base = _abs_base_url(request)
+    canonical = f"{base}/events/{event_id}"
+''',
+          '''    org = await db.orgs.find_one({"slug": e.get("orgSlug")}, {"_id": 0}) or {}
+    base = _abs_base_url(request).rstrip("/")
+    configured_site = (os.environ.get("PUBLIC_URL") or "").strip().rstrip("/")
+    site_base = configured_site if configured_site and not configured_site.endswith(".local") else base
+    canonical = f"{site_base}/events/{event_id}"
+    query = f"?{request.url.query}" if request.url.query else ""
+    # Facebook should treat this OG document as the shared object. If og:url
+    # points back to the React event route, Facebook re-scrapes index.html and
+    # falls back to Blackrod Now's generic logo/meta instead of the event card.
+    share_url = f"{base}/api/events/{event_id}/og{query}"
+''', 'OG canonical/share URL')
+
+          replace_once(path,
+          '''    # Resolve a good preview image. Priority: real uploaded event image →
+    # the event category's default artwork → generated poster (last resort).
+    img = (e.get("image") or "").strip()
+    if not img or _is_blank_or_legacy_event_image(img) or _is_category_stock_image(img):
+        img = _event_category_image(e.get("category"))
+    if not img:
+        img = f"{base}/api/events/{event_id}/poster.png"
+    elif img.startswith("/"):
+        img = f"{base}{img}"
+''',
+          '''    # Facebook needs event-specific artwork. Use the event's own uploaded
+    # image when it has one; otherwise use Blackrod Now's generated event poster
+    # (which contains the event title/details) rather than a generic site/category image.
+    img = (e.get("image") or "").strip()
+    if not img or _is_blank_or_legacy_event_image(img) or _is_category_stock_image(img):
+        img = f"{base}/api/events/{event_id}/poster.png"
+    elif img.startswith("/"):
+        img = f"{site_base}{img}"
+''', 'OG event image')
+
+          replace_once(path,
+          '''    raw_title = e.get("title") or "Blackrod Event"
+    raw_desc_parts = [p for p in [when, e.get("venue"), e.get("description")] if p]
+    raw_desc = " · ".join(raw_desc_parts[:2])
+    if e.get("description"):
+        raw_desc = (raw_desc + " — " + e["description"]) if raw_desc else e["description"]
+    raw_desc = raw_desc[:280]
+''',
+          '''    event_title = e.get("title") or "Blackrod Event"
+    raw_title = f"{event_title} | Blackrod Now"
+    organiser = org.get("name") or ""
+    raw_desc_parts = [p for p in ["Blackrod Now · What's On", when, e.get("venue"), organiser] if p]
+    raw_desc = " · ".join(raw_desc_parts)
+    if e.get("description"):
+        raw_desc = (raw_desc + " — " + e["description"]) if raw_desc else e["description"]
+    raw_desc = raw_desc[:280]
+''', 'OG branded title/description')
+
+          replace_once(path,
+          '''    img_url = esc(img)
+    canonical_esc = esc(canonical)
+''',
+          '''    img_url = esc(img)
+    canonical_esc = esc(canonical)
+    share_url_esc = esc(share_url)
+''', 'OG escaped share URL')
+
+          replace_once(path,
+          '''<title>{title} — Blackrod Now</title>
+<meta name="description" content="{desc}" />
+<link rel="canonical" href="{canonical_esc}" />
+
+<meta property="og:type" content="article" />
+<meta property="og:site_name" content="{site_name}" />
+<meta property="og:title" content="{title}" />
+<meta property="og:description" content="{desc}" />
+<meta property="og:url" content="{canonical_esc}" />
+''',
+          '''<title>{title}</title>
+<meta name="description" content="{desc}" />
+<link rel="canonical" href="{canonical_esc}" />
+
+<meta property="og:type" content="article" />
+<meta property="og:locale" content="en_GB" />
+<meta property="og:site_name" content="{site_name}" />
+<meta property="og:title" content="{title}" />
+<meta property="og:description" content="{desc}" />
+<meta property="og:url" content="{share_url_esc}" />
+''', 'OG tags')
+
+          replace_once(path,
+          '''        headers={"Cache-Control": "public, max-age=300"},
+''',
+          '''        headers={"Cache-Control": "public, max-age=60, stale-while-revalidate=300"},
+''', 'OG cache header')
+
+          replace_once(path,
+          '''        og_url = f"{base}/api/events/{e['id']}/og"
+''',
+          '''        og_url = f"{base}/api/events/{e['id']}/og?bn_card=2"
+''', 'share pack OG cache version')
+
+          # ------------------------------------------------------------
+          # ShareButtons: use a versioned rich-card URL so Facebook is forced
+          # to scrape the fixed event OG page instead of reusing its old cache.
+          # ------------------------------------------------------------
+          path = 'frontend/src/components/ShareButtons.jsx'
+          replace_once(path,
+          '''    const canonicalUrl = url || (typeof window !== "undefined" ? window.location.href : "");
+    const socialUrl = ogUrl || canonicalUrl;
+    const enc = (s) => encodeURIComponent(s || "");
+''',
+          '''    const canonicalUrl = url || (typeof window !== "undefined" ? window.location.href : "");
+    const socialUrl = (() => {
+        if (!ogUrl) return canonicalUrl;
+        if (/[?&]bn_card=/.test(ogUrl)) return ogUrl;
+        return `${ogUrl}${ogUrl.includes("?") ? "&" : "?"}bn_card=2`;
+    })();
+    const enc = (s) => encodeURIComponent(s || "");
+''', 'ShareButtons rich-card URL')
+
+          replace_once(path,
+          '''                        toast.success("Caption copied — paste it into your Facebook post", { duration: 6000 });
+''',
+          '''                        toast.success("Blackrod Now caption copied — Facebook will attach the event card", { duration: 6000 });
+''', 'Facebook share toast')
+
+          # ------------------------------------------------------------
+          # Event detail: branded Blackrod Now copy for organiser sharing.
+          # ------------------------------------------------------------
+          path = 'frontend/src/pages/EventDetail.jsx'
+          replace_once(path,
+          '''    const facebookPost =
+        buildFacebookPost(
+            event,
+            eventUrl,
+            org
+        );
+
+    const saved =
+''',
+          '''    const facebookPost =
+        buildFacebookPost(
+            event,
+            eventUrl,
+            org
+        );
+
+    const brandedShareText = [
+        "📣 Blackrod Now",
+        event.title,
+        `📅 ${formatDate(event.start)} · ${formatTime(event.start)}`,
+        event.venue ? `📍 ${event.venue}` : "",
+        "What's on. What's new. What's next.",
+    ].filter(Boolean).join("\\n");
+
+    const saved =
+''', 'EventDetail branded share text')
+
+          replace_once(path,
+          '''                        <ShareButtons
+                            text={`${event.title} — ${formatDate(
+                                event.start
+                            )} at ${
+                                event.venue ||
+                                "Blackrod"
+                            }`}
+                            url={eventUrl}
+''',
+          '''                        <ShareButtons
+                            text={brandedShareText}
+                            url={eventUrl}
+''', 'EventDetail ShareButtons text')
+
+          # ------------------------------------------------------------
+          # Post Now: every social share gets explicit Blackrod Now wording.
+          # ------------------------------------------------------------
+          path = 'frontend/src/components/PostNowDialog.jsx'
+          replace_once(path,
+          '''    const posterPngUrl = event?.id ? api.eventPosterPngUrl(event.id) : "";
+    const link = bundle?.link || "";
+
+    return (
+''',
+          '''    const posterPngUrl = event?.id ? api.eventPosterPngUrl(event.id) : "";
+    const link = bundle?.link || "";
+    const shareCaption = /blackrod now/i.test(caption || "")
+        ? caption
+        : `📣 Blackrod Now\\n\\n${caption || ""}\\n\\nWhat's on. What's new. What's next.`.trim();
+
+    return (
+''', 'PostNow branded caption')
+
+          replace_once(path,
+          '''                await navigator.share({ files: [file], text: caption, title: event?.title });
+''',
+          '''                await navigator.share({ files: [file], text: shareCaption, title: event?.title });
+''', 'PostNow native branded share')
+
+          replace_once(path,
+          '''                                            caption.includes(link) ? caption : `${caption}\\n\\n${link}`,
+''',
+          '''                                            shareCaption.includes(link) ? shareCaption : `${shareCaption}\\n\\n${link}`,
+''', 'PostNow copy branded caption')
+
+          replace_once(path,
+          '''                                text={caption}
+''',
+          '''                                text={shareCaption}
+''', 'PostNow ShareButtons branded caption')
+
+          # ------------------------------------------------------------
+          # Organisation Smart Import: add Create + Facebook. It creates the
+          # real event first so Facebook can scrape a real event-specific OG
+          # card, then opens Facebook in the already-opened user-gesture tab.
+          # ------------------------------------------------------------
+          path = 'frontend/src/pages/OrgDashboard.jsx'
+          replace_once(path,
+          '''import { api } from "@/lib/api";
+''',
+          '''import { api, API } from "@/lib/api";
+''', 'OrgDashboard API import')
+
+          replace_once(path,
+          '''    CalendarClock,
+} from "lucide-react";
+''',
+          '''    CalendarClock,
+    Facebook,
+} from "lucide-react";
+''', 'OrgDashboard Facebook icon')
+
+          replace_once(path,
+          '''    const publishEvent = async (
+        item,
+        { recurrenceFreq = "none", recurrenceUntil = "" } = {}
+    ) => {
+        if (!selectedOrgSlug) {
+            toast.error("Choose an organisation first");
+            return;
+        }
+
+        let start;
+''',
+          '''    const publishEvent = async (
+        item,
+        { recurrenceFreq = "none", recurrenceUntil = "", shareAfter = "" } = {}
+    ) => {
+        if (!selectedOrgSlug) {
+            toast.error("Choose an organisation first");
+            return;
+        }
+
+        let facebookWindow = null;
+        if (shareAfter === "facebook" && typeof window !== "undefined") {
+            facebookWindow = window.open("", "_blank");
+            if (facebookWindow) {
+                facebookWindow.document.title = "Preparing Blackrod Now Facebook post…";
+                facebookWindow.document.body.innerHTML = "<p style='font-family:system-ui;padding:24px'>Preparing your Blackrod Now event for Facebook…</p>";
+            }
+        }
+
+        let start;
+''', 'OrgDashboard publishEvent share option')
+
+          replace_once(path,
+          '''            const publishedNow = created?.status === "approved";
+            setEventFilter(publishedNow ? "upcoming" : "pending");
+            if (created?.id) {
+                setPostNowEvent(created);
+            }
+
+            toast.success(
+''',
+          '''            const publishedNow = created?.status === "approved";
+            setEventFilter(publishedNow ? "upcoming" : "pending");
+            if (created?.id) {
+                setPostNowEvent(created);
+            }
+
+            if (shareAfter === "facebook" && created?.id) {
+                const coreCaption = (item.social_caption || item.description || item.title || "").trim();
+                const brandedCaption = /blackrod now/i.test(coreCaption)
+                    ? coreCaption
+                    : `📣 Blackrod Now\\n\\n${coreCaption}\\n\\nWhat's on. What's new. What's next.`.trim();
+                try {
+                    await navigator.clipboard.writeText(brandedCaption);
+                } catch {
+                    // Facebook still opens if clipboard permission is unavailable.
+                }
+                const richShareUrl = `${API}/events/${created.id}/og?bn_card=2`;
+                const facebookUrl = `https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(richShareUrl)}`;
+                if (facebookWindow && !facebookWindow.closed) {
+                    facebookWindow.location.replace(facebookUrl);
+                } else if (typeof window !== "undefined") {
+                    window.open(facebookUrl, "_blank");
+                }
+                toast.success("Facebook post ready", {
+                    description: "The Blackrod Now caption is copied and Facebook is opening with the event-specific card.",
+                });
+            }
+
+            toast.success(
+''', 'OrgDashboard launch Facebook after create')
+
+          replace_once(path,
+          '''        } catch {
+            toast.error("Couldn't create event");
+        }
+''',
+          '''        } catch {
+            if (facebookWindow && !facebookWindow.closed) {
+                facebookWindow.close();
+            }
+            toast.error("Couldn't create event");
+        }
+''', 'OrgDashboard close failed Facebook popup')
+
+          replace_once(path,
+          '''                <button data-testid="parsed-publish-update" onClick={onPublishUpdate} className="inline-flex items-center gap-1 px-4 py-2 rounded-full bg-primary text-primary-foreground font-semibold text-xs">
+''',
+          '''                {it.suggested_type === "event" && (
+                    <button
+                        data-testid="parsed-create-facebook"
+                        onClick={() => onPublishEvent({ recurrenceFreq, recurrenceUntil, shareAfter: "facebook" })}
+                        className="inline-flex items-center gap-1 px-4 py-2 rounded-full bg-[#1877F2] text-white font-semibold text-xs"
+                    >
+                        <Facebook className="h-3.5 w-3.5" /> Create + Facebook
+                    </button>
+                )}
+                <button data-testid="parsed-publish-update" onClick={onPublishUpdate} className="inline-flex items-center gap-1 px-4 py-2 rounded-full bg-primary text-primary-foreground font-semibold text-xs">
+''', 'ParsedCard Facebook button')
+
+          replace_once(path,
+          '''                        Hit <strong>Create event</strong> first — you'll then get a ready-made post with
+                        your organisation's details, an event poster and the correct link preview.
+''',
+          '''                        Use <strong>Create + Facebook</strong> to create the listing and open Facebook with
+                        a Blackrod Now caption, event-specific image/poster and the correct rich link preview.
+''', 'ParsedCard Facebook hint')
+
+          print('Facebook rich-share patch applied')
+          PY
+
+      - name: Validate backend syntax and changed markers
+        run: |
+          python -m py_compile backend/server.py
+          grep -q 'share_url_esc' backend/server.py
+          grep -q 'parsed-create-facebook' frontend/src/pages/OrgDashboard.jsx
+          grep -q 'bn_card=2' frontend/src/components/ShareButtons.jsx
+          grep -q 'brandedShareText' frontend/src/pages/EventDetail.jsx
+          grep -q 'shareCaption' frontend/src/components/PostNowDialog.jsx
+
+      - name: Commit patch and remove temporary workflow
+        run: |
+          git config user.name "Blackrod Now maintenance"
+          git config user.email "actions@users.noreply.github.com"
+          git add backend/server.py frontend/src/components/ShareButtons.jsx frontend/src/pages/EventDetail.jsx frontend/src/components/PostNowDialog.jsx frontend/src/pages/OrgDashboard.jsx
+          git commit -m "Fix rich Facebook event sharing"
+          git push origin main
+          git rm .github/workflows/_rich_facebook_event_share.yml
+          git commit -m "Remove temporary Facebook share patch workflow"
+          git push origin main
