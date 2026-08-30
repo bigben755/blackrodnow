@@ -116,7 +116,7 @@ export default function PostNowDialog({ event, open, onOpenChange }) {
         try {
             const file = await fetchPosterFile();
             if (navigator.canShare({ files: [file] })) {
-                await navigator.share({ files: [file], text: caption, title: event?.title });
+                await navigator.share({ files: [file], text: shareCaption, title: event?.title });
             } else {
                 toast.info("This device can't attach files to shares — use \"Copy poster image\" and paste it into your post instead.");
             }
@@ -138,6 +138,9 @@ export default function PostNowDialog({ event, open, onOpenChange }) {
 
     const posterPngUrl = event?.id ? api.eventPosterPngUrl(event.id) : "";
     const link = bundle?.link || "";
+    const shareCaption = /blackrod now/i.test(caption || "")
+        ? caption
+        : `📣 Blackrod Now\n\n${caption || ""}\n\nWhat's New. What's On. What's Next.`.trim();
 
     return (
         <Dialog open={open} onOpenChange={onOpenChange}>
@@ -246,7 +249,7 @@ export default function PostNowDialog({ event, open, onOpenChange }) {
                                     data-testid="post-now-copy-with-link"
                                     onClick={() =>
                                         copyText(
-                                            caption.includes(link) ? caption : `${caption}\n\n${link}`,
+                                            shareCaption.includes(link) ? shareCaption : `${shareCaption}\n\n${link}`,
                                             "Caption + link copied"
                                         )
                                     }
@@ -306,7 +309,7 @@ export default function PostNowDialog({ event, open, onOpenChange }) {
                                 </button>
                             </div>
                             <ShareButtons
-                                text={caption}
+                                text={shareCaption}
                                 url={link}
                                 ogUrl={bundle?.og_url}
                                 title={event?.title}

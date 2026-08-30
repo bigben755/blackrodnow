@@ -372,6 +372,14 @@ export default function EventDetail() {
             org
         );
 
+    const brandedShareText = [
+        "📣 Blackrod Now",
+        event.title,
+        `📅 ${formatDate(event.start)} · ${formatTime(event.start)}`,
+        event.venue ? `📍 ${event.venue}` : "",
+        "What's New. What's On. What's Next.",
+    ].filter(Boolean).join("\n");
+
     const saved =
         isEventSaved?.(event.id);
 
@@ -832,12 +840,7 @@ export default function EventDetail() {
                         </div>
 
                         <ShareButtons
-                            text={`${event.title} — ${formatDate(
-                                event.start
-                            )} at ${
-                                event.venue ||
-                                "Blackrod"
-                            }`}
+                            text={brandedShareText}
                             url={eventUrl}
                             ogUrl={
                                 shareOgUrl

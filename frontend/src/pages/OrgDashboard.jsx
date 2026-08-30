@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { useApp } from "@/context/AppContext";
-import { api } from "@/lib/api";
+import { api, API } from "@/lib/api";
 import { CategoryBadge, formatDate, formatTime, Stat } from "@/components/Cards";
 import { localIso } from "@/lib/localTime";
 import OrgAvatar from "@/components/OrgAvatar";
@@ -30,6 +30,7 @@ import {
     ExternalLink,
     Search,
     CalendarClock,
+    Facebook,
 } from "lucide-react";
 import { toast } from "sonner";
 import {
@@ -327,11 +328,21 @@ export default function OrgDashboard() {
 
     const publishEvent = async (
         item,
-        { recurrenceFreq = "none", recurrenceUntil = "" } = {}
+        { recurrenceFreq = "none", recurrenceUntil = "", shareAfter = "" } = {}
     ) => {
         if (!selectedOrgSlug) {
             toast.error("Choose an organisation first");
             return;
+        }
+
+        let facebookWindow = null;
+        if (shareAfter === "facebook" && typeof window !== "undefined") {
+            facebookWindow = window.open("", "_blank");
+            if (facebookWindow) {
+                facebookWindow.document.title = "Preparing Blackrod Now Facebook post…";
+                facebookWindow.document.body.innerHTML =
+                    "<p style='font-family:system-ui;padding:24px'>Preparing your Blackrod Now event for Facebook…</p>";
+            }
         }
 
         let start;
@@ -417,8 +428,35 @@ export default function OrgDashboard() {
 
             const publishedNow = created?.status === "approved";
             setEventFilter(publishedNow ? "upcoming" : "pending");
-            if (created?.id) {
+            if (created?.id && shareAfter !== "facebook") {
                 setPostNowEvent(created);
+            }
+
+            if (shareAfter === "facebook" && created?.id) {
+                const coreCaption = (item.social_caption || item.description || item.title || "").trim();
+                const brandedCaption = /blackrod now/i.test(coreCaption)
+                    ? coreCaption
+                    : `📣 Blackrod Now\n\n${coreCaption}\n\nWhat's New. What's On. What's Next.`.trim();
+                try {
+                    await navigator.clipboard.writeText(brandedCaption);
+                } catch {
+                    // Facebook still opens if clipboard permission is unavailable.
+                }
+
+                const richShareUrl = `${API}/events/${created.id}/og?bn_card=2`;
+                const facebookUrl =
+                    `https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(richShareUrl)}`;
+
+                if (facebookWindow && !facebookWindow.closed) {
+                    facebookWindow.location.replace(facebookUrl);
+                } else if (typeof window !== "undefined") {
+                    window.open(facebookUrl, "_blank");
+                }
+
+                toast.success("Facebook post ready", {
+                    description:
+                        "The Blackrod Now caption is copied and Facebook is opening with the event-specific card.",
+                });
             }
 
             toast.success(
@@ -436,6 +474,9 @@ export default function OrgDashboard() {
                 }
             );
         } catch {
+            if (facebookWindow && !facebookWindow.closed) {
+                facebookWindow.close();
+            }
             toast.error("Couldn't create event");
         }
     };
@@ -1738,6 +1779,21 @@ function ParsedCard({ it, onPublishEvent, onPublishUpdate, onCopy }) {
                 >
                     <Calendar className="h-3.5 w-3.5" /> Create event
                 </button>
+                {it.suggested_type === "event" && (
+                    <button
+                        data-testid="parsed-create-facebook"
+                        onClick={() =>
+                            onPublishEvent({
+                                recurrenceFreq,
+                                recurrenceUntil,
+                                shareAfter: "facebook",
+                            })
+                        }
+                        className="inline-flex items-center gap-1 px-4 py-2 rounded-full bg-[#1877F2] text-white font-semibold text-xs"
+                    >
+                        <Facebook className="h-3.5 w-3.5" /> Create + Facebook
+                    </button>
+                )}
                 <button data-testid="parsed-publish-update" onClick={onPublishUpdate} className="inline-flex items-center gap-1 px-4 py-2 rounded-full bg-primary text-primary-foreground font-semibold text-xs">
                     <Megaphone className="h-3.5 w-3.5" /> Post to feed
                 </button>
@@ -1753,8 +1809,8 @@ function ParsedCard({ it, onPublishEvent, onPublishUpdate, onCopy }) {
                     />
                 ) : (
                     <p className="text-[11px] text-background/70" data-testid="parsed-share-hint">
-                        Hit <strong>Create event</strong> first — you'll then get a ready-made post with
-                        your organisation's details, an event poster and the correct link preview.
+                        Use <strong>Create + Facebook</strong> to create the listing and open Facebook with
+                        a Blackrod Now caption, event-specific image/poster and the correct rich link preview.
                     </p>
                 )}
             </div>

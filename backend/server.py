@@ -3039,18 +3039,24 @@ async def event_og_page(event_id: str, request: _Req):
     e = await _fetch_event_for_poster(event_id)
 
     org = await db.orgs.find_one({"slug": e.get("orgSlug")}, {"_id": 0}) or {}
-    base = _abs_base_url(request)
-    canonical = f"{base}/events/{event_id}"
+    base = _abs_base_url(request).rstrip("/")
+    configured_site = (os.environ.get("PUBLIC_URL") or "").strip().rstrip("/")
+    site_base = configured_site if configured_site and not configured_site.endswith(".local") else base
+    canonical = f"{site_base}/events/{event_id}"
+    query = f"?{request.url.query}" if request.url.query else ""
+    # Facebook should treat this OG document as the shared object. If og:url
+    # points back to the React event route, Facebook re-scrapes index.html and
+    # falls back to Blackrod Now's generic logo/meta instead of the event card.
+    share_url = f"{base}/api/events/{event_id}/og{query}"
 
-    # Resolve a good preview image. Priority: real uploaded event image →
-    # the event category's default artwork → generated poster (last resort).
+    # Facebook needs event-specific artwork. Use the event's own uploaded
+    # image when it has one; otherwise use Blackrod Now's generated event poster
+    # (which contains the event title/details) rather than a generic site/category image.
     img = (e.get("image") or "").strip()
     if not img or _is_blank_or_legacy_event_image(img) or _is_category_stock_image(img):
-        img = _event_category_image(e.get("category"))
-    if not img:
         img = f"{base}/api/events/{event_id}/poster.png"
     elif img.startswith("/"):
-        img = f"{base}{img}"
+        img = f"{site_base}{img}"
 
     # Format a human date line for the description prefix
     try:
@@ -3060,9 +3066,11 @@ async def event_og_page(event_id: str, request: _Req):
     except Exception:
         when = ""
 
-    raw_title = e.get("title") or "Blackrod Event"
-    raw_desc_parts = [p for p in [when, e.get("venue"), e.get("description")] if p]
-    raw_desc = " · ".join(raw_desc_parts[:2])
+    event_title = e.get("title") or "Blackrod Event"
+    raw_title = f"{event_title} | Blackrod Now"
+    organiser = org.get("name") or ""
+    raw_desc_parts = [p for p in ["Blackrod Now · What's On", when, e.get("venue"), organiser] if p]
+    raw_desc = " · ".join(raw_desc_parts)
     if e.get("description"):
         raw_desc = (raw_desc + " — " + e["description"]) if raw_desc else e["description"]
     raw_desc = raw_desc[:280]
@@ -3076,6 +3084,7 @@ async def event_og_page(event_id: str, request: _Req):
     site_name = "Blackrod Now"
     img_url = esc(img)
     canonical_esc = esc(canonical)
+    share_url_esc = esc(share_url)
 
     # Sensible image dimensions for Facebook/LinkedIn/Twitter cards. If the
     # image is one of our org logos we already know it's 512×512; otherwise
@@ -3097,15 +3106,16 @@ async def event_og_page(event_id: str, request: _Req):
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<title>{title} — Blackrod Now</title>
+<title>{title}</title>
 <meta name="description" content="{desc}" />
 <link rel="canonical" href="{canonical_esc}" />
 
 <meta property="og:type" content="article" />
+<meta property="og:locale" content="en_GB" />
 <meta property="og:site_name" content="{site_name}" />
 <meta property="og:title" content="{title}" />
 <meta property="og:description" content="{desc}" />
-<meta property="og:url" content="{canonical_esc}" />
+<meta property="og:url" content="{share_url_esc}" />
 <meta property="og:image" content="{img_url}" />
 <meta property="og:image:secure_url" content="{img_url}" />
 <meta property="og:image:width" content="{img_w}" />
@@ -3133,7 +3143,7 @@ async def event_og_page(event_id: str, request: _Req):
 
     return _HTMLResp(
         content=body,
-        headers={"Cache-Control": "public, max-age=300"},
+        headers={"Cache-Control": "public, max-age=60, stale-while-revalidate=300"},
     )
 
 
@@ -3298,7 +3308,7 @@ def _org_share_pack_data(org: Dict[str, Any], events: List[Dict[str, Any]], base
     items = []
     for e in upcoming:
         canonical = f"{base}/events/{e['id']}"
-        og_url = f"{base}/api/events/{e['id']}/og"
+        og_url = f"{base}/api/events/{e['id']}/og?bn_card=2"
         share_text = f"{e['title']} — {e.get('venue') or 'Blackrod'}"
         items.append({
             "id": e["id"],

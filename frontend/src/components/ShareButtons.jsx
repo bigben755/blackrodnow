@@ -28,7 +28,11 @@ export default function ShareButtons({
     analytics = null,
 }) {
     const canonicalUrl = url || (typeof window !== "undefined" ? window.location.href : "");
-    const socialUrl = ogUrl || canonicalUrl;
+    const socialUrl = (() => {
+        if (!ogUrl) return canonicalUrl;
+        if (/[?&]bn_card=/.test(ogUrl)) return ogUrl;
+        return `${ogUrl}${ogUrl.includes("?") ? "&" : "?"}bn_card=2`;
+    })();
     const enc = (s) => encodeURIComponent(s || "");
 
     /**
@@ -72,7 +76,7 @@ export default function ShareButtons({
                 if (text) {
                     try {
                         await navigator.clipboard.writeText(text);
-                        toast.success("Caption copied — paste it into your Facebook post", { duration: 6000 });
+                        toast.success("Blackrod Now caption copied — Facebook will attach the event card", { duration: 6000 });
                     } catch { /* clipboard blocked — still open the sharer */ }
                 }
                 open(`https://www.facebook.com/sharer/sharer.php?u=${enc(socialUrl)}`);
