@@ -1,0 +1,19 @@
+{
+  "summary": "Frontend-only verification of CHECK #3 (Smart Import 'Create + Facebook') and CHECK #4 (PostNowDialog 'Facebook' share) in Organisation Dashboard. Both flows PASS: FB sharer URL points at the event-specific /api/events/{id}/og?bn_card=2 rich URL and a Blackrod Now-branded caption is copied to the clipboard with the expected toast.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "OrgDashboard.jsx has grown to 2163 lines and contains multiple concerns (parsing UI, dialogs, publish flow, share pack card). Consider splitting the ParsedCard, SharePackCard, and publish/share logic into dedicated modules for maintainability.",
+    "ShareButtons.facebook.onClick tries clipboard.writeText but silently swallows the error — if Permissions API denies clipboard, users still see 'Blackrod Now caption copied' toast even though nothing was copied. Consider toasting a fallback message on catch."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "n/a", "frontend": "100% (2/2 checks)"},
+  "test_credentials": "Org shared password TestOrgPass123! (used with POST /api/organisations/blackrod-town-council/auth/login) — worked without needing an admin reset.",
+  "seed_data_creation": "Created two disposable events (Smart Import parsed event 'Blackrod Family Fun Day' id=ff534597-bbc0-4252-bfc8-29ad4e5ec032 and 'QA FB4 Event' id=qa-fb4-1788123539). Both deleted from MongoDB after tests. Remaining events for blackrod-town-council: 8 (pre-existing).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "CHECK #3 captured FB URL: https://www.facebook.com/sharer/sharer.php?u=https%3A%2F%2Frodlife-events.preview.emergentagent.com%2Fapi%2Fevents%2Fff534597-bbc0-4252-bfc8-29ad4e5ec032%2Fog%3Fbn_card%3D2 (decoded ends with /api/events/{createdEventId}/og?bn_card=2). Clipboard contained the Blackrod Now branded caption ('📣 Blackrod Now\\n\\n🎉👨‍👩‍👧‍👦 #BlackrodFamilyFunDay ...\\n\\nWhat's New. What's On. What's Next.'). CHECK #4 captured FB URL: https://www.facebook.com/sharer/sharer.php?u=https%3A%2F%2Frodlife-events.preview.emergentagent.com%2Fapi%2Fevents%2Fqa-fb4-1788123539%2Fog%3Fbn_card%3D2 with toast 'Blackrod Now caption copied — Facebook will attach the event card' and clipboard branded caption. Playwright intercept pattern: override window.open to also handle popup.location.replace/assign by pushing to window.__fbShares.",
+  "rca of the issue": "N/A — both flows behaved as specified."
+}
