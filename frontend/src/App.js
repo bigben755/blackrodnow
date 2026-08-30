@@ -16,7 +16,7 @@ import OrganisationDetail from "@/pages/OrganisationDetail";
 import SubmitEvent from "@/pages/SubmitEvent";
 import SubmitEventsList from "@/pages/SubmitEventsList";
 import AddOrganisation from "@/pages/AddOrganisation";
-import Admin from "@/pages/Admin";
+import AdminLive from "@/pages/AdminLive";
 import OrgDashboard from "@/pages/OrgDashboard";
 import LocalFeed from "@/pages/LocalFeed";
 import Venues from "@/pages/Venues";
@@ -102,7 +102,7 @@ export default function App() {
                                 path="/admin"
                                 element={(
                                     <RequireRole allowed={["admin"]}>
-                                        <Admin />
+                                        <AdminLive />
                                     </RequireRole>
                                 )}
                             />
