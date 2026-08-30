@@ -349,7 +349,10 @@ export function AppProvider({ children }) {
 
     // ─────────── Mutations ───────────
     const addEvent = async (evt) => {
-        const created = await api.createEvent({ ...evt, status: "pending" });
+        // The backend is authoritative for moderation status. Authenticated
+        // approved organisations publish directly; public/non-approved
+        // submissions are kept pending for site-admin review.
+        const created = await api.createEvent(evt);
         setEvents((prev) => [created, ...prev]);
         return created;
     };

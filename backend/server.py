@@ -3440,9 +3440,13 @@ async def create_event(
         if evt.status not in ("pending", "approved", "rejected", "draft", "cancelled"):
             evt.status = "approved"
     else:
+        # Organisation authentication is already scoped to evt.orgSlug by
+        # _require_org_write_access. Once that organisation itself has been
+        # approved by Blackrod Now, its authorised users can publish their own
+        # events directly. Non-approved organisations still require moderation.
         org = await _find_org(evt.orgSlug)
-        trust = (org.get("trust_level") or "new").strip().lower()
-        evt.status = "approved" if trust == "trusted" else "pending"
+        org_status = str(org.get("status") or "").strip().lower()
+        evt.status = "approved" if org_status == "approved" else "pending"
         evt.featured = False
 
     if evt.status not in ("pending", "approved", "rejected", "draft", "cancelled"):
@@ -3504,8 +3508,17 @@ async def update_event(
     if auth_role != "admin":
         if "featured" in updates:
             raise HTTPException(403, "Only site admins can feature events")
-        if "status" in updates and updates["status"] not in {"pending", "draft", "cancelled"}:
-            raise HTTPException(403, "Organisation users cannot approve or reject events")
+        if "status" in updates:
+            org = await _find_org(existing.get("orgSlug") or "")
+            org_is_approved = str(org.get("status") or "").strip().lower() == "approved"
+            allowed_org_statuses = {"pending", "draft", "cancelled"}
+            if org_is_approved:
+                allowed_org_statuses.add("approved")
+            if updates["status"] not in allowed_org_statuses:
+                raise HTTPException(
+                    403,
+                    "Approved organisations can publish their own events; other organisation events require site admin approval",
+                )
 
     if updates.get("orgSlug"):
         # Ensure the target org exists
@@ -3555,11 +3568,17 @@ async def set_event_status(
             admin_code=admin_code,
         )
 
-    if auth_role != "admin" and status not in {"pending", "draft", "cancelled"}:
-        raise HTTPException(
-            403,
-            "Organisation users can save drafts, request approval, or cancel their own events",
-        )
+    if auth_role != "admin":
+        org = await _find_org(existing.get("orgSlug") or "")
+        org_is_approved = str(org.get("status") or "").strip().lower() == "approved"
+        allowed_org_statuses = {"pending", "draft", "cancelled"}
+        if org_is_approved:
+            allowed_org_statuses.add("approved")
+        if status not in allowed_org_statuses:
+            raise HTTPException(
+                403,
+                "Approved organisations can publish their own events; other organisation events require site admin approval",
+            )
 
     await db.events.update_one({"id": event_id}, {"$set": {"status": status}})
     if status == "approved" and (existing.get("status") or "") != "approved":

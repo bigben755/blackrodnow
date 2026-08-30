@@ -415,18 +415,24 @@ export default function OrgDashboard() {
 
             await refresh();
 
-            setEventFilter("pending");
+            const publishedNow = created?.status === "approved";
+            setEventFilter(publishedNow ? "upcoming" : "pending");
             if (created?.id) {
                 setPostNowEvent(created);
             }
 
             toast.success(
-                recurrenceFreq !== "none"
-                    ? `Recurring event draft created (${recurrenceFreq})`
-                    : "Event draft created",
+                publishedNow
+                    ? recurrenceFreq !== "none"
+                        ? `Recurring event published (${recurrenceFreq})`
+                        : "Event published"
+                    : recurrenceFreq !== "none"
+                        ? `Recurring event submitted (${recurrenceFreq})`
+                        : "Event submitted",
                 {
-                    description:
-                        "Review the event details while it is awaiting approval.",
+                    description: publishedNow
+                        ? "Your event is now live on Blackrod Now."
+                        : "The event is awaiting site admin approval.",
                 }
             );
         } catch {
