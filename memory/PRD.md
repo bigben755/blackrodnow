@@ -231,3 +231,10 @@ A modern community website for Blackrod, Bolton showcasing local events, clubs, 
   2. sw.js — bare `clients` → `self.clients` (behaviour identical).
   3. Layout.jsx — footer "Web Design Wizard" credit redesign (larger logo + link to thewebdesignwizard.co.uk). Was local uncommitted, re-applied on user request. Patch backup: /app/memory/footer_wizard_change.patch.
 - Verified in preview: backend startup + all background loops (parser, reminders, newsletter, push) running; /api/events 200; homepage loads (162 events, 34 orgs); footer renders new credit.
+
+## 02 Sep 2026 — Admin "Invite organisations" bulk tool (NEW feature, deployed)
+- New admin tool at /admin/invite-organisations to invite the 43 supplied Blackrod org contacts to CLAIM an existing profile (25 links) or CREATE a new one (29 links). HTML + plain-text template editor with {{name}}/{{first_name}}/{{orgs}}/{{org_block}} variables, per-recipient live preview (iframe), test send, and batch send with per-recipient claim/create link resolution + send tracking (org_invite_sends + org_claim_invites upsert).
+- Backend: backend/org_invites.py (install_org_invites, wired in server.py before include_router); endpoints GET/POST /api/admin/org-invites/{config,preview,test,send}. Contacts ship in backend/data/invite_contacts.json (parsed from the uploaded spreadsheet). resend_send() gained optional `text` param (plain-text body). Emails via live Resend sender blackrodnow@communityalliances.co.uk; links use PUBLIC_URL=blackrodnow.com.
+- Frontend: frontend/src/pages/InviteOrgs.jsx + route (RequireRole admin) + "Invite orgs" nav link in Admin header + api.js orgInvites* methods.
+- Verified: backend clean start (43 contacts loaded); config returns 43 (25 claim/29 create); real TEST email (claim+create examples) sent to benwordsworth@aol.com (Resend IDs returned); QA frontend 100% (14/14). Deployed to production (workspace state; NOT yet on GitHub main — user may Save to GitHub).
+- NOTE: This diverges from GitHub main (main was authoritative). To keep main in sync, push via Save to GitHub.

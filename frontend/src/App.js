@@ -17,6 +17,7 @@ import SubmitEvent from "@/pages/SubmitEvent";
 import SubmitEventsList from "@/pages/SubmitEventsList";
 import AddOrganisation from "@/pages/AddOrganisation";
 import AdminLive from "@/pages/AdminLive";
+import InviteOrgs from "@/pages/InviteOrgs";
 import OrgDashboard from "@/pages/OrgDashboard";
 import LocalFeed from "@/pages/LocalFeed";
 import Venues from "@/pages/Venues";
@@ -114,6 +115,14 @@ export default function App() {
                                 element={(
                                     <RequireRole allowed={["admin"]}>
                                         <AdminLive />
+                                    </RequireRole>
+                                )}
+                            />
+                            <Route
+                                path="/admin/invite-organisations"
+                                element={(
+                                    <RequireRole allowed={["admin"]}>
+                                        <InviteOrgs />
                                     </RequireRole>
                                 )}
                             />

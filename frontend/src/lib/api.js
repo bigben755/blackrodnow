@@ -642,6 +642,18 @@ export const api = {
             )
             .then((r) => r.data),
 
+    orgInvitesConfig: () =>
+        client.get("/admin/org-invites/config").then((r) => r.data),
+
+    orgInvitesPreview: (payload) =>
+        client.post("/admin/org-invites/preview", payload).then((r) => r.data),
+
+    orgInvitesTest: (payload) =>
+        client.post("/admin/org-invites/test", payload).then((r) => r.data),
+
+    orgInvitesSend: (payload) =>
+        client.post("/admin/org-invites/send", payload).then((r) => r.data),
+
     adminMergeOrgs: (payload) =>
         client
             .post(

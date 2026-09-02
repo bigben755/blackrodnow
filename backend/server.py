@@ -333,6 +333,7 @@ def resend_send(
     from_name: Optional[str] = None,
     bcc: Optional[List[str]] = None,
     attachments: Optional[List[Dict[str, Any]]] = None,
+    text: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Send via Resend. Returns dict with ok flag + provider id or mock note.
 
@@ -364,6 +365,8 @@ def resend_send(
         # the display name instead of the raw address.
         from_field = f'"{sender_name}" <{sender_addr}>' if sender_name else sender_addr
         payload: Dict[str, Any] = {"from": from_field, "to": [to_email], "subject": subject, "html": html}
+        if text:
+            payload["text"] = text
         if bcc:
             payload["bcc"] = bcc
         if attachments:
@@ -10737,6 +10740,19 @@ install_facebook_integration(
     db=db,
     public_url=PUBLIC_URL,
     admin_code=ADMIN_LAUNCH_CODE,
+)
+
+# ─────────── Admin bulk "Invite organisations" tool ───────────
+from org_invites import install_org_invites
+
+install_org_invites(
+    app=app,
+    api=api,
+    db=db,
+    public_url=PUBLIC_URL,
+    admin_code=ADMIN_LAUNCH_CODE,
+    resend_send=resend_send,
+    email_signature=_EMAIL_SIGNATURE,
 )
 
 app.include_router(api)

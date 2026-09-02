@@ -538,6 +538,13 @@ export default function Admin() {
                         Flyers
                     </Link>
                     <Link
+                        to="/admin/invite-organisations"
+                        data-testid="nav-invite-organisations"
+                        className="inline-flex items-center gap-1.5 px-4 py-2 rounded-full border border-border font-semibold text-xs"
+                    >
+                        <Mail className="h-3.5 w-3.5" /> Invite orgs
+                    </Link>
+                    <Link
                         to="/admin/events"
                         className="inline-flex items-center gap-1.5 px-4 py-2 rounded-full border border-border font-semibold text-xs"
                     >

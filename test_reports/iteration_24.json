@@ -1,0 +1,43 @@
+{
+  "summary": "Frontend-only verification of /admin/invite-organisations. Logged in via POST /api/auth/admin/login, set rn-admin-jwt + rn-launch-notice-dismissed, then loaded the page. All required data-testids present and rendering correctly. NO real emails triggered (Send test / Send batch NOT clicked).",
+  "checks": [
+    {"check": "Page loads with invite-orgs-page testid and header 'Invite organisations'", "result": "PASS"},
+    {"check": "Summary line shows '43 contacts · 25 claim links · 29 create links · 0 already sent'", "result": "PASS"},
+    {"check": "invite-recipients table lists 43 rows", "result": "PASS (43 data rows + 1 header row = 44 <tr>)"},
+    {"check": "Claim (green) / Create (blue) badges present", "result": "PASS (25 green claim badges, 29 blue create badges observed)"},
+    {"check": "invite-select-all checkbox checked by default", "result": "PASS"},
+    {"check": "invite-send-batch button shows 'Send to 43'", "result": "PASS (not clicked)"},
+    {"check": "invite-editor, invite-subject, tab-html, tab-text, invite-html, invite-text all present", "result": "PASS"},
+    {"check": "Subject prefilled: 'You're invited to join Blackrod Now'", "result": "PASS"},
+    {"check": "HTML and Plain-text templates contain {org_block} variable", "result": "PASS (both contain {org_block})"},
+    {"check": "invite-preview, invite-preview-frame, invite-preview-recipient, invite-refresh-preview present", "result": "PASS"},
+    {"check": "Preview iframe renders subject + 'To:' line + body (personalised 'Hi Anna Cuzzupe' + 'Claim Art Group →')", "result": "PASS"},
+    {"check": "Changing recipient dropdown updates preview To: address and content (verified visually: switched to Mary Higham → To: maryiam88@hotmail.co.uk)", "result": "PASS"},
+    {"check": "Refresh preview button re-renders without error", "result": "PASS"},
+    {"check": "No console errors on the page", "result": "PASS for runtime errors. One React dev-mode hydration warning: '<span> cannot be a child of <option>' from InviteOrgs.jsx line ~174 (dropdown option renders a nested <span> from ve-dynamic wrapping). Non-blocking dev warning only, does not affect functionality."}
+  ],
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "/admin/invite-organisations", "issues": ["Minor React hydration warning: <span> nested inside <option> in the preview-recipient <select> (InviteOrgs.jsx:174). Dev-mode only, but should be cleaned up by rendering plain text inside <option>."]}
+    ]
+  },
+  "test_report_links": [],
+  "action_items": [
+    "Optional: In InviteOrgs.jsx around line 174, render the option label as a plain text string (no wrapping <span>) to remove the React hydration warning about <span> in <option>."
+  ],
+  "critical_code_review_comments": [
+    "Page correctly gates by RequireRole=admin and rehydrates from rn-admin-jwt.",
+    "Preview endpoint call responds fast; refresh works.",
+    "Send test / Send batch buttons are exposed but the batch button clearly shows selected count — good UX. Ensure server-side confirmation dialog exists to prevent accidental live-Resend sends (not verified this iteration since we intentionally did not trigger send flows)."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "n/a (not tested this iteration)", "frontend": "100% (14/14 checks passed; 1 non-blocking dev warning)"},
+  "seed_data_creation": "None",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Admin JWT via POST /api/auth/admin/login {admin@blackrodnow.co.uk / BlackrodAdmin!2026}, set localStorage rn-admin-jwt + rn-launch-notice-dismissed=1 BEFORE navigating to /admin/invite-organisations. DO NOT click invite-send-test or invite-send-batch — those send REAL emails via live Resend. Contacts count expected: 43 (25 claim / 29 create).",
+  "rca of the issue": "N/A — no blocking issues found."
+}
