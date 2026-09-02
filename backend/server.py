@@ -10727,6 +10727,18 @@ async def shutdown():
     client.close()
 
 
+# ─────────── Facebook Page event publishing ───────────
+# The token is server-side only. Never expose FACEBOOK_PAGE_ACCESS_TOKEN to the browser.
+from facebook_integration import install_facebook_integration
+
+install_facebook_integration(
+    app=app,
+    api=api,
+    db=db,
+    public_url=PUBLIC_URL,
+    admin_code=ADMIN_LAUNCH_CODE,
+)
+
 app.include_router(api)
 app.add_middleware(
     CORSMiddleware,

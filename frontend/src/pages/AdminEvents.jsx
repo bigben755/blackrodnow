@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { useApp } from "@/context/AppContext";
 import { formatDate, CategoryBadge } from "@/components/Cards";
 import { CalendarDays, ChevronLeft, AlertTriangle, Download, ChevronRight } from "lucide-react";
+import FacebookPublishingPanel from "@/components/admin/FacebookPublishingPanel";
 
 const PAGE_SIZE_OPTIONS = [25, 50, 100];
 
@@ -207,6 +208,8 @@ export default function AdminEvents() {
                 </div>
                 <Link to="/admin" className="inline-flex px-4 py-2 rounded-full border border-border text-xs font-semibold">Open dashboard</Link>
             </div>
+
+            <FacebookPublishingPanel />
 
             <section className="rounded-3xl border border-border bg-surface p-5 mb-6">
                 <h2 className="font-display font-bold text-xl inline-flex items-center gap-2 mb-3">
