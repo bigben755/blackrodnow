@@ -1,7 +1,7 @@
 import React from "react";
 import "@/App.css";
 import "@/index.css";
-import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-router-dom";
 import { Toaster } from "sonner";
 import { AppProvider, useApp } from "@/context/AppContext";
 import Layout from "@/components/Layout";
@@ -36,6 +36,16 @@ import AdminEvents from "@/pages/AdminEvents";
 import MemberRedeem from "@/pages/MemberRedeem";
 import MemberLogin from "@/pages/MemberLogin";
 
+function ScrollToTop() {
+    const { pathname } = useLocation();
+
+    React.useEffect(() => {
+        window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+    }, [pathname]);
+
+    return null;
+}
+
 function RequireRole({ allowed, children }) {
     const { role } = useApp();
     if (!allowed.includes(role)) return <Navigate to="/" replace />;
@@ -68,6 +78,7 @@ export default function App() {
     return (
         <AppProvider>
             <BrowserRouter>
+                <ScrollToTop />
                 <ComingSoonGate>
                     <Layout>
                         <Routes>

@@ -5601,6 +5601,37 @@ async def admin_bulk_message_action(req: AdminMessageBulkReq):
     return {"ok": True, "affected": len(req.ids)}
 
 
+def _retrieve_resend_received_email(email_id: str) -> Dict[str, Any]:
+    '''Retrieve the full inbound email body/headers from Resend.
+
+    Resend's email.received webhook intentionally contains metadata only. The
+    full message must be fetched from /emails/receiving/{email_id}.
+    '''
+    if not RESEND_API_KEY:
+        raise RuntimeError("RESEND_API_KEY is not configured")
+    clean_id = str(email_id or "").strip()
+    if not clean_id:
+        raise RuntimeError("Resend webhook did not include data.email_id")
+
+    response = requests.get(
+        f"https://api.resend.com/emails/receiving/{clean_id}",
+        headers={
+            "Authorization": f"Bearer {RESEND_API_KEY}",
+            "Accept": "application/json",
+        },
+        timeout=20,
+    )
+    if not response.ok:
+        detail = (response.text or "")[:500]
+        raise RuntimeError(
+            f"Resend received-email retrieval failed ({response.status_code}): {detail}"
+        )
+    payload = response.json()
+    if not isinstance(payload, dict):
+        raise RuntimeError("Resend received-email retrieval returned an invalid payload")
+    return payload
+
+
 @api.post("/webhooks/resend")
 async def resend_webhook_email_received(request: Request):
     raw = await request.body()
@@ -5620,46 +5651,75 @@ async def resend_webhook_email_received(request: Request):
     if event_type != "email.received":
         return {"ok": True, "ignored": True, "event_type": event_type or "unknown"}
 
-    data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
-    from_field = data.get("from") or data.get("sender") or data.get("from_email") or ""
-    from_email = _extract_email_address(from_field)
-    from_name = _extract_sender_name(from_field)
-    subject = str(data.get("subject") or "").strip() or "(No subject)"
-
-    headers = data.get("headers")
-    in_reply_to = str(
-        data.get("in_reply_to")
-        or data.get("inReplyTo")
-        or _extract_header_value(headers, "in-reply-to")
-        or ""
-    ).strip() or None
-    event_id = str(
-        data.get("id")
-        or data.get("message_id")
-        or _extract_header_value(headers, "message-id")
-        or svix_id
-    ).strip()
+    webhook_data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+    resend_email_id = str(webhook_data.get("email_id") or "").strip()
+    if not resend_email_id:
+        logger.error("Resend email.received webhook missing data.email_id (svix_id=%s)", svix_id)
+        raise HTTPException(400, "Resend webhook missing email_id")
 
     duplicate = await db.messages.find_one(
         {
             "delivery.provider": "resend-webhook",
-            "delivery.event_id": event_id,
+            "delivery.resend_email_id": resend_email_id,
         },
         {"_id": 0, "id": 1},
     )
     if duplicate:
         return {"ok": True, "duplicate": True, "message_id": duplicate.get("id")}
 
-    body_text = str(
-        data.get("text")
-        or data.get("text_body")
-        or data.get("plain_text")
+    received: Optional[Dict[str, Any]] = None
+    retrieval_error: Optional[Exception] = None
+    for attempt in range(3):
+        try:
+            received = await asyncio.to_thread(_retrieve_resend_received_email, resend_email_id)
+            retrieval_error = None
+            break
+        except Exception as exc:
+            retrieval_error = exc
+            logger.warning(
+                "Resend inbound retrieval attempt %s/3 failed for %s: %s",
+                attempt + 1,
+                resend_email_id,
+                exc,
+            )
+            if attempt < 2:
+                await asyncio.sleep(0.75 * (attempt + 1))
+
+    if not received:
+        logger.error(
+            "Unable to retrieve Resend inbound email %s; refusing empty inbox record: %s",
+            resend_email_id,
+            retrieval_error,
+        )
+        raise HTTPException(503, "Could not retrieve received email content from Resend")
+
+    data = {**webhook_data, **received}
+    from_field = data.get("from") or data.get("sender") or data.get("from_email") or ""
+    from_email = _extract_email_address(from_field)
+
+    headers = data.get("headers") or {}
+    header_from = _extract_header_value(headers, "from")
+    from_name = _extract_sender_name(header_from or from_field)
+    subject = str(data.get("subject") or "").strip() or "(No subject)"
+
+    in_reply_to = str(
+        data.get("in_reply_to")
+        or data.get("inReplyTo")
+        or _extract_header_value(headers, "in-reply-to")
         or ""
-    ).strip()
+    ).strip() or None
+    internet_message_id = str(
+        data.get("message_id")
+        or _extract_header_value(headers, "message-id")
+        or ""
+    ).strip() or None
+
+    body_text = str(data.get("text") or "").strip()
+    body_html = str(data.get("html") or "").strip()
+    if not body_text and body_html:
+        body_text = _html_to_text(body_html)
     if not body_text:
-        body_text = _html_to_text(data.get("html") or data.get("html_body") or "")
-    if not body_text:
-        body_text = "(No message body provided by webhook)"
+        body_text = "(Email contained no readable message body)"
 
     org_slug = None
     if from_email:
@@ -5680,8 +5740,13 @@ async def resend_webhook_email_received(request: Request):
         delivery={
             "provider": "resend-webhook",
             "event_type": event_type,
-            "event_id": event_id,
+            "event_id": resend_email_id,
+            "resend_email_id": resend_email_id,
+            "internet_message_id": internet_message_id,
             "svix_id": svix_id,
+            "retrieved_full_message": True,
+            "has_html": bool(body_html),
+            "attachments": received.get("attachments") or webhook_data.get("attachments") or [],
         },
     )
     await db.messages.insert_one(created.model_dump())
@@ -5689,6 +5754,7 @@ async def resend_webhook_email_received(request: Request):
         "ok": True,
         "created": True,
         "message_id": created.id,
+        "resend_email_id": resend_email_id,
         "from_email": from_email,
         "matched_org_slug": org_slug,
     }
