@@ -5,6 +5,8 @@ installer changes, so normal pushes to main do not rewrite application files.
 """
 from pathlib import Path
 
+# Installer revision 1: initial production wiring.
+
 
 def patch_server() -> bool:
     path = Path("backend/server.py")
