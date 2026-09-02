@@ -368,7 +368,7 @@ def install_facebook_integration(*, app, api, db, public_url: str, admin_code: s
     async def facebook_status(request: Request):
         require_admin(request)
         eligible_count = len(await eligible_events())
-        posted_count = await db.events.count_documents({"facebook_post_id": {"$nin": [None, ""]}})
+        posted_count = await db.events.count_documents({"facebook_post_id": {"$exists": True, "$nin": [None, ""]}})
         error_count = await db.events.count_documents({"facebook_post_status": "error"})
         return {
             "configured": bool(page_id and access_token),
@@ -386,7 +386,7 @@ def install_facebook_integration(*, app, api, db, public_url: str, admin_code: s
         require_admin(request)
         eligible = await eligible_events()
         posted = await db.events.find(
-            {"facebook_post_id": {"$nin": [None, ""]}},
+            {"facebook_post_id": {"$exists": True, "$nin": [None, ""]}},
             {
                 "_id": 0,
                 "id": 1,
