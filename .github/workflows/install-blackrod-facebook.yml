@@ -1,0 +1,39 @@
+name: Install Blackrod Facebook publishing
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "scripts/install_blackrod_facebook.py"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  install:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Apply Facebook integration patches
+        run: python scripts/install_blackrod_facebook.py
+
+      - name: Validate backend syntax
+        run: python -m py_compile backend/server.py backend/facebook_integration.py
+
+      - name: Commit patched application files
+        run: |
+          if git diff --quiet; then
+            echo "No source changes required."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add backend/server.py frontend/src/pages/AdminEvents.jsx
+          git commit -m "Integrate Facebook event publishing"
+          git push origin main
