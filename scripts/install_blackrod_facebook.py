@@ -5,7 +5,7 @@ installer changes, so normal pushes to main do not rewrite application files.
 """
 from pathlib import Path
 
-# Installer revision 1: initial production wiring.
+# Installer revision 2: initial wiring plus posted-event query hardening.
 
 
 def patch_server() -> bool:
@@ -23,6 +23,22 @@ def patch_server() -> bool:
     block = '''\n# ─────────── Facebook Page event publishing ───────────\n# The token is server-side only. Never expose FACEBOOK_PAGE_ACCESS_TOKEN to the browser.\nfrom facebook_integration import install_facebook_integration\n\ninstall_facebook_integration(\n    app=app,\n    api=api,\n    db=db,\n    public_url=PUBLIC_URL,\n    admin_code=ADMIN_LAUNCH_CODE,\n)\n\napp.include_router(api)\napp.add_middleware(\n'''
     path.write_text(text.replace(anchor, block, 1), encoding="utf-8")
     print("Patched backend/server.py")
+    return True
+
+
+def patch_facebook_module() -> bool:
+    path = Path("backend/facebook_integration.py")
+    text = path.read_text(encoding="utf-8")
+    old = '{"facebook_post_id": {"$nin": [None, ""]}}'
+    new = '{"facebook_post_id": {"$exists": True, "$nin": [None, ""]}}'
+    count = text.count(old)
+    if count == 0:
+        print("facebook_integration.py posted queries already hardened")
+        return False
+    if count != 2:
+        raise SystemExit(f"Expected 2 Facebook posted-query anchors, found {count}; refusing unsafe patch")
+    path.write_text(text.replace(old, new), encoding="utf-8")
+    print("Hardened backend/facebook_integration.py posted-event queries")
     return True
 
 
@@ -57,5 +73,9 @@ def patch_admin_events() -> bool:
 
 if __name__ == "__main__":
     server_changed = patch_server()
+    module_changed = patch_facebook_module()
     frontend_changed = patch_admin_events()
-    print(f"Done. server_changed={server_changed} frontend_changed={frontend_changed}")
+    print(
+        f"Done. server_changed={server_changed} "
+        f"module_changed={module_changed} frontend_changed={frontend_changed}"
+    )
