@@ -3,7 +3,8 @@ import { Link, NavLink, useLocation, useNavigate } from "react-router-dom";
 import { useApp } from "@/context/AppContext";
 import DemoTour from "@/components/DemoTour";
 import InstallPrompt from "@/components/InstallPrompt";
-import GetAppButton from "@/components/GetAppButton";
+import GetAppButton, { GetAppDialog } from "@/components/GetAppButton";
+import { openAppDialog } from "@/lib/pwa";
 import PostInstallNotifyBanner from "@/components/PostInstallNotifyBanner";
 import { api } from "@/lib/api";
 import {
@@ -532,7 +533,7 @@ function Navbar() {
                     </div>
 
                     <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
-                        <GetAppButton variant="desktop" />
+                        <GetAppButton variant="desktop" onClick={openAppDialog} />
                         <Link
                             to="/saved-events"
                             data-testid="nav-saved"
@@ -854,7 +855,7 @@ function Navbar() {
                                     )}
                                 </NavLink>
 
-                                <GetAppButton variant="mobile" />
+                                <GetAppButton variant="mobile" onClick={() => { setOpen(false); openAppDialog(); }} />
                             </nav>
 
                             <div className="my-4 border-t border-border" />
@@ -1589,6 +1590,7 @@ export default function Layout({ children }) {
             <LaunchNotice />
             <InstallPrompt />
             <PostInstallNotifyBanner />
+            <GetAppDialog />
 
             <DemoTour />
 

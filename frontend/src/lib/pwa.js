@@ -41,3 +41,8 @@ export function onInstallAvailabilityChange(fn) {
     listeners.add(fn);
     return () => listeners.delete(fn);
 }
+
+// Open the shared "Get the app" dialog from anywhere.
+export const openAppDialog = () => {
+    if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent("bn:open-get-app"));
+};

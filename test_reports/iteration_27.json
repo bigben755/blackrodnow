@@ -1,0 +1,20 @@
+{
+  "summary": "Frontend regression retest after ReferenceError fix. All 7 checks PASS: home renders, /organisation/member/login renders form, /organisation/member/redeem renders, /nonsense-xyz redirects to homepage (catch-all), Get-the-app dialog opens via desktop trigger and closes with Escape, body pointer-events remains 'auto' after close, and site nav (What's On) remains clickable/navigable. No console errors detected.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [],
+  "action_items": [],
+  "critical_code_review_comments": [],
+  "updated_files": [],
+  "success_rate": {"backend": "N/A (skipped)", "frontend": "100% (7/7 checks pass)"},
+  "test_credentials": "not needed",
+  "seed_data_creation": "none",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Both regression fixes verified: (1) /organisation/member/login route renders OrgMemberLogin with data-testid='org-member-login-page' correctly; (2) Get-the-app dialog now at Layout root via window event 'bn:open-get-app' — opens on desktop trigger click, closes on Escape, body pointer-events stays 'auto', and navigation continues to work. Catch-all redirect from /nonsense-xyz -> / also works. No 'appOpen is not defined' error observed.",
+  "rca of the issue": "Prior blank-app issue caused by ReferenceError 'appOpen is not defined' in Layout when GetAppDialog was nested in mobile menu. Fixed by rendering GetAppDialog once at Layout root and controlling open state via window event ('bn:open-get-app') from openAppDialog() helper. Verified fix effective."
+}

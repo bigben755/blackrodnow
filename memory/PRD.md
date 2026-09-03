@@ -244,3 +244,8 @@ A modern community website for Blackrod, Bolton showcasing local events, clubs, 
 - Added PostInstallNotifyBanner.jsx: shown only when running installed (standalone) and notifications not yet granted — the "allow notifications once downloaded" nudge.
 - lib/pwa.js globally captures beforeinstallprompt (imported early in index.js) so install can be offered on demand, not just via the one-time bottom banner. Reuses existing push.js (enablePush/disablePush) + /api/push/subscribe.
 - Verified: QA frontend 100% (iteration_25) — button visible, dialog opens with Install + Notifications sections, closes cleanly, no console errors. NOT yet on GitHub main; NOT deployed (awaiting user).
+
+## 02 Sep 2026 — Fixed: org member login crash + "Get the app" freeze
+- BUG 1 (/organisation/member/login "crash"): the route + /organisation/member/redeem were never registered in App.js and there was no catch-all, so links rendered a blank page. Fix: routed /organisation/member/login -> OrgMemberLogin, /organisation/member/redeem -> OrgMemberRedeem, added <Route path="*" -> Navigate to "/">.
+- BUG 2 ("add the app" froze the site): the Get-the-app Radix Dialog was nested inside the custom mobile-menu overlay, leaving body pointer-events:none = frozen. Fix: GetAppDialog now rendered ONCE at Layout root, self-manages open state via a window event 'bn:open-get-app' (openAppDialog() in lib/pwa.js); header + mobile buttons are plain triggers.
+- Verified: QA frontend 100% (iteration_27) — home renders, member login/redeem render, catch-all redirects, dialog opens/closes with body pointer-events staying 'auto' and site interactive. NOT yet deployed / not on GitHub main.

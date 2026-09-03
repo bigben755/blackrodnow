@@ -42,6 +42,8 @@ import Flyers from "@/pages/Flyers";
 import AdminEvents from "@/pages/AdminEvents";
 import MemberRedeem from "@/pages/MemberRedeem";
 import MemberLogin from "@/pages/MemberLogin";
+import OrgMemberLogin from "@/pages/OrgMemberLogin";
+import OrgMemberRedeem from "@/pages/OrgMemberRedeem";
 
 /**
  * Forces every React Router navigation to start at the very top of the page.
@@ -398,6 +400,17 @@ export default function App() {
                                     </RequireRole>
                                 }
                             />
+
+                            <Route
+                                path="/organisation/member/login"
+                                element={<OrgMemberLogin />}
+                            />
+                            <Route
+                                path="/organisation/member/redeem"
+                                element={<OrgMemberRedeem />}
+                            />
+
+                            <Route path="*" element={<Navigate to="/" replace />} />
                         </Routes>
                     </Layout>
                 </ComingSoonGate>

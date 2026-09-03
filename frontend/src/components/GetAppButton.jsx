@@ -7,12 +7,27 @@ import {
     DialogHeader,
     DialogTitle,
     DialogDescription,
-    DialogTrigger,
 } from "@/components/ui/dialog";
 import { isIos, isStandalone, pushSupported, enablePush, disablePush, getPushSubscription } from "@/lib/push";
 import { canInstall, promptInstall, onInstallAvailabilityChange } from "@/lib/pwa";
 
-export default function GetAppButton({ variant = "desktop" }) {
+// Plain trigger button — the dialog itself is rendered once at the Layout root
+// (see GetAppDialog) so it is never nested inside the mobile menu overlay.
+export default function GetAppButton({ variant = "desktop", onClick }) {
+    const standalone = isStandalone();
+    const triggerClass =
+        variant === "mobile"
+            ? "flex w-full items-center gap-2 px-4 py-3 rounded-2xl text-sm font-semibold text-foreground/80 hover:bg-muted"
+            : "hidden sm:inline-flex items-center gap-1.5 h-9 px-3.5 rounded-full text-sm font-bold bg-primary text-primary-foreground hover:bg-primary/90 transition";
+    return (
+        <button type="button" data-testid={`get-app-trigger-${variant}`} className={triggerClass} onClick={onClick}>
+            <Download className="h-4 w-4" />
+            {standalone ? "Notifications" : "Get the app"}
+        </button>
+    );
+}
+
+export function GetAppDialog() {
     const [open, setOpen] = useState(false);
     const [installable, setInstallable] = useState(canInstall());
     const [pushOn, setPushOn] = useState(false);
@@ -22,12 +37,20 @@ export default function GetAppButton({ variant = "desktop" }) {
     const ios = isIos();
     const supportsPush = pushSupported();
 
+    useEffect(() => {
+        const handler = () => setOpen(true);
+        window.addEventListener("bn:open-get-app", handler);
+        return () => window.removeEventListener("bn:open-get-app", handler);
+    }, []);
+
     useEffect(() => onInstallAvailabilityChange(() => setInstallable(canInstall())), []);
 
     useEffect(() => {
         if (!open) return;
         getPushSubscription().then((s) => setPushOn(!!s)).catch(() => {});
     }, [open]);
+
+    const onOpenChange = setOpen;
 
     const doInstall = async () => {
         const outcome = await promptInstall();
@@ -61,26 +84,8 @@ export default function GetAppButton({ variant = "desktop" }) {
         }
     };
 
-    const triggerClass =
-        variant === "mobile"
-            ? "flex w-full items-center justify-between px-4 py-3 rounded-2xl text-sm font-semibold text-foreground/80 hover:bg-muted"
-            : "hidden sm:inline-flex items-center gap-1.5 h-9 px-3.5 rounded-full text-sm font-bold bg-primary text-primary-foreground hover:bg-primary/90 transition";
-
-    const handleNav = () => {
-        setOpen(true);
-    };
-
     return (
-        <Dialog open={open} onOpenChange={setOpen}>
-            <DialogTrigger asChild>
-                <button type="button" data-testid={`get-app-trigger-${variant}`} className={triggerClass} onClick={handleNav}>
-                    <span className="inline-flex items-center gap-2">
-                        <Download className="h-4 w-4" />
-                        {standalone ? "Notifications" : "Get the app"}
-                    </span>
-                </button>
-            </DialogTrigger>
-
+        <Dialog open={open} onOpenChange={onOpenChange}>
             <DialogContent className="sm:max-w-md" data-testid="get-app-dialog">
                 <DialogHeader>
                     <div className="flex items-center gap-3">
@@ -98,7 +103,6 @@ export default function GetAppButton({ variant = "desktop" }) {
                     </div>
                 </DialogHeader>
 
-                {/* Install section (only when not yet installed) */}
                 {!standalone && (
                     <div className="rounded-2xl border border-border p-4">
                         <div className="text-sm font-bold mb-2 inline-flex items-center gap-1.5">
@@ -137,7 +141,6 @@ export default function GetAppButton({ variant = "desktop" }) {
                     </div>
                 )}
 
-                {/* Notifications section */}
                 <div className="rounded-2xl border border-border p-4 mt-1">
                     <div className="text-sm font-bold mb-2 inline-flex items-center gap-1.5">
                         <Bell className="h-4 w-4 text-primary" /> Notifications
