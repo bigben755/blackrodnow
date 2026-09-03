@@ -238,3 +238,9 @@ A modern community website for Blackrod, Bolton showcasing local events, clubs, 
 - Frontend: frontend/src/pages/InviteOrgs.jsx + route (RequireRole admin) + "Invite orgs" nav link in Admin header + api.js orgInvites* methods.
 - Verified: backend clean start (43 contacts loaded); config returns 43 (25 claim/29 create); real TEST email (claim+create examples) sent to benwordsworth@aol.com (Resend IDs returned); QA frontend 100% (14/14). Deployed to production (workspace state; NOT yet on GitHub main — user may Save to GitHub).
 - NOTE: This diverges from GitHub main (main was authoritative). To keep main in sync, push via Save to GitHub.
+
+## 02 Sep 2026 — Clear "Get the app" + post-install notifications (PWA UX)
+- Added persistent blue "Get the app" button in the header (desktop + mobile menu) opening an adaptive dialog (GetAppButton.jsx): Install section (native install via captured beforeinstallprompt on Chrome/Android, iOS Share→Add to Home Screen steps, or browser-menu fallback) + Notifications section (enable/disable push).
+- Added PostInstallNotifyBanner.jsx: shown only when running installed (standalone) and notifications not yet granted — the "allow notifications once downloaded" nudge.
+- lib/pwa.js globally captures beforeinstallprompt (imported early in index.js) so install can be offered on demand, not just via the one-time bottom banner. Reuses existing push.js (enablePush/disablePush) + /api/push/subscribe.
+- Verified: QA frontend 100% (iteration_25) — button visible, dialog opens with Install + Notifications sections, closes cleanly, no console errors. NOT yet on GitHub main; NOT deployed (awaiting user).
