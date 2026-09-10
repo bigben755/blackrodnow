@@ -189,8 +189,14 @@ def install_admin_event_lifecycle(*, api, db, admin_code: str) -> None:
     # the time this lifecycle installer runs. Replace its state-changing GET
     # link with a read-only confirmation page plus explicit POST decision.
     from claim_verification_safety import install_claim_verification_safety
+    from admin_content_security import install_admin_content_security
 
     install_claim_verification_safety(
+        api=api,
+        db=db,
+        admin_code=admin_code,
+    )
+    install_admin_content_security(
         api=api,
         db=db,
         admin_code=admin_code,
