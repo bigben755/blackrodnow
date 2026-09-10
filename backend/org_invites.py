@@ -322,12 +322,18 @@ def install_org_invites(
     # APIRouter is attached to the FastAPI app. This keeps the 400k+ server.py
     # untouched and preserves the existing invite tool as-is.
     from community_actions import install_community_actions
+    from admin_event_lifecycle import install_admin_event_lifecycle
 
     install_community_actions(
         app=app,
         api=api,
         db=db,
         public_url=public_url,
+        admin_code=admin_code,
+    )
+    install_admin_event_lifecycle(
+        api=api,
+        db=db,
         admin_code=admin_code,
     )
 
