@@ -26,23 +26,23 @@ def _claim_token_hash(token: str, secret: str) -> str:
     ).hexdigest()
 
 
-def _find_route_endpoint(api, exact_path: str, method: str):
+def _find_route_endpoint(api, path_suffix: str, method: str):
     wanted = method.upper()
     for route in api.routes:
         path = str(getattr(route, "path", "") or "")
         methods = set(getattr(route, "methods", set()) or set())
-        if path == exact_path and wanted in methods:
+        if path.endswith(path_suffix) and wanted in methods:
             return getattr(route, "endpoint", None)
     return None
 
 
-def _remove_route(api, exact_path: str, method: str) -> None:
+def _remove_route(api, path_suffix: str, method: str) -> None:
     wanted = method.upper()
     api.routes[:] = [
         route
         for route in api.routes
         if not (
-            str(getattr(route, "path", "") or "") == exact_path
+            str(getattr(route, "path", "") or "").endswith(path_suffix)
             and wanted in set(getattr(route, "methods", set()) or set())
         )
     ]
