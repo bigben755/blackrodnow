@@ -190,6 +190,7 @@ def install_admin_event_lifecycle(*, api, db, admin_code: str) -> None:
     # link with a read-only confirmation page plus explicit POST decision.
     from claim_verification_safety import install_claim_verification_safety
     from admin_content_security import install_admin_content_security
+    from admin_org_overview import install_admin_org_overview
 
     install_claim_verification_safety(
         api=api,
@@ -197,6 +198,11 @@ def install_admin_event_lifecycle(*, api, db, admin_code: str) -> None:
         admin_code=admin_code,
     )
     install_admin_content_security(
+        api=api,
+        db=db,
+        admin_code=admin_code,
+    )
+    install_admin_org_overview(
         api=api,
         db=db,
         admin_code=admin_code,
