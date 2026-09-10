@@ -101,6 +101,26 @@ export const deleteOrganisationCascadeAdmin = async (slug) => {
     return response.data;
 };
 
+export const archiveEventAdmin = async (eventId) => {
+    const response = await axios.post(
+        `${API}/admin/community/events/${encodeURIComponent(eventId)}/archive`,
+        {},
+        { headers: adminHeaders() },
+    );
+
+    return response.data;
+};
+
+export const restoreEventAdmin = async (eventId) => {
+    const response = await axios.post(
+        `${API}/admin/community/events/${encodeURIComponent(eventId)}/restore`,
+        {},
+        { headers: adminHeaders() },
+    );
+
+    return response.data;
+};
+
 export const getAdminOrganisationContacts = async () => {
     const response = await axios.get(
         `${API}/admin/community/org-contacts`,
