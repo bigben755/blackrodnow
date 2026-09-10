@@ -24,6 +24,9 @@ import {
     deleteVenueAdmin,
     deleteVolunteerAdmin,
     restoreEventAdmin,
+    updateOrganisationAdmin,
+    updateVenueAdmin,
+    updateVolunteerAdmin,
 } from "@/lib/communityActions";
 import {
     Dialog,
@@ -229,7 +232,7 @@ export default function AdminContentManager({ onMessageOrg, onCheckEvent, initia
         setBusyKey(key);
         try {
             if (editRow.kind === "org") {
-                await api.patchOrg(editRow.id, editForm);
+                await updateOrganisationAdmin(editRow.id, editForm);
             } else if (editRow.kind === "venue") {
                 const venuePatch = {
                     ...editForm,
@@ -244,9 +247,9 @@ export default function AdminContentManager({ onMessageOrg, onCheckEvent, initia
                 if (venuePatch.capacity !== null && !Number.isFinite(venuePatch.capacity)) {
                     throw new Error("Capacity must be a number");
                 }
-                await api.updateVenue(editRow.id, venuePatch);
+                await updateVenueAdmin(editRow.id, venuePatch);
             } else if (editRow.kind === "volunteer") {
-                await api.updateVolunteer(editRow.id, editForm);
+                await updateVolunteerAdmin(editRow.id, editForm);
             }
             await refresh();
             toast.success(`${META[editRow.kind].label} updated`);
