@@ -6,6 +6,7 @@ import {
     Mail,
     Settings2,
     ShieldCheck,
+    Users,
 } from "lucide-react";
 import Admin from "@/pages/Admin";
 import AdminControlCentre from "@/components/AdminControlCentre";
@@ -13,10 +14,12 @@ import AdminContentManager from "@/components/AdminContentManager";
 import AdminAccuracyCentre from "@/components/AdminAccuracyCentre";
 import AdminCommunications from "@/components/AdminCommunications";
 import AdminClaimsCentre from "@/components/AdminClaimsCentre";
+import AdminOrganisationOverview from "@/components/AdminOrganisationOverview";
 
 const TABS = [
     { key: "control", label: "Control centre", icon: Activity },
     { key: "content", label: "Content", icon: Database },
+    { key: "organisations", label: "Organisations", icon: Users },
     { key: "accuracy", label: "Accuracy", icon: ShieldCheck },
     { key: "messages", label: "Messages", icon: Mail },
     { key: "claims", label: "Claims", icon: Building2 },
@@ -151,6 +154,9 @@ export default function AdminWorkspace({
                     onMessageOrg={openMessagesForOrg}
                     onCheckEvent={openAccuracyForEvent}
                 />
+            )}
+            {activeTab === "organisations" && (
+                <AdminOrganisationOverview onMessageOrg={openMessagesForOrg} />
             )}
             {activeTab === "accuracy" && (
                 <AdminAccuracyCentre
