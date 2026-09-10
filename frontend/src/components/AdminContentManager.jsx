@@ -19,9 +19,11 @@ import { toast } from "sonner";
 import { api } from "@/lib/api";
 import { useApp } from "@/context/AppContext";
 import {
+    archiveEventAdmin,
     deleteOrganisationCascadeAdmin,
     deleteVenueAdmin,
     deleteVolunteerAdmin,
+    restoreEventAdmin,
 } from "@/lib/communityActions";
 import {
     Dialog,
@@ -324,7 +326,7 @@ export default function AdminContentManager({ onMessageOrg, onCheckEvent, initia
         const key = `event:${row.id}`;
         setBusyKey(key);
         try {
-            await api.setEventStatus(row.id, "archived", row.orgSlug);
+            await archiveEventAdmin(row.id);
             await refresh();
             toast.success("Event archived");
         } catch (error) {
@@ -338,7 +340,7 @@ export default function AdminContentManager({ onMessageOrg, onCheckEvent, initia
         const key = `event:${row.id}`;
         setBusyKey(key);
         try {
-            await api.adminRestoreEvent(row.id);
+            await restoreEventAdmin(row.id);
             await refresh();
             toast.success("Event restored");
         } catch (error) {
