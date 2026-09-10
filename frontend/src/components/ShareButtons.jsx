@@ -11,7 +11,7 @@ import { api } from "@/lib/api";
  *   url   – human-facing / canonical URL (used for Copy link + Instagram)
  *   ogUrl – optional crawler URL for social platforms that fetch OG tags
  *            (Facebook, LinkedIn, X/Twitter, WhatsApp). When provided we
- *            share this URL so their scrapers see per-event OG meta and
+ *            share this URL so their scrapers see tailored OG meta and
  *            render a rich preview card. It should immediately redirect
  *            humans to `url`.
  *   title – optional title for native share
@@ -68,15 +68,14 @@ export default function ShareButtons({
             label: "Facebook",
             icon: Facebook,
             className: "bg-[#1877F2] text-white hover:brightness-110",
-            // NOTE: Facebook's sharer cannot pre-fill text (deprecated in 2017) —
-            // so we auto-copy the caption first, then open the composer with the
-            // link attached. Users just paste (Ctrl/Cmd+V) into the post box.
+            // Facebook's sharer cannot pre-fill text, so copy the caption first
+            // and then open the composer with the shared link attached.
             onClick: async () => {
                 trackShare("facebook");
                 if (text) {
                     try {
                         await navigator.clipboard.writeText(text);
-                        toast.success("Blackrod Now caption copied — Facebook will attach the event card", { duration: 6000 });
+                        toast.success("Blackrod Now caption copied — Facebook will attach the link preview", { duration: 6000 });
                     } catch { /* clipboard blocked — still open the sharer */ }
                 }
                 open(`https://www.facebook.com/sharer/sharer.php?u=${enc(socialUrl)}`);
@@ -183,7 +182,7 @@ export default function ShareButtons({
                         title={h.label}
                         aria-label={h.label}
                     >
-                        <Icon className={compact ? "h-3.5 w-3.5" : "h-3.5 w-3.5"} />
+                        <Icon className="h-3.5 w-3.5" />
                         {!compact && <span>{h.label}</span>}
                     </button>
                 );
