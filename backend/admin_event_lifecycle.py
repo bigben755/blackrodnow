@@ -1,4 +1,4 @@
-"""Authenticated admin event archive/restore helpers for Blackrod Now.
+"""Authenticated admin lifecycle helpers for Blackrod Now.
 
 The core server already contains legacy archive-past and restore routes, but the
 new consolidated admin workspace also needs an authenticated single-event
@@ -10,7 +10,7 @@ from __future__ import annotations
 import hmac
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 from fastapi import HTTPException, Request
 
@@ -182,3 +182,14 @@ def install_admin_event_lifecycle(*, api, db, admin_code: str) -> None:
         if original_archive_past is None:
             raise HTTPException(503, "Archive-past operation is unavailable")
         return await original_archive_past()
+
+    # Community actions has already installed the claim-verification endpoint by
+    # the time this lifecycle installer runs. Replace its state-changing GET
+    # link with a read-only confirmation page plus explicit POST decision.
+    from claim_verification_safety import install_claim_verification_safety
+
+    install_claim_verification_safety(
+        api=api,
+        db=db,
+        admin_code=admin_code,
+    )
