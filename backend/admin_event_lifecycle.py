@@ -69,23 +69,25 @@ async def _audit(
     )
 
 
-def _find_route_endpoint(api, exact_path: str, method: str):
+def _find_route_endpoint(api, path_suffix: str, method: str):
+    """Find a route even when APIRouter has the application's /api prefix."""
     wanted_method = method.upper()
     for route in api.routes:
         route_path = str(getattr(route, "path", "") or "")
         methods = set(getattr(route, "methods", set()) or set())
-        if route_path == exact_path and wanted_method in methods:
+        if route_path.endswith(path_suffix) and wanted_method in methods:
             return getattr(route, "endpoint", None)
     return None
 
 
-def _remove_route(api, exact_path: str, method: str) -> None:
+def _remove_route(api, path_suffix: str, method: str) -> None:
+    """Remove a route by suffix so prefixed APIRouter paths are handled."""
     wanted_method = method.upper()
     api.routes[:] = [
         route
         for route in api.routes
         if not (
-            str(getattr(route, "path", "") or "") == exact_path
+            str(getattr(route, "path", "") or "").endswith(path_suffix)
             and wanted_method in set(getattr(route, "methods", set()) or set())
         )
     ]
