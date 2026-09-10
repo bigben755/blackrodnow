@@ -1,10 +1,20 @@
 import asyncio
+import os
+import sys
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 from fastapi import APIRouter, HTTPException
 from starlette.requests import Request
 
+# Keep this unit test runnable both from /app/backend and from the repository
+# root, unlike the older integration tests that assume a deployed backend.
+BACKEND_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if BACKEND_DIR not in sys.path:
+    sys.path.insert(0, BACKEND_DIR)
+
 import admin_event_lifecycle
+import claim_verification_safety
 
 
 class FakeCollection:
@@ -50,17 +60,18 @@ class FakeDb:
             ]
         )
         self.admin_audit = FakeCollection()
+        self.org_claim_relationship_checks = FakeCollection()
 
 
-def make_request(admin_code=""):
+def make_request(admin_code="", *, method="POST", path="/"):
     headers = []
     if admin_code:
         headers.append((b"x-admin-code", admin_code.encode("utf-8")))
     return Request(
         {
             "type": "http",
-            "method": "POST",
-            "path": "/",
+            "method": method,
+            "path": path,
             "headers": headers,
             "query_string": b"",
             "server": ("testserver", 80),
@@ -71,8 +82,18 @@ def make_request(admin_code=""):
     )
 
 
+class FakeFormRequest:
+    def __init__(self, path, confirmed="yes"):
+        self.url = SimpleNamespace(path=path)
+        self.confirmed = confirmed
+
+    async def form(self):
+        return {"confirmed": self.confirmed}
+
+
 def test_prefixed_legacy_routes_are_replaced_and_secured():
     admin_event_lifecycle._INSTALLED = False
+    claim_verification_safety._INSTALLED = False
 
     api = APIRouter(prefix="/api")
     db = FakeDb()
@@ -140,3 +161,83 @@ def test_prefixed_legacy_routes_are_replaced_and_secured():
         "event_archived",
         "event_restored",
     ]
+
+
+def test_claim_email_link_get_is_read_only_and_post_records_decision():
+    claim_verification_safety._INSTALLED = False
+    api = APIRouter(prefix="/api")
+    db = FakeDb()
+    calls = {"decision": 0}
+    token = "safe-test-token"
+    secret = "secret"
+    token_hash = claim_verification_safety._claim_token_hash(token, secret)
+    db.org_claim_relationship_checks.rows.append(
+        {
+            "id": "verification-1",
+            "token_hash": token_hash,
+            "status": "pending",
+            "org_name": "Test Organisation",
+            "claimant_name": "Test Person",
+            "claimant_email": "person@example.com",
+            "expires_at": (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
+        }
+    )
+
+    @api.get("/claim-verifications/{token}/{decision}")
+    async def legacy_decision(token: str, decision: str):
+        calls["decision"] += 1
+        return {"ok": True, "token": token, "decision": decision}
+
+    claim_verification_safety.install_claim_verification_safety(
+        api=api,
+        db=db,
+        admin_code=secret,
+    )
+
+    matching_get = [
+        route.endpoint
+        for route in api.routes
+        if route.path == "/api/claim-verifications/{token}/{decision}" and "GET" in route.methods
+    ]
+    matching_post = [
+        route.endpoint
+        for route in api.routes
+        if route.path == "/api/claim-verifications/{token}/{decision}" and "POST" in route.methods
+    ]
+    assert len(matching_get) == 1
+    assert len(matching_post) == 1
+
+    async def scenario():
+        confirmation = await matching_get[0](
+            token,
+            "approve",
+            make_request(
+                method="GET",
+                path=f"/api/claim-verifications/{token}/approve",
+            ),
+        )
+        assert confirmation.status_code == 200
+        body = confirmation.body.decode("utf-8")
+        assert "method='post'" in body
+        assert "Yes — confirm authorisation" in body
+        assert calls["decision"] == 0
+
+        try:
+            await matching_post[0](
+                token,
+                "approve",
+                FakeFormRequest(f"/api/claim-verifications/{token}/approve", confirmed=""),
+            )
+            assert False, "POST without explicit confirmation unexpectedly succeeded"
+        except HTTPException as exc:
+            assert exc.status_code == 400
+
+        result = await matching_post[0](
+            token,
+            "approve",
+            FakeFormRequest(f"/api/claim-verifications/{token}/approve"),
+        )
+        assert result["decision"] == "approve"
+        assert calls["decision"] == 1
+
+    asyncio.run(scenario())
