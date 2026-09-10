@@ -89,14 +89,16 @@ def install_claim_verification_safety(*, api, db, admin_code: str) -> None:
     global _INSTALLED
     if _INSTALLED:
         return
-    _INSTALLED = True
 
     path = "/claim-verifications/{token}/{decision}"
     original_decision = _find_route_endpoint(api, path, "GET")
     if original_decision is None:
+        # Leave the installer retryable if bootstrap order changes or a test
+        # creates the router in stages.
         return
 
     _remove_route(api, path, "GET")
+    _INSTALLED = True
 
     @api.get(path)
     async def claim_verification_confirmation(token: str, decision: str, request: Request):
@@ -158,9 +160,9 @@ def install_claim_verification_safety(*, api, db, admin_code: str) -> None:
             button = "Reject this claim"
             danger = True
 
-        # Preserve the exact token/decision URL. The only state-changing request
-        # is the form POST made after the human explicitly confirms here.
-        action_url = str(request.url)
+        # Use a same-origin path rather than reconstructing the public host from
+        # proxy headers. This is reliable behind the production reverse proxy.
+        action_url = str(request.url.path)
         return _html_response(
             _page(
                 heading=heading,
