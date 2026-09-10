@@ -318,4 +318,17 @@ def install_org_invites(
             "results": results,
         }
 
+    # Install the consolidated community/admin workspace routes before the main
+    # APIRouter is attached to the FastAPI app. This keeps the 400k+ server.py
+    # untouched and preserves the existing invite tool as-is.
+    from community_actions import install_community_actions
+
+    install_community_actions(
+        app=app,
+        api=api,
+        db=db,
+        public_url=public_url,
+        admin_code=admin_code,
+    )
+
     logger.info("Org invite tool ready: %d contacts loaded", len(CONTACTS))
