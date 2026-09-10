@@ -101,6 +101,36 @@ export const deleteOrganisationCascadeAdmin = async (slug) => {
     return response.data;
 };
 
+export const updateOrganisationAdmin = async (slug, payload) => {
+    const response = await axios.patch(
+        `${API}/admin/community/organisations/${encodeURIComponent(slug)}`,
+        payload,
+        { headers: adminHeaders() },
+    );
+
+    return response.data;
+};
+
+export const updateVenueAdmin = async (venueId, payload) => {
+    const response = await axios.patch(
+        `${API}/admin/community/venues/${encodeURIComponent(venueId)}`,
+        payload,
+        { headers: adminHeaders() },
+    );
+
+    return response.data;
+};
+
+export const updateVolunteerAdmin = async (volunteerId, payload) => {
+    const response = await axios.patch(
+        `${API}/admin/community/volunteers/${encodeURIComponent(volunteerId)}`,
+        payload,
+        { headers: adminHeaders() },
+    );
+
+    return response.data;
+};
+
 export const archiveEventAdmin = async (eventId) => {
     const response = await axios.post(
         `${API}/admin/community/events/${encodeURIComponent(eventId)}/archive`,
@@ -129,7 +159,6 @@ export const getAdminOrganisationContacts = async () => {
 
     return response.data?.organisations || [];
 };
-
 
 export const getAdminMessageAttachments = async (messageId) => {
     const response = await axios.get(
