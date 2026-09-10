@@ -160,6 +160,15 @@ export const getAdminOrganisationContacts = async () => {
     return response.data?.organisations || [];
 };
 
+export const getAdminOrganisationOverview = async () => {
+    const response = await axios.get(
+        `${API}/admin/community/organisation-overview`,
+        { headers: adminHeaders() },
+    );
+
+    return response.data || { counts: {}, organisations: [] };
+};
+
 export const getAdminMessageAttachments = async (messageId) => {
     const response = await axios.get(
         `${API}/admin/community/messages/${encodeURIComponent(messageId)}/attachments`,
