@@ -1,0 +1,45 @@
+{
+  "summary": "Frontend-only read-only render check on /admin after admin-dashboard-v2 refactor (commit d2912ba). Admin logged in via POST /api/auth/admin/login (200) and JWT stored in localStorage 'rn-admin-jwt' plus 'rn-launch-notice-dismissed'='1'. /admin loaded without blank screen or error boundary; the new AdminWorkspace renders with header 'Admin workspace' and 7 tabs (Control centre, Content, Organisations, Accuracy, Messages, Claims, Advanced). All 7 tabs were clicked in sequence and each swapped in the corresponding section (CONTROL CENTRE, CONTENT 'Manage everything quickly', ORGANISATION ACCESS, ACCURACY & CREDIBILITY, MESSAGES & EMAIL, ORGANISATION ACCESS (Claims), Advanced tools). No React pageerror / crash. Two non-fatal console errors observed (see below). PASS overall for render-only requirement.",
+  "backend_issues": { "critical": [], "minor": [] },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [
+      {
+        "flow": "Admin > Advanced tab (legacy Admin.jsx ModerationQueueCard)",
+        "issue": "React hydration/validation warning: 'In HTML, <span> cannot be a child of <option>'. Emitted from legacy Admin.jsx around line 4574 inside <select><option>{label}</option></select> where the label expression is wrapped in a span. Non-fatal but pollutes console and will crash server-side hydration if ever SSR'd. Occurs on initial /admin load because the legacy Admin is mounted inside AdminWorkspace's Advanced section.",
+        "affected_selectors": ["select[value='open'] > option"]
+      },
+      {
+        "flow": "Admin initial load",
+        "issue": "One resource returned HTTP 500 during /admin load (source URL not surfaced by console). Page still renders. Likely a stats/data endpoint. Please check backend logs for the exact route.",
+        "affected_selectors": []
+      }
+    ],
+    "design_issues": [
+      {
+        "screen": "Admin tab bar",
+        "issues": [
+          "Tab buttons lack data-testid attributes (e.g. admin-tab-content, admin-tab-organisations). Present dashboard section has data-testid='admin-control-centre-v2' but individual tab triggers do not, forcing tests to rely on innerText matching which collides with header 'For organisations' menu."
+        ]
+      }
+    ]
+  },
+  "test_report_links": [],
+  "action_items": [
+    "Fix legacy Admin.jsx ~line 4574: remove the <span> wrapper inside <option> (option must contain only text). This is inherited legacy code but is now surfaced by the new dashboard because AdminWorkspace mounts it in the Advanced tab.",
+    "Investigate the single 500 response emitted on /admin load (source URL suppressed in console — check backend logs for a failing admin stats/metrics call).",
+    "Add data-testid to the 7 admin workspace tab triggers (e.g. admin-tab-control-centre / -content / -organisations / -accuracy / -messages / -claims / -advanced) for reliable automation."
+  ],
+  "critical_code_review_comments": [
+    "AdminWorkspace still embeds the full legacy Admin component in the Advanced tab, so all the size/complexity issues of Admin.jsx (>4500 lines) are inherited on every /admin visit; consider lazy-loading Advanced.",
+    "Missing data-testid on primary tab triggers reduces testability of the new dashboard."
+  ],
+  "updated_files": [],
+  "success_rate": { "backend": "n/a (skipped per request)", "frontend": "100% render, tab-switch works; 2 console errors (non-fatal)" },
+  "test_credentials": "admin@blackrodnow.co.uk / BlackrodAdmin!2026 via POST /api/auth/admin/login; store token at localStorage['rn-admin-jwt'] and set localStorage['rn-launch-notice-dismissed']='1' before navigating to /admin.",
+  "seed_data_creation": "None (read-only run, no writes, no emails, no approvals).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "AdminWorkspace v2 renders and all 7 tabs switch. Next agent should confirm the 500 source (backend logs) and verify the <option><span> hydration warning after fix. Header nav dropdown 'For organisations' collides with the admin tab labelled 'Organisations' when using text-based selectors; use y-position filter (100 < y < 300) or add data-testids.",
+  "rca of the issue": "Hydration warning RCA: React 18 disallows non-text children inside <option>. In Admin.jsx around line 4574 (ModerationQueueCard status <select>), the option label is rendered as an expression that gets wrapped by a runtime <span style='display:contents'> injector (x-ve-dynamic tooling). Fix by ensuring the option children are pure strings — e.g. <option value='open'>{String(label)}</option> — or unwrap the dynamic instrumentation for <option> children."
+}
