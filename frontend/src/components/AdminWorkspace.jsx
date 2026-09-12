@@ -36,6 +36,7 @@ export default function AdminWorkspace({
         () => localStorage.getItem("bn-admin-workspace-tab") || "control"
     );
     const [contentStatus, setContentStatus] = React.useState("");
+    const [organisationFilter, setOrganisationFilter] = React.useState("");
     const [messageOrgSlug, setMessageOrgSlug] = React.useState("");
     const [messageMode, setMessageMode] = React.useState("");
     const [accuracyEventId, setAccuracyEventId] = React.useState("");
@@ -47,6 +48,11 @@ export default function AdminWorkspace({
     const openContent = (status = "") => {
         setContentStatus(status);
         setActiveTab("content");
+    };
+
+    const openOrganisations = (filter = "all") => {
+        setOrganisationFilter(filter || "all");
+        setActiveTab("organisations");
     };
 
     const openMessages = (mode = "single", slug = "") => {
@@ -144,6 +150,7 @@ export default function AdminWorkspace({
                     onOpenAccuracy={() => setActiveTab("accuracy")}
                     onOpenMessages={(mode) => openMessages(mode)}
                     onOpenClaims={() => setActiveTab("claims")}
+                    onOpenOrganisations={openOrganisations}
                     onOpenAdvanced={() => setActiveTab("advanced")}
                 />
             )}
@@ -156,7 +163,11 @@ export default function AdminWorkspace({
                 />
             )}
             {activeTab === "organisations" && (
-                <AdminOrganisationOverview onMessageOrg={openMessagesForOrg} />
+                <AdminOrganisationOverview
+                    onMessageOrg={openMessagesForOrg}
+                    initialFilter={organisationFilter}
+                    onInitialFilterHandled={() => setOrganisationFilter("")}
+                />
             )}
             {activeTab === "accuracy" && (
                 <AdminAccuracyCentre
