@@ -5,6 +5,7 @@ import {
     Building2,
     CheckCircle2,
     Clock,
+    Edit3,
     ExternalLink,
     Mail,
     RefreshCw,
@@ -20,6 +21,13 @@ const FILTERS = [
     { key: "unclaimed", label: "Unclaimed", countKey: "unclaimed" },
     { key: "with_admins", label: "With admins", countKey: "with_admins" },
     { key: "without_admins", label: "Without admins", countKey: "without_admins" },
+];
+
+const ATTENTION_FILTERS = [
+    { key: "claimed_no_admin", label: "Claimed, no admin" },
+    { key: "pending_claim", label: "Pending claim" },
+    { key: "never_active", label: "Never active" },
+    { key: "inactive_90", label: "Inactive 90+ days" },
 ];
 
 const parseDate = (value) => {
@@ -72,7 +80,17 @@ const activityAgeClass = (value) => {
     return "text-emerald-700";
 };
 
-export default function AdminOrganisationOverview({ onMessageOrg }) {
+const inactiveFor90Days = (value) => {
+    const date = parseDate(value);
+    if (!date) return false;
+    return (Date.now() - date.getTime()) / 86400000 >= 90;
+};
+
+export default function AdminOrganisationOverview({
+    onMessageOrg,
+    initialFilter = "",
+    onInitialFilterHandled,
+}) {
     const [data, setData] = React.useState({ counts: {}, organisations: [] });
     const [loading, setLoading] = React.useState(true);
     const [query, setQuery] = React.useState("");
@@ -98,6 +116,23 @@ export default function AdminOrganisationOverview({ onMessageOrg }) {
         load();
     }, [load]);
 
+    React.useEffect(() => {
+        if (!initialFilter) return;
+        const valid = [...FILTERS, ...ATTENTION_FILTERS].some((item) => item.key === initialFilter);
+        setFilter(valid ? initialFilter : "all");
+        if (onInitialFilterHandled) onInitialFilterHandled();
+    }, [initialFilter, onInitialFilterHandled]);
+
+    const attentionCounts = React.useMemo(() => {
+        const organisations = data.organisations || [];
+        return {
+            claimed_no_admin: organisations.filter((org) => org.claimed && !org.has_admins).length,
+            pending_claim: organisations.filter((org) => Number(org.pending_claims || 0) > 0).length,
+            never_active: organisations.filter((org) => !org.last_activity_at).length,
+            inactive_90: organisations.filter((org) => inactiveFor90Days(org.last_activity_at)).length,
+        };
+    }, [data.organisations]);
+
     const rows = React.useMemo(() => {
         const needle = query.trim().toLowerCase();
         const filtered = (data.organisations || [])
@@ -106,6 +141,10 @@ export default function AdminOrganisationOverview({ onMessageOrg }) {
                 if (filter === "unclaimed" && org.claimed) return false;
                 if (filter === "with_admins" && !org.has_admins) return false;
                 if (filter === "without_admins" && org.has_admins) return false;
+                if (filter === "claimed_no_admin" && !(org.claimed && !org.has_admins)) return false;
+                if (filter === "pending_claim" && !(Number(org.pending_claims || 0) > 0)) return false;
+                if (filter === "never_active" && org.last_activity_at) return false;
+                if (filter === "inactive_90" && !inactiveFor90Days(org.last_activity_at)) return false;
                 if (!needle) return true;
 
                 const adminText = (org.admins || [])
@@ -173,6 +212,29 @@ export default function AdminOrganisationOverview({ onMessageOrg }) {
                 })}
             </div>
 
+            <div className="mt-4 rounded-2xl border border-border bg-muted/20 p-3">
+                <div className="text-[10px] uppercase tracking-wider font-black text-muted-foreground">Attention views</div>
+                <div className="mt-2 flex flex-wrap gap-2">
+                    {ATTENTION_FILTERS.map((item) => {
+                        const active = filter === item.key;
+                        const count = Number(attentionCounts[item.key] || 0);
+                        return (
+                            <button
+                                key={item.key}
+                                type="button"
+                                onClick={() => setFilter(item.key)}
+                                className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-full border text-xs font-semibold transition ${active ? "bg-foreground text-background border-foreground" : "bg-background border-border hover:bg-muted"}`}
+                            >
+                                {item.label}
+                                <span className={`min-w-5 h-5 px-1.5 rounded-full grid place-items-center text-[10px] ${active ? "bg-background text-foreground" : "bg-muted text-foreground"}`}>
+                                    {count}
+                                </span>
+                            </button>
+                        );
+                    })}
+                </div>
+            </div>
+
             <div className="mt-5 flex flex-col lg:flex-row gap-3 lg:items-center lg:justify-between">
                 <div className="relative w-full lg:max-w-md">
                     <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
@@ -200,7 +262,7 @@ export default function AdminOrganisationOverview({ onMessageOrg }) {
 
             <div className="mt-4 rounded-2xl border border-border bg-surface overflow-hidden">
                 <div className="overflow-x-auto">
-                    <table className="w-full min-w-[980px] text-sm">
+                    <table className="w-full min-w-[1040px] text-sm">
                         <thead className="bg-muted/50 text-left text-[10px] uppercase tracking-wider text-muted-foreground">
                             <tr>
                                 <th className="p-3">Organisation</th>
@@ -274,6 +336,12 @@ export default function AdminOrganisationOverview({ onMessageOrg }) {
                                     </td>
                                     <td className="p-3">
                                         <div className="flex justify-end flex-wrap gap-1.5">
+                                            <Link
+                                                to={`/edit-organisation/${org.slug}`}
+                                                className="org-overview-action bg-primary text-primary-foreground border-primary"
+                                            >
+                                                <Edit3 className="h-3.5 w-3.5" /> Manage
+                                            </Link>
                                             <Link
                                                 to={`/organisations/${org.slug}`}
                                                 target="_blank"
