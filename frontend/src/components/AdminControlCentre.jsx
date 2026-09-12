@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { api } from "@/lib/api";
 import { useApp } from "@/context/AppContext";
+import { getAdminOrganisationOverview } from "@/lib/communityActions";
 
 const isRealEvent = (event) => !event?.is_recurrence_instance;
 
@@ -26,35 +27,39 @@ export default function AdminControlCentre({
     onOpenAccuracy,
     onOpenMessages,
     onOpenClaims,
+    onOpenOrganisations,
     onOpenAdvanced,
 }) {
     const { events, orgs, venues, volunteerOpps, stats, refresh } = useApp();
     const [accuracy, setAccuracy] = React.useState({ pending: 0, running: false });
+    const [orgOverview, setOrgOverview] = React.useState(null);
     const [loading, setLoading] = React.useState(false);
 
-    const loadAccuracy = React.useCallback(async () => {
+    const loadDashboardData = React.useCallback(async () => {
         try {
-            const [status, proposals] = await Promise.all([
+            const [status, proposals, organisationOverview] = await Promise.all([
                 api.eventAuditStatus().catch(() => null),
                 api.eventEditProposals("pending").catch(() => []),
+                getAdminOrganisationOverview().catch(() => null),
             ]);
             setAccuracy({
                 pending: Array.isArray(proposals) ? proposals.length : 0,
                 running: ["queued", "running"].includes(status?.job?.status),
             });
+            if (organisationOverview) setOrgOverview(organisationOverview);
         } catch {
             setAccuracy({ pending: 0, running: false });
         }
     }, []);
 
     React.useEffect(() => {
-        loadAccuracy();
-    }, [loadAccuracy]);
+        loadDashboardData();
+    }, [loadDashboardData]);
 
     const doRefresh = async () => {
         setLoading(true);
         try {
-            await Promise.all([refresh(), loadAccuracy()]);
+            await Promise.all([refresh(), loadDashboardData()]);
         } finally {
             setLoading(false);
         }
@@ -71,7 +76,10 @@ export default function AdminControlCentre({
         ["needs_attention", "likely_outdated"].includes(event.check_result?.verdict)
     ).length;
     const activeOrgs = (orgs || []).filter((org) => !["rejected", "archived"].includes(org.status));
-    const unclaimed = activeOrgs.filter((org) => !org.managed_by_org && !org.owner_email && !(org.admin_emails || []).length).length;
+    const fallbackWithoutAdmins = activeOrgs.filter((org) => !org.owner_email && !(org.admin_emails || []).length).length;
+    const withoutAdmins = Number.isFinite(Number(orgOverview?.counts?.without_admins))
+        ? Number(orgOverview.counts.without_admins)
+        : fallbackWithoutAdmins;
 
     return (
         <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8" data-testid="admin-control-centre-v2">
@@ -155,9 +163,13 @@ export default function AdminControlCentre({
                             <div className="text-2xl font-black">{unchecked}</div>
                             <div className="text-xs font-bold mt-1">Upcoming events not yet checked</div>
                         </button>
-                        <button type="button" onClick={onOpenClaims} className={`rounded-2xl border p-4 text-left ${unclaimed ? "border-border hover:bg-muted/40" : "border-border hover:bg-muted/40"}`}>
-                            <div className="text-2xl font-black">{unclaimed}</div>
-                            <div className="text-xs font-bold mt-1">Profiles without recorded managers</div>
+                        <button
+                            type="button"
+                            onClick={() => onOpenOrganisations?.("without_admins")}
+                            className={`rounded-2xl border p-4 text-left ${withoutAdmins ? "border-amber-300 bg-amber-50" : "border-border hover:bg-muted/40"}`}
+                        >
+                            <div className="text-2xl font-black">{withoutAdmins}</div>
+                            <div className="text-xs font-bold mt-1">Organisations without admins</div>
                         </button>
                     </div>
                 </div>
